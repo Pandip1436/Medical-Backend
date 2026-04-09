@@ -1,0 +1,341 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ── Users & Auth ──────────────────────────────────────────────
+model User {
+  id          String    @id @default(cuid())
+  name        String
+  email       String    @unique
+  phone       String
+  password    String    // bcrypt hashed
+  role        Role      @default(PHARMACIST)
+  isActive    Boolean   @default(true)
+  lastLogin   DateTime?
+  createdAt   DateTime  @default(now())
+  invoices    Invoice[]
+  auditLogs   AuditLog[]
+}
+
+enum Role {
+  ADMIN
+  PHARMACIST
+  INVENTORY_MANAGER
+  ACCOUNTANT
+}
+
+// ── Customers ─────────────────────────────────────────────────
+model Customer {
+  id                 String         @id @default(cuid())
+  name               String
+  phone              String
+  alternatePhone     String?
+  email              String?
+  address            String?
+  type               CustomerType   @default(WALK_IN)
+  doctorRef          String?
+  creditLimit        Decimal        @default(0)
+  currentOutstanding Decimal        @default(0)
+  loyaltyPoints      Int            @default(0)
+  gstin              String?
+  dlNumber           String?
+  notes              String?
+  createdAt          DateTime       @default(now())
+  invoices           Invoice[]
+  prescriptions      Prescription[]
+}
+
+enum CustomerType {
+  WALK_IN
+  REGULAR
+  HOSPITAL
+  WHOLESALE
+  DOCTOR
+}
+
+// ── Prescriptions ─────────────────────────────────────────────
+model Prescription {
+  id         String    @id @default(cuid())
+  customerId String
+  customer   Customer  @relation(fields: [customerId], references: [id])
+  doctorName String
+  imageUrl   String?   // uploaded file path / S3 URL
+  notes      String?
+  isActive   Boolean   @default(true)
+  createdAt  DateTime  @default(now())
+  validUntil DateTime?
+}
+
+// ── Products & Batches ────────────────────────────────────────
+model Product {
+  id               String           @id @default(cuid())
+  name             String
+  genericName      String
+  manufacturer     String
+  category         ProductCategory
+  subCategory      String?
+  packSize         String
+  unitOfMeasure    String
+  schedule         Schedule         @default(NONE)
+  hsnCode          String
+  isNarcotic       Boolean          @default(false)
+  storageCondition StorageCondition
+  mrp              Decimal
+  purchaseRate     Decimal
+  sellingRate      Decimal
+  wholesaleRate    Decimal
+  gstRate          Decimal
+  minStock         Int
+  maxStock         Int
+  reorderQty       Int
+  rackLocation     String
+  barcode          String?          @unique
+  totalStock       Int              @default(0)
+  batches          Batch[]
+  alternatives     Product[]        @relation("Alternatives")
+  alternativesOf   Product[]        @relation("Alternatives")
+  createdAt        DateTime         @default(now())
+}
+
+enum ProductCategory {
+  NEPHROLOGY
+  ONCOLOGY
+  GENERAL
+  OTC
+  SURGICAL
+}
+
+enum Schedule {
+  NONE
+  H
+  H1
+  X
+}
+
+enum StorageCondition {
+  ROOM_TEMP
+  COOL_DRY
+  REFRIGERATED
+  FROZEN
+}
+
+model Batch {
+  id           String   @id @default(cuid())
+  productId    String
+  product      Product  @relation(fields: [productId], references: [id])
+  batchNumber  String
+  mfgDate      DateTime
+  expiryDate   DateTime
+  quantity     Int
+  mrp          Decimal
+  purchaseRate Decimal
+  supplierId   String
+  supplier     Supplier @relation(fields: [supplierId], references: [id])
+  createdAt    DateTime @default(now())
+}
+
+// ── Suppliers ─────────────────────────────────────────────────
+model Supplier {
+  id             String          @id @default(cuid())
+  name           String
+  contactPerson  String
+  phone          String
+  email          String
+  gstin          String
+  drugLicense    String
+  address        String
+  paymentTerms   PaymentTerms
+  bankDetails    String?
+  isActive       Boolean         @default(true)
+  batches        Batch[]
+  purchaseOrders PurchaseOrder[]
+  grns           GRN[]
+}
+
+enum PaymentTerms {
+  NET_30
+  NET_45
+  NET_60
+}
+
+// ── Invoices ──────────────────────────────────────────────────
+model Invoice {
+  id              String        @id @default(cuid())
+  invoiceNumber   String        @unique
+  date            DateTime      @default(now())
+  type            InvoiceType
+  billingType     BillingType
+  customerId      String?
+  customer        Customer?     @relation(fields: [customerId], references: [id])
+  customerName    String
+  doctorName      String?
+  items           InvoiceItem[]
+  subtotal        Decimal
+  productDiscount Decimal       @default(0)
+  taxableAmount   Decimal
+  cgst            Decimal
+  sgst            Decimal
+  igst            Decimal       @default(0)
+  roundOff        Decimal       @default(0)
+  grandTotal      Decimal
+  paymentMode     PaymentMode
+  paymentDetails  Json?
+  status          InvoiceStatus
+  amountPaid      Decimal
+  changeReturned  Decimal       @default(0)
+  createdById     String
+  createdBy       User          @relation(fields: [createdById], references: [id])
+  createdAt       DateTime      @default(now())
+}
+
+model InvoiceItem {
+  id              String   @id @default(cuid())
+  invoiceId       String
+  invoice         Invoice  @relation(fields: [invoiceId], references: [id])
+  productId       String
+  productName     String
+  batchId         String
+  batchNumber     String
+  expiryDate      DateTime
+  quantity        Int
+  mrp             Decimal
+  rate            Decimal
+  discountPercent Decimal
+  gstPercent      Decimal
+  amount          Decimal
+}
+
+enum InvoiceType {
+  INVOICE
+  QUOTATION
+}
+
+enum BillingType {
+  RETAIL
+  WHOLESALE
+}
+
+enum PaymentMode {
+  CASH
+  CARD
+  UPI
+  CREDIT
+  SPLIT
+}
+
+enum InvoiceStatus {
+  DRAFT
+  PAID
+  CREDIT
+  PARTIAL
+  RETURNED
+  CANCELLED
+}
+
+// ── Purchase Orders ───────────────────────────────────────────
+model PurchaseOrder {
+  id               String              @id @default(cuid())
+  poNumber         String              @unique
+  date             DateTime            @default(now())
+  supplierId       String
+  supplier         Supplier            @relation(fields: [supplierId], references: [id])
+  supplierName     String
+  items            PurchaseOrderItem[]
+  totalAmount      Decimal
+  status           POStatus
+  expectedDelivery DateTime?
+  createdBy        String              // Simplifying for this relation, could link to User
+}
+
+model PurchaseOrderItem {
+  id               String        @id @default(cuid())
+  purchaseOrderId  String
+  purchaseOrder    PurchaseOrder @relation(fields: [purchaseOrderId], references: [id])
+  productId        String
+  productName      String
+  requiredQty      Int
+  lastPurchaseRate Decimal
+  expectedRate     Decimal
+  receivedQty      Int           @default(0)
+  remarks          String?
+}
+
+enum POStatus {
+  DRAFT
+  SENT
+  ACKNOWLEDGED
+  PARTIALLY_RECEIVED
+  FULLY_RECEIVED
+  CLOSED
+}
+
+// ── GRN ───────────────────────────────────────────────────────
+model GRN {
+  id                    String    @id @default(cuid())
+  grnNumber             String    @unique
+  date                  DateTime  @default(now())
+  poId                  String?
+  supplierId            String
+  supplier              Supplier  @relation(fields: [supplierId], references: [id])
+  supplierName          String
+  supplierInvoiceNo     String
+  supplierInvoiceDate   DateTime
+  supplierInvoiceAmount Decimal
+  items                 GRNItem[]
+  totalAmount           Decimal
+  status                GRNStatus
+}
+
+model GRNItem {
+  id           String   @id @default(cuid())
+  grnId        String
+  grn          GRN      @relation(fields: [grnId], references: [id])
+  productId    String
+  productName  String
+  orderedQty   Int
+  receivedQty  Int
+  freeQty      Int      @default(0)
+  batchNumber  String
+  mfgDate      DateTime
+  expiryDate   DateTime
+  purchaseRate Decimal
+  mrp          Decimal
+  damageQty    Int      @default(0)
+}
+
+enum GRNStatus {
+  DRAFT
+  RECEIVED
+  VERIFIED
+}
+
+// ── Expenses ──────────────────────────────────────────────────
+model Expense {
+  id           String   @id @default(cuid())
+  date         DateTime @default(now())
+  category     String
+  description  String
+  amount       Decimal
+  paymentMode  String
+  receiptImage String?
+}
+
+// ── Audit Log ─────────────────────────────────────────────────
+model AuditLog {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  module    String
+  action    String
+  entity    String
+  entityId  String?
+  oldValue  Json?
+  newValue  Json?
+  ipAddress String?
+  createdAt DateTime @default(now())
+}
