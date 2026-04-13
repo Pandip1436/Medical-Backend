@@ -4,24 +4,60 @@ import dayjs from 'dayjs';
 
 const prisma = new PrismaClient();
 
+const demoUsers = [
+  {
+    name: 'Super Admin',
+    email: 'admin@pbims.com',
+    phone: '9000000001',
+    password: 'admin123',
+    role: Role.ADMIN,
+  },
+  {
+    name: 'Ravi Kumar',
+    email: 'pharmacist@pbims.com',
+    phone: '9000000002',
+    password: 'pharma123',
+    role: Role.PHARMACIST,
+  },
+  {
+    name: 'Kumar Singh',
+    email: 'inventory@pbims.com',
+    phone: '9000000003',
+    password: 'stock123',
+    role: Role.INVENTORY_MANAGER,
+  },
+  {
+    name: 'Priya Sharma',
+    email: 'accountant@pbims.com',
+    phone: '9000000004',
+    password: 'account123',
+    role: Role.ACCOUNTANT,
+  },
+];
+
 async function main() {
-  const adminEmail = 'admin@pbims.com';
-  
-  // 1. Create Admin
-  const existingAdmin = await prisma.user.findUnique({ where: { email: adminEmail } });
-  let admin = existingAdmin;
-  if (!existingAdmin) {
-    const hashedPassword = await bcrypt.hash('admin123', 10);
-    admin = await prisma.user.create({
-      data: {
-        name: 'Super Admin',
-        email: adminEmail,
-        phone: '1234567890',
-        password: hashedPassword,
-        role: Role.ADMIN,
-      }
-    });
-    console.log('✅ Admin user created');
+  console.log('🌱 Seeding demo users...');
+
+  let adminUser = null;
+  for (const user of demoUsers) {
+    const existing = await prisma.user.findUnique({ where: { email: user.email } });
+    if (!existing) {
+      const hashedPassword = await bcrypt.hash(user.password, 10);
+      const createdUser = await prisma.user.create({
+        data: {
+          name: user.name,
+          email: user.email,
+          phone: user.phone,
+          password: hashedPassword,
+          role: user.role,
+        },
+      });
+      console.log(`✅ Created [${user.role}]: ${user.email} / ${user.password}`);
+      if (user.role === Role.ADMIN) adminUser = createdUser;
+    } else {
+      console.log(`⏭️  Already exists: ${user.email}`);
+      if (user.role === Role.ADMIN) adminUser = existing;
+    }
   }
 
   // 2. Create Suppliers
@@ -104,7 +140,7 @@ async function main() {
           paymentMode: PaymentMode.CASH,
           status: InvoiceStatus.PAID,
           amountPaid: amount,
-          createdById: admin!.id
+          createdById: adminUser!.id
         }
       });
     }
