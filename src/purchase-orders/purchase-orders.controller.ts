@@ -1,6 +1,7 @@
-import { Controller, Get, Post, Body, Param, Query, UseGuards, Request } from '@nestjs/common';
+import { Controller, Get, Post, Body, Param, Query, UseGuards, Request, Patch, Delete } from '@nestjs/common';
 import { PurchaseOrdersService } from './purchase-orders.service';
 import { CreatePurchaseOrderDto } from './dto/create-purchase-order.dto';
+import { UpdatePurchaseOrderDto } from './dto/update-purchase-order.dto';
 import { ApiTags, ApiOperation, ApiBearerAuth, ApiQuery } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
@@ -11,7 +12,7 @@ import { Roles } from '../common/decorators/roles.decorator';
 @UseGuards(JwtAuthGuard, RolesGuard)
 @Controller('api/v1/purchase-orders')
 export class PurchaseOrdersController {
-  constructor(private readonly poService: PurchaseOrdersService) {}
+  constructor(private readonly poService: PurchaseOrdersService) { }
 
   @Post()
   @Roles('ADMIN', 'INVENTORY_MANAGER')
@@ -33,5 +34,19 @@ export class PurchaseOrdersController {
   @ApiOperation({ summary: 'Get specific Purchase Order details' })
   findOne(@Param('id') id: string) {
     return this.poService.findOne(id);
+  }
+
+  @Patch(':id')
+  @Roles('ADMIN', 'INVENTORY_MANAGER')
+  @ApiOperation({ summary: 'Update a Purchase Order' })
+  update(@Param('id') id: string, @Body() updatePurchaseOrderDto: UpdatePurchaseOrderDto) {
+    return this.poService.update(id, updatePurchaseOrderDto);
+  }
+
+  @Delete(':id')
+  @Roles('ADMIN', 'INVENTORY_MANAGER')
+  @ApiOperation({ summary: 'Delete a Purchase Order' })
+  remove(@Param('id') id: string) {
+    return this.poService.remove(id);
   }
 }

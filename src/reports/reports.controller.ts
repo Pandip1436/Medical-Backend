@@ -18,4 +18,25 @@ export class ReportsController {
   getDashboardKpis() {
     return this.reportsService.getDashboardKpis();
   }
+
+  @Get('sales/daily')
+  @Roles('ADMIN', 'PHARMACIST', 'ACCOUNTANT')
+  @ApiOperation({ summary: 'Get hourly sales for the current day' })
+  getDailySales() {
+    return this.reportsService.getDailySales();
+  }
+
+  @Get('sales/products')
+  @Roles('ADMIN', 'PHARMACIST', 'INVENTORY_MANAGER')
+  @ApiOperation({ summary: 'Get sales performance by product' })
+  getProductSales() {
+    return this.reportsService.getProductSales();
+  }
+
+  @Get('inventory/valuation')
+  @Roles('ADMIN', 'INVENTORY_MANAGER')
+  @ApiOperation({ summary: 'Get current stock valuation by category' })
+  getStockValuation() {
+    return this.reportsService.getStockValuation();
+  }
 }
