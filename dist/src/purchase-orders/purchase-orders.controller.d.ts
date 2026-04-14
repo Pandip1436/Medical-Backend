@@ -22,10 +22,10 @@ export declare class PurchaseOrdersController {
         date: Date;
         status: import(".prisma/client").$Enums.POStatus;
         createdBy: string;
+        poNumber: string;
         supplierName: string;
         totalAmount: import("@prisma/client/runtime/library").Decimal;
         expectedDelivery: Date | null;
-        poNumber: string;
     }>;
     findAll(q?: string): import(".prisma/client").Prisma.PrismaPromise<{
         id: string;
@@ -33,10 +33,10 @@ export declare class PurchaseOrdersController {
         date: Date;
         status: import(".prisma/client").$Enums.POStatus;
         createdBy: string;
+        poNumber: string;
         supplierName: string;
         totalAmount: import("@prisma/client/runtime/library").Decimal;
         expectedDelivery: Date | null;
-        poNumber: string;
     }[]>;
     findOne(id: string): Promise<{
         items: {
@@ -56,10 +56,10 @@ export declare class PurchaseOrdersController {
         date: Date;
         status: import(".prisma/client").$Enums.POStatus;
         createdBy: string;
+        poNumber: string;
         supplierName: string;
         totalAmount: import("@prisma/client/runtime/library").Decimal;
         expectedDelivery: Date | null;
-        poNumber: string;
     }>;
     update(id: string, updatePurchaseOrderDto: UpdatePurchaseOrderDto): Promise<{
         items: {
@@ -79,10 +79,10 @@ export declare class PurchaseOrdersController {
         date: Date;
         status: import(".prisma/client").$Enums.POStatus;
         createdBy: string;
+        poNumber: string;
         supplierName: string;
         totalAmount: import("@prisma/client/runtime/library").Decimal;
         expectedDelivery: Date | null;
-        poNumber: string;
     }>;
     remove(id: string): Promise<{
         id: string;
@@ -90,9 +90,9 @@ export declare class PurchaseOrdersController {
         date: Date;
         status: import(".prisma/client").$Enums.POStatus;
         createdBy: string;
+        poNumber: string;
         supplierName: string;
         totalAmount: import("@prisma/client/runtime/library").Decimal;
         expectedDelivery: Date | null;
-        poNumber: string;
     }>;
 }

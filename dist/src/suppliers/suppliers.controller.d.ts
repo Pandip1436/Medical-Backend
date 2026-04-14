@@ -49,10 +49,10 @@ export declare class SuppliersController {
             date: Date;
             status: import(".prisma/client").$Enums.POStatus;
             createdBy: string;
+            poNumber: string;
             supplierName: string;
             totalAmount: import("@prisma/client/runtime/library").Decimal;
             expectedDelivery: Date | null;
-            poNumber: string;
         }[];
     } & {
         id: string;

@@ -40,22 +40,61 @@ const client_1 = require("@prisma/client");
 const bcrypt = __importStar(require("bcrypt"));
 const dayjs_1 = __importDefault(require("dayjs"));
 const prisma = new client_1.PrismaClient();
+const demoUsers = [
+    {
+        name: 'Super Admin',
+        email: 'admin@pbims.com',
+        phone: '9000000001',
+        password: 'admin123',
+        role: client_1.Role.ADMIN,
+    },
+    {
+        name: 'Ravi Kumar',
+        email: 'pharmacist@pbims.com',
+        phone: '9000000002',
+        password: 'pharma123',
+        role: client_1.Role.PHARMACIST,
+    },
+    {
+        name: 'Kumar Singh',
+        email: 'inventory@pbims.com',
+        phone: '9000000003',
+        password: 'stock123',
+        role: client_1.Role.INVENTORY_MANAGER,
+    },
+    {
+        name: 'Priya Sharma',
+        email: 'accountant@pbims.com',
+        phone: '9000000004',
+        password: 'account123',
+        role: client_1.Role.ACCOUNTANT,
+    },
+];
 async function main() {
-    const adminEmail = 'admin@pbims.com';
-    const existingAdmin = await prisma.user.findUnique({ where: { email: adminEmail } });
-    let admin = existingAdmin;
-    if (!existingAdmin) {
-        const hashedPassword = await bcrypt.hash('admin123', 10);
-        admin = await prisma.user.create({
-            data: {
-                name: 'Super Admin',
-                email: adminEmail,
-                phone: '1234567890',
-                password: hashedPassword,
-                role: client_1.Role.ADMIN,
-            }
-        });
-        console.log('✅ Admin user created');
+    console.log('🌱 Seeding demo users...');
+    let adminUser = null;
+    for (const user of demoUsers) {
+        const existing = await prisma.user.findUnique({ where: { email: user.email } });
+        if (!existing) {
+            const hashedPassword = await bcrypt.hash(user.password, 10);
+            const createdUser = await prisma.user.create({
+                data: {
+                    name: user.name,
+                    email: user.email,
+                    phone: user.phone,
+                    password: hashedPassword,
+                    role: user.role,
+                },
+            });
+            console.log(`✅ Created [${user.role}]: ${user.email} / ${user.password}`);
+            if (user.role === client_1.Role.ADMIN)
+                adminUser = createdUser;
+        }
+        else {
+            console.log(`⏭️  Already exists: ${user.email}`);
+            if (user.role === client_1.Role.ADMIN)
+                adminUser = existing;
+        }
     }
     const suppliers = await Promise.all([
         prisma.supplier.upsert({
@@ -124,7 +163,7 @@ async function main() {
                     paymentMode: client_1.PaymentMode.CASH,
                     status: client_1.InvoiceStatus.PAID,
                     amountPaid: amount,
-                    createdById: admin.id
+                    createdById: adminUser.id
                 }
             });
         }

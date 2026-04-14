@@ -45,7 +45,7 @@ __decorate([
 ], ReportsController.prototype, "getDashboardKpis", null);
 __decorate([
     (0, common_1.Get)('sales/daily'),
-    (0, roles_decorator_1.Roles)('ADMIN', 'PHARMACIST', 'ACCOUNTANT'),
+    (0, roles_decorator_1.Roles)('ADMIN', 'PHARMACIST', 'ACCOUNTANT', 'INVENTORY_MANAGER'),
     (0, swagger_1.ApiOperation)({ summary: 'Get hourly sales for the current day' }),
     __metadata("design:type", Function),
     __metadata("design:paramtypes", []),
@@ -53,7 +53,7 @@ __decorate([
 ], ReportsController.prototype, "getDailySales", null);
 __decorate([
     (0, common_1.Get)('sales/products'),
-    (0, roles_decorator_1.Roles)('ADMIN', 'PHARMACIST', 'INVENTORY_MANAGER'),
+    (0, roles_decorator_1.Roles)('ADMIN', 'PHARMACIST', 'INVENTORY_MANAGER', 'ACCOUNTANT'),
     (0, swagger_1.ApiOperation)({ summary: 'Get sales performance by product' }),
     __metadata("design:type", Function),
     __metadata("design:paramtypes", []),
@@ -61,7 +61,7 @@ __decorate([
 ], ReportsController.prototype, "getProductSales", null);
 __decorate([
     (0, common_1.Get)('inventory/valuation'),
-    (0, roles_decorator_1.Roles)('ADMIN', 'INVENTORY_MANAGER'),
+    (0, roles_decorator_1.Roles)('ADMIN', 'INVENTORY_MANAGER', 'PHARMACIST', 'ACCOUNTANT'),
     (0, swagger_1.ApiOperation)({ summary: 'Get current stock valuation by category' }),
     __metadata("design:type", Function),
     __metadata("design:paramtypes", []),
