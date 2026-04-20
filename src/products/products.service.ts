@@ -163,4 +163,33 @@ export class ProductsService {
 
     return { success: true, batchId, previousQty: batch.quantity, newQty: dto.adjustedQty, diff, reason: dto.reason };
   }
+
+  async bulkAdjustStock(
+    items: { productId: string; batchId: string; adjustedQty: number; reason: string }[],
+    branchId?: string,
+  ) {
+    // Validate all items first before touching the DB
+    const resolved = await Promise.all(
+      items.map(async (item) => {
+        const product = await this.prisma.product.findUnique({ where: { id: item.productId } });
+        if (!product) throw new NotFoundException(`Product ${item.productId} not found`);
+        if (branchId && product.branchId && product.branchId !== branchId) {
+          throw new NotFoundException(`Product ${item.productId} not found`);
+        }
+        const batch = await this.prisma.batch.findFirst({ where: { id: item.batchId, productId: item.productId } });
+        if (!batch) throw new NotFoundException(`Batch ${item.batchId} not found`);
+        return { ...item, previousQty: batch.quantity, diff: item.adjustedQty - batch.quantity };
+      }),
+    );
+
+    // Single atomic transaction — all succeed or all fail
+    await this.prisma.$transaction(
+      resolved.flatMap((item) => [
+        this.prisma.batch.update({ where: { id: item.batchId }, data: { quantity: item.adjustedQty } }),
+        this.prisma.product.update({ where: { id: item.productId }, data: { totalStock: { increment: item.diff } } }),
+      ]),
+    );
+
+    return { success: true, adjusted: resolved.length, items: resolved.map(({ productId, batchId, previousQty, adjustedQty, diff, reason }) => ({ productId, batchId, previousQty, newQty: adjustedQty, diff, reason })) };
+  }
 }

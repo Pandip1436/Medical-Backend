@@ -89,6 +89,16 @@ export class ProductsController {
     return this.productsService.update(id, updateProductDto, req.user.branchId);
   }
 
+  @Post('bulk-adjust')
+  @Roles('ADMIN', 'INVENTORY_MANAGER')
+  @ApiOperation({ summary: 'Atomically adjust stock for multiple batches in one transaction' })
+  bulkAdjust(
+    @Body() body: { items: { productId: string; batchId: string; adjustedQty: number; reason: string }[] },
+    @Request() req: any,
+  ) {
+    return this.productsService.bulkAdjustStock(body.items, req.user.branchId);
+  }
+
   @Patch(':id/batches/:batchId/adjust')
   @Roles('ADMIN', 'INVENTORY_MANAGER')
   @ApiOperation({ summary: 'Adjust stock quantity for a specific batch' })
