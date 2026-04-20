@@ -52,4 +52,4 @@ EXPOSE 8080
 
 # Command to run migrations and then start the server
 # Note: In production, 'prisma migrate deploy' is used for zero-downtime safe migrations
-CMD npx prisma migrate deploy && node dist/main
+CMD npx prisma migrate deploy && node dist/src/main
