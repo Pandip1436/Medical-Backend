@@ -23,6 +23,7 @@ class CreateSupplierDto {
     paymentTerms;
     bankDetails;
     isActive;
+    branchId;
 }
 exports.CreateSupplierDto = CreateSupplierDto;
 __decorate([
@@ -74,4 +75,9 @@ __decorate([
     (0, class_validator_1.IsOptional)(),
     __metadata("design:type", Boolean)
 ], CreateSupplierDto.prototype, "isActive", void 0);
+__decorate([
+    (0, class_validator_1.IsString)(),
+    (0, class_validator_1.IsOptional)(),
+    __metadata("design:type", String)
+], CreateSupplierDto.prototype, "branchId", void 0);
 //# sourceMappingURL=create-supplier.dto.js.map

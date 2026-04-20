@@ -1,8 +1,16 @@
 import { PrismaService } from '../prisma/prisma.service';
+type PeriodQuery = {
+    from?: string;
+    to?: string;
+    branchId?: string;
+};
 export declare class ReportsService {
     private readonly prisma;
     constructor(prisma: PrismaService);
-    getDashboardKpis(): Promise<{
+    private resolvePeriod;
+    private branchFilter;
+    private inr;
+    getDashboardKpis(branchId?: string): Promise<{
         monthlySales: number | import("@prisma/client/runtime/library").Decimal;
         todaysSales: number | import("@prisma/client/runtime/library").Decimal;
         totalOutstanding: number | import("@prisma/client/runtime/library").Decimal;
@@ -11,36 +19,38 @@ export declare class ReportsService {
         totalProducts: number;
         recentInvoices: ({
             items: {
-                quantity: number;
                 productName: string;
+                quantity: number;
             }[];
         } & {
             id: string;
+            branchId: string | null;
             createdAt: Date;
-            type: import(".prisma/client").$Enums.InvoiceType;
             date: Date;
+            subtotal: import("@prisma/client/runtime/library").Decimal;
+            cgst: import("@prisma/client/runtime/library").Decimal;
+            sgst: import("@prisma/client/runtime/library").Decimal;
+            igst: import("@prisma/client/runtime/library").Decimal;
+            status: import(".prisma/client").$Enums.InvoiceStatus;
+            createdById: string;
+            type: import(".prisma/client").$Enums.InvoiceType;
             invoiceNumber: string;
             billingType: import(".prisma/client").$Enums.BillingType;
             customerName: string;
             doctorName: string | null;
-            subtotal: import("@prisma/client/runtime/library").Decimal;
             productDiscount: import("@prisma/client/runtime/library").Decimal;
             taxableAmount: import("@prisma/client/runtime/library").Decimal;
-            cgst: import("@prisma/client/runtime/library").Decimal;
-            sgst: import("@prisma/client/runtime/library").Decimal;
-            igst: import("@prisma/client/runtime/library").Decimal;
             roundOff: import("@prisma/client/runtime/library").Decimal;
             grandTotal: import("@prisma/client/runtime/library").Decimal;
             paymentMode: import(".prisma/client").$Enums.PaymentMode;
             paymentDetails: import("@prisma/client/runtime/library").JsonValue | null;
-            status: import(".prisma/client").$Enums.InvoiceStatus;
             amountPaid: import("@prisma/client/runtime/library").Decimal;
             changeReturned: import("@prisma/client/runtime/library").Decimal;
             customerId: string | null;
-            createdById: string;
+            doctorId: string | null;
         })[];
     }>;
-    getDailySales(): Promise<{
+    getDailySales(branchId?: string): Promise<{
         chartData: {
             hour: string;
             amount: number;
@@ -56,7 +66,28 @@ export declare class ReportsService {
             value: string;
         }[];
     }>;
-    getProductSales(): Promise<{
+    getMonthlySales(year?: string, branchId?: string): Promise<{
+        year: number;
+        chartData: {
+            month: string;
+            amount: number;
+            invoices: number;
+        }[];
+        kpis: {
+            label: string;
+            value: string;
+        }[];
+    }>;
+    getYearlySales(branchId?: string): Promise<{
+        chartData: {
+            year: string;
+            amount: number;
+            invoices: number;
+        }[];
+    }>;
+    getProductSales(query: PeriodQuery & {
+        branchId?: string;
+    }): Promise<{
         chartData: {
             product: string;
             revenue: number;
@@ -74,7 +105,25 @@ export declare class ReportsService {
             value: string;
         }[];
     }>;
-    getStockValuation(): Promise<{
+    getCustomerSales(query: PeriodQuery & {
+        branchId?: string;
+    }): Promise<{
+        chartData: {
+            customer: string;
+            invoices: number;
+            revenue: number;
+        }[];
+        tableData: {
+            customer: string;
+            invoices: number;
+            revenue: number;
+        }[];
+        kpis: {
+            label: string;
+            value: string;
+        }[];
+    }>;
+    getStockValuation(branchId?: string): Promise<{
         chartData: {
             category: string;
             value: number;
@@ -91,4 +140,402 @@ export declare class ReportsService {
             value: string;
         }[];
     }>;
+    getStockMovement(query: PeriodQuery & {
+        branchId?: string;
+    }): Promise<{
+        tableData: {
+            net: number;
+            product: string;
+            inQty: number;
+            outQty: number;
+        }[];
+        kpis: {
+            label: string;
+            value: string;
+        }[];
+    }>;
+    getStockAging(branchId?: string): Promise<{
+        chartData: {
+            bucket: string;
+            value: number;
+        }[];
+        tableData: {
+            product: string;
+            batch: string;
+            qty: number;
+            ageDays: number;
+            bucket: "0-30" | "31-60" | "61-90" | "91-180" | "180+";
+            value: number;
+        }[];
+        kpis: {
+            label: string;
+            value: string;
+        }[];
+    }>;
+    getExpiryReport(branchId?: string): Promise<{
+        tableData: {
+            product: any;
+            batch: any;
+            expiryDate: any;
+            qty: any;
+            mrpValue: number;
+            purchaseValue: number;
+            supplier: any;
+            daysToExpiry: number;
+            status: "EXPIRED" | "NEAR_EXPIRY";
+        }[];
+        kpis: {
+            label: string;
+            value: string;
+        }[];
+    }>;
+    getProfitLoss(query: PeriodQuery & {
+        branchId?: string;
+    }): Promise<{
+        period: {
+            from: Date;
+            to: Date;
+        };
+        lineItems: ({
+            label: string;
+            amount: number;
+            emphasis?: undefined;
+        } | {
+            label: string;
+            amount: number;
+            emphasis: boolean;
+        })[];
+        kpis: {
+            label: string;
+            value: string;
+        }[];
+        extras: {
+            grossPurchases: number;
+            purchaseReturn: number;
+            totalTax: number;
+        };
+    }>;
+    getGstr1Summary(query: PeriodQuery & {
+        branchId?: string;
+    }): Promise<{
+        period: {
+            from: Date;
+            to: Date;
+        };
+        tableData: {
+            gstRate: number;
+            taxable: number;
+            cgst: number;
+            sgst: number;
+            igst: number;
+        }[];
+        totals: {
+            taxable: number;
+            cgst: number;
+            sgst: number;
+            igst: number;
+        };
+        kpis: {
+            label: string;
+            value: string;
+        }[];
+    }>;
+    getGstr3bSummary(query: PeriodQuery & {
+        branchId?: string;
+    }): Promise<{
+        period: {
+            from: Date;
+            to: Date;
+        };
+        outwardSupplies: {
+            taxableValue: number;
+            cgst: number;
+            sgst: number;
+            igst: number;
+            totalTax: number;
+        };
+        inwardSupplies: {
+            totalValue: number;
+        };
+        kpis: {
+            label: string;
+            value: string;
+        }[];
+    }>;
+    getHsnSummary(query: PeriodQuery & {
+        branchId?: string;
+    }): Promise<{
+        period: {
+            from: Date;
+            to: Date;
+        };
+        tableData: {
+            hsn: string;
+            uqc: string;
+            qty: number;
+            taxable: number;
+            gstRate: number;
+            tax: number;
+        }[];
+        totals: {
+            taxable: number;
+            tax: number;
+            qty: number;
+        };
+        kpis: {
+            label: string;
+            value: string;
+        }[];
+    }>;
+    getCashBook(query: PeriodQuery & {
+        branchId?: string;
+    }): Promise<{
+        period: {
+            from: Date;
+            to: Date;
+        };
+        tableData: ({
+            balance: number;
+            date: Date;
+            ref: string;
+            description: string;
+            amount: number;
+            type: "RECEIPT";
+        } | {
+            balance: number;
+            date: Date;
+            ref: string;
+            description: string;
+            amount: number;
+            type: "PAYMENT";
+        })[];
+        kpis: {
+            label: string;
+            value: string;
+        }[];
+    }>;
+    getCustomerLedger(customerId: string, query: PeriodQuery): Promise<{
+        customer: null;
+        tableData: never[];
+        kpis: never[];
+    } | {
+        customer: {
+            id: string;
+            email: string | null;
+            name: string;
+            phone: string;
+            branchId: string | null;
+            createdAt: Date;
+            notes: string | null;
+            address: string | null;
+            gstin: string | null;
+            alternatePhone: string | null;
+            type: import(".prisma/client").$Enums.CustomerType;
+            doctorRef: string | null;
+            creditLimit: import("@prisma/client/runtime/library").Decimal;
+            currentOutstanding: import("@prisma/client/runtime/library").Decimal;
+            loyaltyPoints: number;
+            dlNumber: string | null;
+        };
+        tableData: {
+            balance: number;
+            date: Date;
+            ref: string;
+            description: string;
+            debit: number;
+            credit: number;
+        }[];
+        kpis: {
+            label: string;
+            value: string;
+        }[];
+    }>;
+    getSupplierLedger(supplierId: string, query: PeriodQuery): Promise<{
+        supplier: null;
+        tableData: never[];
+        kpis: never[];
+    } | {
+        supplier: {
+            id: string;
+            email: string;
+            name: string;
+            phone: string;
+            isActive: boolean;
+            branchId: string | null;
+            address: string;
+            gstin: string;
+            drugLicense: string;
+            contactPerson: string;
+            paymentTerms: import(".prisma/client").$Enums.PaymentTerms;
+            bankDetails: string | null;
+        };
+        tableData: {
+            date: string;
+            balance: number;
+            ref: string;
+            description: string;
+            debit: number;
+            credit: number;
+        }[];
+        kpis: {
+            label: string;
+            value: string;
+        }[];
+    }>;
+    getPurchaseSummary(query: PeriodQuery & {
+        branchId?: string;
+    }): Promise<{
+        tableData: {
+            date: Date;
+            grnNumber: string;
+            supplier: string;
+            items: number;
+            amount: number;
+        }[];
+        chartData: {
+            month: string;
+            amount: number;
+        }[];
+        kpis: {
+            label: string;
+            value: string;
+        }[];
+    }>;
+    getSupplierPurchase(query: PeriodQuery & {
+        branchId?: string;
+    }): Promise<{
+        chartData: {
+            supplier: string;
+            grns: number;
+            amount: number;
+        }[];
+        tableData: {
+            supplier: string;
+            grns: number;
+            amount: number;
+        }[];
+        kpis: {
+            label: string;
+            value: string;
+        }[];
+    }>;
+    getPurchaseVsSales(query: PeriodQuery & {
+        branchId?: string;
+    }): Promise<{
+        chartData: {
+            month: string;
+            sales: number;
+            purchases: number;
+        }[];
+        tableData: {
+            month: string;
+            sales: number;
+            purchases: number;
+        }[];
+        kpis: {
+            label: string;
+            value: string;
+        }[];
+    }>;
+    getCategorySales(query: PeriodQuery & {
+        branchId?: string;
+    }): Promise<{
+        chartData: {
+            category: string;
+            qty: number;
+            revenue: number;
+        }[];
+        tableData: {
+            category: string;
+            qty: number;
+            revenue: number;
+        }[];
+        kpis: {
+            label: string;
+            value: string;
+        }[];
+    }>;
+    getCurrentStock(branchId?: string): Promise<{
+        chartData: {
+            product: string;
+            stock: number;
+        }[];
+        tableData: {
+            product: string;
+            category: import(".prisma/client").$Enums.ProductCategory;
+            totalStock: number;
+            minStock: number;
+            mrp: number;
+            status: string;
+        }[];
+        kpis: {
+            label: string;
+            value: string;
+        }[];
+    }>;
+    getAbcAnalysis(query: PeriodQuery & {
+        branchId?: string;
+    }): Promise<{
+        chartData: {
+            category: string;
+            count: number;
+            revenue: number;
+        }[];
+        tableData: {
+            cumPct: number;
+            abc: string;
+            product: string;
+            revenue: number;
+        }[];
+        kpis: {
+            label: string;
+            value: string;
+        }[];
+    }>;
+    getExpenseReport(query: PeriodQuery & {
+        branchId?: string;
+    }): Promise<{
+        chartData: {
+            category: string;
+            amount: number;
+            count: number;
+        }[];
+        tableData: {
+            date: Date;
+            category: string;
+            description: string;
+            amount: number;
+            paymentMode: string;
+        }[];
+        kpis: {
+            label: string;
+            value: string;
+        }[];
+    }>;
+    getOutstanding(branchId?: string): Promise<{
+        tableData: {
+            current: number;
+            '0-30': number;
+            '31-60': number;
+            '61-90': number;
+            '90+': number;
+            customerId: string;
+            customer: string;
+            phone: string;
+            creditLimit: number;
+            outstanding: number;
+        }[];
+        agingSummary: {
+            current: number;
+            '0-30': number;
+            '31-60': number;
+            '61-90': number;
+            '90+': number;
+        };
+        kpis: {
+            label: string;
+            value: string;
+        }[];
+    }>;
 }
+export {};

@@ -14,6 +14,8 @@ var __param = (this && this.__param) || function (paramIndex, decorator) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.ProductsController = void 0;
 const common_1 = require("@nestjs/common");
+const platform_express_1 = require("@nestjs/platform-express");
+const multer_1 = require("multer");
 const products_service_1 = require("./products.service");
 const create_product_dto_1 = require("./dto/create-product.dto");
 const update_product_dto_1 = require("./dto/update-product.dto");
@@ -26,40 +28,87 @@ let ProductsController = class ProductsController {
     constructor(productsService) {
         this.productsService = productsService;
     }
-    create(createProductDto) {
-        return this.productsService.create(createProductDto);
+    importCsv(file, req, branchId) {
+        if (!file)
+            throw new common_1.BadRequestException('No file uploaded');
+        if (!file.originalname.endsWith('.csv') && file.mimetype !== 'text/csv') {
+            throw new common_1.BadRequestException('Only CSV files are accepted');
+        }
+        const effectiveBranchId = req.user.branchId ?? branchId;
+        return this.productsService.importCsv(file.buffer, effectiveBranchId);
     }
-    findAll(q) {
-        return this.productsService.findAll(q);
+    create(createProductDto, req, branchId) {
+        const effectiveBranchId = req.user.branchId ?? branchId ?? createProductDto['branchId'];
+        return this.productsService.create({ ...createProductDto, branchId: effectiveBranchId });
     }
-    findOne(id) {
-        return this.productsService.findOne(id);
+    findAll(req, q, category, schedule, skip, take, branchId) {
+        const effectiveBranchId = req.user.branchId ?? branchId;
+        return this.productsService.findAll({
+            query: q,
+            category,
+            schedule,
+            skip: skip !== undefined ? Number(skip) : undefined,
+            take: take !== undefined ? Number(take) : undefined,
+            branchId: effectiveBranchId,
+        });
     }
-    update(id, updateProductDto) {
-        return this.productsService.update(id, updateProductDto);
+    findOne(id, req) {
+        return this.productsService.findOne(id, req.user.branchId);
     }
-    remove(id) {
-        return this.productsService.remove(id);
+    update(id, updateProductDto, req) {
+        return this.productsService.update(id, updateProductDto, req.user.branchId);
+    }
+    adjust(id, batchId, body, req) {
+        return this.productsService.adjustBatchStock(id, batchId, body, req.user.branchId);
+    }
+    remove(id, req) {
+        return this.productsService.remove(id, req.user.branchId);
     }
 };
 exports.ProductsController = ProductsController;
 __decorate([
+    (0, common_1.Post)('import-csv'),
+    (0, roles_decorator_1.Roles)('ADMIN', 'INVENTORY_MANAGER'),
+    (0, swagger_1.ApiOperation)({ summary: 'Bulk import products from a CSV file' }),
+    (0, swagger_1.ApiConsumes)('multipart/form-data'),
+    (0, common_1.UseInterceptors)((0, platform_express_1.FileInterceptor)('file', { storage: (0, multer_1.memoryStorage)() })),
+    __param(0, (0, common_1.UploadedFile)()),
+    __param(1, (0, common_1.Request)()),
+    __param(2, (0, common_1.Query)('branchId')),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, Object, String]),
+    __metadata("design:returntype", void 0)
+], ProductsController.prototype, "importCsv", null);
+__decorate([
     (0, common_1.Post)(),
     (0, roles_decorator_1.Roles)('ADMIN', 'PHARMACIST', 'INVENTORY_MANAGER'),
-    (0, swagger_1.ApiOperation)({ summary: 'Create a new product master record' }),
+    (0, swagger_1.ApiOperation)({ summary: 'Create a new product' }),
     __param(0, (0, common_1.Body)()),
+    __param(1, (0, common_1.Request)()),
+    __param(2, (0, common_1.Query)('branchId')),
     __metadata("design:type", Function),
-    __metadata("design:paramtypes", [create_product_dto_1.CreateProductDto]),
+    __metadata("design:paramtypes", [create_product_dto_1.CreateProductDto, Object, String]),
     __metadata("design:returntype", void 0)
 ], ProductsController.prototype, "create", null);
 __decorate([
     (0, common_1.Get)(),
     (0, roles_decorator_1.Roles)('ADMIN', 'PHARMACIST', 'INVENTORY_MANAGER', 'ACCOUNTANT'),
-    (0, swagger_1.ApiOperation)({ summary: 'Get all products or search by term' }),
-    (0, swagger_1.ApiQuery)({ name: 'q', required: false, description: 'Search term for name or barcode' }),
-    __param(0, (0, common_1.Query)('q')),
+    (0, swagger_1.ApiOperation)({ summary: 'Get all products for a branch (paginated when skip/take provided)' }),
+    (0, swagger_1.ApiQuery)({ name: 'q', required: false }),
+    (0, swagger_1.ApiQuery)({ name: 'category', required: false }),
+    (0, swagger_1.ApiQuery)({ name: 'schedule', required: false }),
+    (0, swagger_1.ApiQuery)({ name: 'skip', required: false }),
+    (0, swagger_1.ApiQuery)({ name: 'take', required: false }),
+    (0, swagger_1.ApiQuery)({ name: 'branchId', required: false }),
+    __param(0, (0, common_1.Request)()),
+    __param(1, (0, common_1.Query)('q')),
+    __param(2, (0, common_1.Query)('category')),
+    __param(3, (0, common_1.Query)('schedule')),
+    __param(4, (0, common_1.Query)('skip')),
+    __param(5, (0, common_1.Query)('take')),
+    __param(6, (0, common_1.Query)('branchId')),
     __metadata("design:type", Function),
-    __metadata("design:paramtypes", [String]),
+    __metadata("design:paramtypes", [Object, String, String, String, String, String, String]),
     __metadata("design:returntype", void 0)
 ], ProductsController.prototype, "findAll", null);
 __decorate([
@@ -67,27 +116,42 @@ __decorate([
     (0, roles_decorator_1.Roles)('ADMIN', 'PHARMACIST', 'INVENTORY_MANAGER'),
     (0, swagger_1.ApiOperation)({ summary: 'Get product details by ID including batches' }),
     __param(0, (0, common_1.Param)('id')),
+    __param(1, (0, common_1.Request)()),
     __metadata("design:type", Function),
-    __metadata("design:paramtypes", [String]),
+    __metadata("design:paramtypes", [String, Object]),
     __metadata("design:returntype", void 0)
 ], ProductsController.prototype, "findOne", null);
 __decorate([
     (0, common_1.Patch)(':id'),
     (0, roles_decorator_1.Roles)('ADMIN', 'INVENTORY_MANAGER'),
-    (0, swagger_1.ApiOperation)({ summary: 'Update a product (Admin/Inventory Manager only)' }),
+    (0, swagger_1.ApiOperation)({ summary: 'Update a product' }),
     __param(0, (0, common_1.Param)('id')),
     __param(1, (0, common_1.Body)()),
+    __param(2, (0, common_1.Request)()),
     __metadata("design:type", Function),
-    __metadata("design:paramtypes", [String, update_product_dto_1.UpdateProductDto]),
+    __metadata("design:paramtypes", [String, update_product_dto_1.UpdateProductDto, Object]),
     __metadata("design:returntype", void 0)
 ], ProductsController.prototype, "update", null);
+__decorate([
+    (0, common_1.Patch)(':id/batches/:batchId/adjust'),
+    (0, roles_decorator_1.Roles)('ADMIN', 'INVENTORY_MANAGER'),
+    (0, swagger_1.ApiOperation)({ summary: 'Adjust stock quantity for a specific batch' }),
+    __param(0, (0, common_1.Param)('id')),
+    __param(1, (0, common_1.Param)('batchId')),
+    __param(2, (0, common_1.Body)()),
+    __param(3, (0, common_1.Request)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [String, String, Object, Object]),
+    __metadata("design:returntype", void 0)
+], ProductsController.prototype, "adjust", null);
 __decorate([
     (0, common_1.Delete)(':id'),
     (0, roles_decorator_1.Roles)('ADMIN'),
     (0, swagger_1.ApiOperation)({ summary: 'Delete a product (Admin only)' }),
     __param(0, (0, common_1.Param)('id')),
+    __param(1, (0, common_1.Request)()),
     __metadata("design:type", Function),
-    __metadata("design:paramtypes", [String]),
+    __metadata("design:paramtypes", [String, Object]),
     __metadata("design:returntype", void 0)
 ], ProductsController.prototype, "remove", null);
 exports.ProductsController = ProductsController = __decorate([

@@ -18,51 +18,50 @@ let SuppliersService = class SuppliersService {
         this.prisma = prisma;
     }
     create(createSupplierDto) {
-        return this.prisma.supplier.create({
-            data: createSupplierDto,
-        });
+        return this.prisma.supplier.create({ data: createSupplierDto });
     }
-    findAll(query) {
-        if (query) {
-            return this.prisma.supplier.findMany({
-                where: {
-                    OR: [
-                        { name: { contains: query, mode: 'insensitive' } },
-                        { gstin: { contains: query, mode: 'insensitive' } },
-                        { phone: { contains: query } },
-                    ],
-                },
+    findAll(query, branchId) {
+        const where = { AND: [] };
+        if (branchId && branchId !== 'all') {
+            where.AND.push({
+                OR: [{ branchId }, { branchId: null }],
             });
         }
-        return this.prisma.supplier.findMany();
+        if (query) {
+            where.AND.push({
+                OR: [
+                    { name: { contains: query, mode: 'insensitive' } },
+                    { gstin: { contains: query, mode: 'insensitive' } },
+                    { phone: { contains: query } },
+                ],
+            });
+        }
+        if (where.AND.length === 0)
+            delete where.AND;
+        return this.prisma.supplier.findMany({ where });
     }
-    async findOne(id) {
+    async findOne(id, branchId) {
         const supplier = await this.prisma.supplier.findUnique({
             where: { id },
             include: {
                 batches: true,
-                purchaseOrders: {
-                    take: 10,
-                    orderBy: { date: 'desc' },
-                },
+                purchaseOrders: { take: 10, orderBy: { date: 'desc' } },
             },
         });
         if (!supplier)
             throw new common_1.NotFoundException('Supplier not found');
+        if (branchId && supplier.branchId && supplier.branchId !== branchId) {
+            throw new common_1.NotFoundException('Supplier not found');
+        }
         return supplier;
     }
-    async update(id, updateSupplierDto) {
-        await this.findOne(id);
-        return this.prisma.supplier.update({
-            where: { id },
-            data: updateSupplierDto,
-        });
+    async update(id, updateSupplierDto, branchId) {
+        await this.findOne(id, branchId);
+        return this.prisma.supplier.update({ where: { id }, data: updateSupplierDto });
     }
-    async remove(id) {
-        await this.findOne(id);
-        return this.prisma.supplier.delete({
-            where: { id },
-        });
+    async remove(id, branchId) {
+        await this.findOne(id, branchId);
+        return this.prisma.supplier.delete({ where: { id } });
     }
 };
 exports.SuppliersService = SuppliersService;

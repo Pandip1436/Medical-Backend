@@ -7,4 +7,5 @@ export declare class CreatePurchaseOrderDto {
     totalAmount: number;
     status: POStatus;
     expectedDelivery?: string;
+    branchId?: string;
 }

@@ -12,6 +12,12 @@ export declare class AuthController {
                 name: string;
                 email: string;
                 role: import(".prisma/client").$Enums.Role;
+                branchId: string | null;
+                branch: {
+                    id: string;
+                    name: string;
+                    code: string;
+                } | null;
             };
             accessToken: {
                 token: string;
@@ -41,5 +47,6 @@ export declare class AuthController {
         name: string;
         role: import(".prisma/client").$Enums.Role;
         isActive: boolean;
+        branchId: string | null;
     } | null>;
 }

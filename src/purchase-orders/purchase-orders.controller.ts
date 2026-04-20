@@ -18,35 +18,38 @@ export class PurchaseOrdersController {
   @Roles('ADMIN', 'INVENTORY_MANAGER')
   @ApiOperation({ summary: 'Create a new Purchase Order' })
   create(@Body() createPurchaseOrderDto: CreatePurchaseOrderDto, @Request() req: any) {
-    return this.poService.create(createPurchaseOrderDto, req.user.userId);
+    const effectiveBranchId = req.user.branchId ?? createPurchaseOrderDto.branchId;
+    return this.poService.create(createPurchaseOrderDto, req.user.userId, effectiveBranchId);
   }
 
   @Get()
   @Roles('ADMIN', 'INVENTORY_MANAGER', 'PHARMACIST', 'ACCOUNTANT')
   @ApiOperation({ summary: 'List all Purchase Orders or search' })
+  @ApiQuery({ name: 'branchId', required: false })
   @ApiQuery({ name: 'q', required: false, description: 'Search term for PO number or supplier' })
-  findAll(@Query('q') q?: string) {
-    return this.poService.findAll(q);
+  findAll(@Request() req: any, @Query('q') q?: string, @Query('branchId') branchId?: string) {
+    const effectiveBranchId = req.user.branchId ?? branchId;
+    return this.poService.findAll(q, effectiveBranchId);
   }
 
   @Get(':id')
   @Roles('ADMIN', 'INVENTORY_MANAGER', 'PHARMACIST', 'ACCOUNTANT')
   @ApiOperation({ summary: 'Get specific Purchase Order details' })
-  findOne(@Param('id') id: string) {
-    return this.poService.findOne(id);
+  findOne(@Param('id') id: string, @Request() req: any) {
+    return this.poService.findOne(id, req.user.branchId);
   }
 
   @Patch(':id')
   @Roles('ADMIN', 'INVENTORY_MANAGER')
   @ApiOperation({ summary: 'Update a Purchase Order' })
-  update(@Param('id') id: string, @Body() updatePurchaseOrderDto: UpdatePurchaseOrderDto) {
-    return this.poService.update(id, updatePurchaseOrderDto);
+  update(@Param('id') id: string, @Body() updatePurchaseOrderDto: UpdatePurchaseOrderDto, @Request() req: any) {
+    return this.poService.update(id, updatePurchaseOrderDto, req.user.branchId);
   }
 
   @Delete(':id')
   @Roles('ADMIN', 'INVENTORY_MANAGER')
   @ApiOperation({ summary: 'Delete a Purchase Order' })
-  remove(@Param('id') id: string) {
-    return this.poService.remove(id);
+  remove(@Param('id') id: string, @Request() req: any) {
+    return this.poService.remove(id, req.user.branchId);
   }
 }

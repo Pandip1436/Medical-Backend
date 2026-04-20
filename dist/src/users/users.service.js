@@ -70,13 +70,19 @@ let UsersService = class UsersService {
                 role: true,
                 phone: true,
                 isActive: true,
+                branchId: true,
+                branch: { select: { id: true, name: true, code: true } },
                 createdAt: true,
                 lastLogin: true,
             }
         });
     }
-    findAll() {
+    findAll(branchId) {
+        const where = {};
+        if (branchId)
+            where.branchId = branchId;
         return this.prisma.user.findMany({
+            where,
             select: {
                 id: true,
                 name: true,
@@ -84,11 +90,13 @@ let UsersService = class UsersService {
                 role: true,
                 phone: true,
                 isActive: true,
+                branchId: true,
+                branch: { select: { id: true, name: true, code: true } },
                 lastLogin: true,
             }
         });
     }
-    async findOne(id) {
+    async findOne(id, branchId) {
         const user = await this.prisma.user.findUnique({
             where: { id },
             select: {
@@ -98,16 +106,21 @@ let UsersService = class UsersService {
                 role: true,
                 phone: true,
                 isActive: true,
+                branchId: true,
+                branch: { select: { id: true, name: true, code: true } },
                 createdAt: true,
                 lastLogin: true,
             }
         });
         if (!user)
             throw new common_1.NotFoundException('User not found');
+        if (branchId && user.branchId && user.branchId !== branchId) {
+            throw new common_1.NotFoundException('User not found');
+        }
         return user;
     }
-    async update(id, updateUserDto) {
-        await this.findOne(id);
+    async update(id, updateUserDto, branchId) {
+        await this.findOne(id, branchId);
         let updateData = { ...updateUserDto };
         if (updateUserDto.password) {
             updateData.password = await bcrypt.hash(updateUserDto.password, 10);
@@ -122,11 +135,13 @@ let UsersService = class UsersService {
                 role: true,
                 phone: true,
                 isActive: true,
+                branchId: true,
+                branch: { select: { id: true, name: true, code: true } },
             }
         });
     }
-    async remove(id) {
-        await this.findOne(id);
+    async remove(id, branchId) {
+        await this.findOne(id, branchId);
         return this.prisma.user.delete({
             where: { id },
         });

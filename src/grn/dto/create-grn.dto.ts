@@ -39,4 +39,7 @@ export class CreateGrnDto {
 
   @IsEnum(GRNStatus)
   status: GRNStatus;
+  @IsString()
+  @IsOptional()
+  branchId?: string;
 }

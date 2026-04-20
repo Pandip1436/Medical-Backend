@@ -21,7 +21,11 @@ export class CreateUserDto {
 
   @IsEnum(Role)
   role: Role;
-  
+
+  @IsString()
+  @IsOptional()
+  branchId?: string;
+
   @IsBoolean()
   @IsOptional()
   isActive?: boolean;

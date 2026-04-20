@@ -25,14 +25,16 @@ let GrnController = class GrnController {
     constructor(grnService) {
         this.grnService = grnService;
     }
-    create(createGrnDto) {
-        return this.grnService.create(createGrnDto);
+    create(createGrnDto, req) {
+        const effectiveBranchId = req.user.branchId ?? createGrnDto.branchId;
+        return this.grnService.create(createGrnDto, effectiveBranchId);
     }
-    findAll(q) {
-        return this.grnService.findAll(q);
+    findAll(req, q, branchId) {
+        const effectiveBranchId = req.user.branchId ?? branchId;
+        return this.grnService.findAll(q, effectiveBranchId);
     }
-    findOne(id) {
-        return this.grnService.findOne(id);
+    findOne(id, req) {
+        return this.grnService.findOne(id, req.user.branchId);
     }
 };
 exports.GrnController = GrnController;
@@ -41,18 +43,22 @@ __decorate([
     (0, roles_decorator_1.Roles)('ADMIN', 'INVENTORY_MANAGER'),
     (0, swagger_1.ApiOperation)({ summary: 'Create a new Goods Receipt Note and spawn batches' }),
     __param(0, (0, common_1.Body)()),
+    __param(1, (0, common_1.Request)()),
     __metadata("design:type", Function),
-    __metadata("design:paramtypes", [create_grn_dto_1.CreateGrnDto]),
+    __metadata("design:paramtypes", [create_grn_dto_1.CreateGrnDto, Object]),
     __metadata("design:returntype", void 0)
 ], GrnController.prototype, "create", null);
 __decorate([
     (0, common_1.Get)(),
     (0, roles_decorator_1.Roles)('ADMIN', 'INVENTORY_MANAGER', 'PHARMACIST', 'ACCOUNTANT'),
     (0, swagger_1.ApiOperation)({ summary: 'List all GRNs or search' }),
+    (0, swagger_1.ApiQuery)({ name: 'branchId', required: false }),
     (0, swagger_1.ApiQuery)({ name: 'q', required: false, description: 'Search term for GRN number or supplier' }),
-    __param(0, (0, common_1.Query)('q')),
+    __param(0, (0, common_1.Request)()),
+    __param(1, (0, common_1.Query)('q')),
+    __param(2, (0, common_1.Query)('branchId')),
     __metadata("design:type", Function),
-    __metadata("design:paramtypes", [String]),
+    __metadata("design:paramtypes", [Object, String, String]),
     __metadata("design:returntype", void 0)
 ], GrnController.prototype, "findAll", null);
 __decorate([
@@ -60,8 +66,9 @@ __decorate([
     (0, roles_decorator_1.Roles)('ADMIN', 'INVENTORY_MANAGER', 'PHARMACIST', 'ACCOUNTANT'),
     (0, swagger_1.ApiOperation)({ summary: 'Get specific GRN details' }),
     __param(0, (0, common_1.Param)('id')),
+    __param(1, (0, common_1.Request)()),
     __metadata("design:type", Function),
-    __metadata("design:paramtypes", [String]),
+    __metadata("design:paramtypes", [String, Object]),
     __metadata("design:returntype", void 0)
 ], GrnController.prototype, "findOne", null);
 exports.GrnController = GrnController = __decorate([

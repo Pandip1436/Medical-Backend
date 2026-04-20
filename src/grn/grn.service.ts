@@ -6,15 +6,16 @@ import { CreateGrnDto } from './dto/create-grn.dto';
 export class GrnService {
   constructor(private readonly prisma: PrismaService) {}
 
-  async create(createGrnDto: CreateGrnDto) {
+  async create(createGrnDto: CreateGrnDto, branchId?: string) {
+    const effectiveBranchId = branchId ?? createGrnDto.branchId;
     return this.prisma.$transaction(async (tx) => {
       // 1. Generate unique GRN number
       const grnNumber = `GRN-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
 
       // 2. Loop through GRN items and process Stock and Batches
       for (const item of createGrnDto.items) {
-        // Calculate the valid stock addition
-        const addedStock = item.receivedQty + item.freeQty - item.damageQty;
+        // Calculate the valid stock addition (We do NOT subtract damageQty here, because damaged goods must formally pass through Purchase Returns to generate a Debit Note)
+        const addedStock = item.receivedQty + item.freeQty;
         
         if (addedStock > 0) {
           // A. Create a new Batch mapped to this GRN and Product
@@ -55,6 +56,7 @@ export class GrnService {
           supplierInvoiceAmount: createGrnDto.supplierInvoiceAmount,
           totalAmount: createGrnDto.totalAmount,
           status: createGrnDto.status,
+          branchId: effectiveBranchId,
           items: {
             create: createGrnDto.items.map(item => ({
               productId: item.productId,
@@ -86,28 +88,28 @@ export class GrnService {
     });
   }
 
-  findAll(query?: string) {
+  findAll(query?: string, branchId?: string) {
+    const where: any = {};
+    if (branchId) where.branchId = branchId;
     if (query) {
-      return this.prisma.gRN.findMany({
-        where: {
-          OR: [
-            { grnNumber: { contains: query, mode: 'insensitive' } },
-            { supplierName: { contains: query, mode: 'insensitive' } },
-            { supplierInvoiceNo: { contains: query, mode: 'insensitive' } },
-          ],
-        },
-        orderBy: { date: 'desc' },
-      });
+      where.OR = [
+        { grnNumber: { contains: query, mode: 'insensitive' } },
+        { supplierName: { contains: query, mode: 'insensitive' } },
+        { supplierInvoiceNo: { contains: query, mode: 'insensitive' } },
+      ];
     }
-    return this.prisma.gRN.findMany({ orderBy: { date: 'desc' } });
+    return this.prisma.gRN.findMany({ where, include: { items: true }, orderBy: { date: 'desc' } });
   }
 
-  async findOne(id: string) {
+  async findOne(id: string, branchId?: string) {
     const grn = await this.prisma.gRN.findUnique({
       where: { id },
       include: { items: true }
     });
     if (!grn) throw new NotFoundException('GRN not found');
+    if (branchId && grn.branchId && grn.branchId !== branchId) {
+      throw new NotFoundException('GRN not found');
+    }
     return grn;
   }
 }

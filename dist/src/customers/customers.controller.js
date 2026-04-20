@@ -26,20 +26,25 @@ let CustomersController = class CustomersController {
     constructor(customersService) {
         this.customersService = customersService;
     }
-    create(createCustomerDto) {
-        return this.customersService.create(createCustomerDto);
+    create(createCustomerDto, req, branchId) {
+        const effectiveBranchId = req.user.branchId ?? branchId;
+        return this.customersService.create({ ...createCustomerDto, branchId: effectiveBranchId });
     }
-    findAll(q) {
-        return this.customersService.findAll(q);
+    findAll(req, q, branchId) {
+        const effectiveBranchId = req.user.branchId ?? branchId;
+        return this.customersService.findAll(q, effectiveBranchId);
     }
-    findOne(id) {
-        return this.customersService.findOne(id);
+    findOne(id, req) {
+        return this.customersService.findOne(id, req.user.branchId);
     }
-    update(id, updateCustomerDto) {
-        return this.customersService.update(id, updateCustomerDto);
+    update(id, updateCustomerDto, req) {
+        return this.customersService.update(id, updateCustomerDto, req.user.branchId);
     }
-    remove(id) {
-        return this.customersService.remove(id);
+    recordPayment(id, body, req) {
+        return this.customersService.recordPayment(id, body.amount, body.paymentMode, body.referenceNumber, req.user.branchId);
+    }
+    remove(id, req) {
+        return this.customersService.remove(id, req.user.branchId);
     }
 };
 exports.CustomersController = CustomersController;
@@ -48,18 +53,23 @@ __decorate([
     (0, roles_decorator_1.Roles)('ADMIN', 'PHARMACIST'),
     (0, swagger_1.ApiOperation)({ summary: 'Create a new customer profile' }),
     __param(0, (0, common_1.Body)()),
+    __param(1, (0, common_1.Request)()),
+    __param(2, (0, common_1.Query)('branchId')),
     __metadata("design:type", Function),
-    __metadata("design:paramtypes", [create_customer_dto_1.CreateCustomerDto]),
+    __metadata("design:paramtypes", [create_customer_dto_1.CreateCustomerDto, Object, String]),
     __metadata("design:returntype", void 0)
 ], CustomersController.prototype, "create", null);
 __decorate([
     (0, common_1.Get)(),
     (0, roles_decorator_1.Roles)('ADMIN', 'PHARMACIST', 'ACCOUNTANT'),
-    (0, swagger_1.ApiOperation)({ summary: 'Get all customers or search by name/phone' }),
-    (0, swagger_1.ApiQuery)({ name: 'q', required: false, description: 'Search term' }),
-    __param(0, (0, common_1.Query)('q')),
+    (0, swagger_1.ApiOperation)({ summary: 'Get all customers for a branch or search by name/phone' }),
+    (0, swagger_1.ApiQuery)({ name: 'q', required: false }),
+    (0, swagger_1.ApiQuery)({ name: 'branchId', required: false }),
+    __param(0, (0, common_1.Request)()),
+    __param(1, (0, common_1.Query)('q')),
+    __param(2, (0, common_1.Query)('branchId')),
     __metadata("design:type", Function),
-    __metadata("design:paramtypes", [String]),
+    __metadata("design:paramtypes", [Object, String, String]),
     __metadata("design:returntype", void 0)
 ], CustomersController.prototype, "findAll", null);
 __decorate([
@@ -67,8 +77,9 @@ __decorate([
     (0, roles_decorator_1.Roles)('ADMIN', 'PHARMACIST', 'ACCOUNTANT'),
     (0, swagger_1.ApiOperation)({ summary: 'Get customer details including prescriptions and recent invoices' }),
     __param(0, (0, common_1.Param)('id')),
+    __param(1, (0, common_1.Request)()),
     __metadata("design:type", Function),
-    __metadata("design:paramtypes", [String]),
+    __metadata("design:paramtypes", [String, Object]),
     __metadata("design:returntype", void 0)
 ], CustomersController.prototype, "findOne", null);
 __decorate([
@@ -77,17 +88,30 @@ __decorate([
     (0, swagger_1.ApiOperation)({ summary: 'Update customer details' }),
     __param(0, (0, common_1.Param)('id')),
     __param(1, (0, common_1.Body)()),
+    __param(2, (0, common_1.Request)()),
     __metadata("design:type", Function),
-    __metadata("design:paramtypes", [String, update_customer_dto_1.UpdateCustomerDto]),
+    __metadata("design:paramtypes", [String, update_customer_dto_1.UpdateCustomerDto, Object]),
     __metadata("design:returntype", void 0)
 ], CustomersController.prototype, "update", null);
+__decorate([
+    (0, common_1.Post)(':id/payment'),
+    (0, roles_decorator_1.Roles)('ADMIN', 'PHARMACIST', 'ACCOUNTANT'),
+    (0, swagger_1.ApiOperation)({ summary: 'Record a payment against customer outstanding balance' }),
+    __param(0, (0, common_1.Param)('id')),
+    __param(1, (0, common_1.Body)()),
+    __param(2, (0, common_1.Request)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [String, Object, Object]),
+    __metadata("design:returntype", void 0)
+], CustomersController.prototype, "recordPayment", null);
 __decorate([
     (0, common_1.Delete)(':id'),
     (0, roles_decorator_1.Roles)('ADMIN'),
     (0, swagger_1.ApiOperation)({ summary: 'Delete a customer (Admin only)' }),
     __param(0, (0, common_1.Param)('id')),
+    __param(1, (0, common_1.Request)()),
     __metadata("design:type", Function),
-    __metadata("design:paramtypes", [String]),
+    __metadata("design:paramtypes", [String, Object]),
     __metadata("design:returntype", void 0)
 ], CustomersController.prototype, "remove", null);
 exports.CustomersController = CustomersController = __decorate([

@@ -7,6 +7,33 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+// ── Branch / Location ─────────────────────────────────────────
+model Branch {
+  id          String    @id @default(cuid())
+  name        String
+  code        String    @unique  // short code e.g. "HQ", "BR1"
+  address     String?
+  phone       String?
+  email       String?
+  gstin       String?
+  drugLicense String?
+  isActive    Boolean   @default(true)
+  isDefault   Boolean   @default(false)
+  createdAt   DateTime  @default(now())
+  users           User[]
+  invoices        Invoice[]
+  expenses        Expense[]
+  purchaseOrders  PurchaseOrder[]
+  grns            GRN[]
+  creditNotes     CreditNote[]
+  purchaseReturns PurchaseReturn[]
+  products        Product[]
+  customers       Customer[]
+  suppliers       Supplier[]
+  doctors         Doctor[]
+  prescriptions   Prescription[]
+}
+
 // ── Users & Auth ──────────────────────────────────────────────
 model User {
   id          String    @id @default(cuid())
@@ -17,6 +44,8 @@ model User {
   role        Role      @default(PHARMACIST)
   isActive    Boolean   @default(true)
   lastLogin   DateTime?
+  branchId    String?
+  branch      Branch?   @relation(fields: [branchId], references: [id])
   createdAt   DateTime  @default(now())
   invoices    Invoice[]
   auditLogs   AuditLog[]
@@ -45,9 +74,12 @@ model Customer {
   gstin              String?
   dlNumber           String?
   notes              String?
+  branchId           String?
+  branch             Branch?        @relation(fields: [branchId], references: [id])
   createdAt          DateTime       @default(now())
   invoices           Invoice[]
   prescriptions      Prescription[]
+  creditNotes        CreditNote[]
 }
 
 enum CustomerType {
@@ -61,6 +93,8 @@ enum CustomerType {
 // ── Prescriptions ─────────────────────────────────────────────
 model Prescription {
   id         String    @id @default(cuid())
+  branchId   String?
+  branch     Branch?   @relation(fields: [branchId], references: [id])
   customerId String
   customer   Customer  @relation(fields: [customerId], references: [id])
   doctorName String
@@ -76,6 +110,7 @@ model Product {
   id               String           @id @default(cuid())
   name             String
   genericName      String
+  saltComposition  String?
   manufacturer     String
   category         ProductCategory
   subCategory      String?
@@ -94,12 +129,16 @@ model Product {
   maxStock         Int
   reorderQty       Int
   rackLocation     String
-  barcode          String?          @unique
+  barcode          String?
   totalStock       Int              @default(0)
+  branchId         String?
+  branch           Branch?          @relation(fields: [branchId], references: [id])
   batches          Batch[]
   alternatives     Product[]        @relation("Alternatives")
   alternativesOf   Product[]        @relation("Alternatives")
   createdAt        DateTime         @default(now())
+
+  @@unique([barcode, branchId])
 }
 
 enum ProductCategory {
@@ -141,26 +180,45 @@ model Batch {
 
 // ── Suppliers ─────────────────────────────────────────────────
 model Supplier {
-  id             String          @id @default(cuid())
-  name           String
-  contactPerson  String
-  phone          String
-  email          String
-  gstin          String
-  drugLicense    String
-  address        String
-  paymentTerms   PaymentTerms
-  bankDetails    String?
-  isActive       Boolean         @default(true)
-  batches        Batch[]
-  purchaseOrders PurchaseOrder[]
-  grns           GRN[]
+  id              String           @id @default(cuid())
+  name            String
+  contactPerson   String
+  phone           String
+  email           String
+  gstin           String
+  drugLicense     String
+  address         String
+  paymentTerms    PaymentTerms
+  bankDetails     String?
+  isActive        Boolean          @default(true)
+  branchId        String?
+  branch          Branch?          @relation(fields: [branchId], references: [id])
+  batches         Batch[]
+  purchaseOrders  PurchaseOrder[]
+  grns            GRN[]
+  purchaseReturns PurchaseReturn[]
 }
 
 enum PaymentTerms {
   NET_30
   NET_45
   NET_60
+}
+
+// ── Doctors ───────────────────────────────────────────────────
+model Doctor {
+  id             String    @id @default(cuid())
+  name           String
+  specialization String
+  phone          String
+  regNumber      String?
+  email          String?
+  address        String?
+  isActive       Boolean   @default(true)
+  branchId       String?
+  branch         Branch?   @relation(fields: [branchId], references: [id])
+  createdAt      DateTime  @default(now())
+  invoices       Invoice[]
 }
 
 // ── Invoices ──────────────────────────────────────────────────
@@ -170,9 +228,13 @@ model Invoice {
   date            DateTime      @default(now())
   type            InvoiceType
   billingType     BillingType
+  branchId        String?
+  branch          Branch?       @relation(fields: [branchId], references: [id])
   customerId      String?
   customer        Customer?     @relation(fields: [customerId], references: [id])
   customerName    String
+  doctorId        String?
+  doctor          Doctor?       @relation(fields: [doctorId], references: [id])
   doctorName      String?
   items           InvoiceItem[]
   subtotal        Decimal
@@ -191,6 +253,7 @@ model Invoice {
   createdById     String
   createdBy       User          @relation(fields: [createdById], references: [id])
   createdAt       DateTime      @default(now())
+  creditNotes     CreditNote[]
 }
 
 model InvoiceItem {
@@ -242,6 +305,8 @@ model PurchaseOrder {
   id               String              @id @default(cuid())
   poNumber         String              @unique
   date             DateTime            @default(now())
+  branchId         String?
+  branch           Branch?             @relation(fields: [branchId], references: [id])
   supplierId       String
   supplier         Supplier            @relation(fields: [supplierId], references: [id])
   supplierName     String
@@ -279,6 +344,8 @@ model GRN {
   id                    String    @id @default(cuid())
   grnNumber             String    @unique
   date                  DateTime  @default(now())
+  branchId              String?
+  branch                Branch?   @relation(fields: [branchId], references: [id])
   poId                  String?
   supplierId            String
   supplier              Supplier  @relation(fields: [supplierId], references: [id])
@@ -289,6 +356,7 @@ model GRN {
   items                 GRNItem[]
   totalAmount           Decimal
   status                GRNStatus
+  purchaseReturns       PurchaseReturn[]
 }
 
 model GRNItem {
@@ -318,11 +386,107 @@ enum GRNStatus {
 model Expense {
   id           String   @id @default(cuid())
   date         DateTime @default(now())
+  branchId     String?
+  branch       Branch?  @relation(fields: [branchId], references: [id])
   category     String
   description  String
   amount       Decimal
   paymentMode  String
   receiptImage String?
+}
+
+// ── Credit Notes (Sales Returns from Customers) ───────────────
+model CreditNote {
+  id              String           @id @default(cuid())
+  creditNoteNo    String           @unique
+  date            DateTime         @default(now())
+  branchId        String?
+  branch          Branch?          @relation(fields: [branchId], references: [id])
+  invoiceId       String
+  invoice         Invoice          @relation(fields: [invoiceId], references: [id])
+  invoiceNumber   String
+  customerId      String?
+  customer        Customer?        @relation(fields: [customerId], references: [id])
+  customerName    String
+  reason          String
+  items           CreditNoteItem[]
+  subtotal        Decimal
+  cgst            Decimal          @default(0)
+  sgst            Decimal          @default(0)
+  igst            Decimal          @default(0)
+  totalAmount     Decimal
+  settlementMode  SettlementMode   @default(REFUND)
+  notes           String?
+  createdById     String
+  createdAt       DateTime         @default(now())
+}
+
+model CreditNoteItem {
+  id              String     @id @default(cuid())
+  creditNoteId    String
+  creditNote      CreditNote @relation(fields: [creditNoteId], references: [id])
+  productId       String
+  productName     String
+  batchId         String
+  batchNumber     String
+  expiryDate      DateTime
+  returnedQty     Int
+  rate            Decimal
+  gstPercent      Decimal
+  amount          Decimal
+}
+
+enum SettlementMode {
+  REFUND
+  CREDIT
+  REPLACEMENT
+}
+
+// ── Debit Notes / Purchase Returns (to Suppliers) ─────────────
+model PurchaseReturn {
+  id              String               @id @default(cuid())
+  debitNoteNo     String               @unique
+  date            DateTime             @default(now())
+  branchId        String?
+  branch          Branch?              @relation(fields: [branchId], references: [id])
+  grnId           String?
+  grn             GRN?                 @relation(fields: [grnId], references: [id])
+  supplierId      String
+  supplier        Supplier             @relation(fields: [supplierId], references: [id])
+  supplierName    String
+  reason          String
+  items           PurchaseReturnItem[]
+  subtotal        Decimal
+  cgst            Decimal              @default(0)
+  sgst            Decimal              @default(0)
+  igst            Decimal              @default(0)
+  totalAmount     Decimal
+  status          PurchaseReturnStatus @default(DRAFT)
+  notes           String?
+  createdById     String
+  createdAt       DateTime             @default(now())
+}
+
+model PurchaseReturnItem {
+  id               String         @id @default(cuid())
+  purchaseReturnId String
+  purchaseReturn   PurchaseReturn @relation(fields: [purchaseReturnId], references: [id])
+  productId        String
+  productName      String
+  batchId          String
+  batchNumber      String
+  expiryDate       DateTime
+  returnedQty      Int
+  purchaseRate     Decimal
+  gstPercent       Decimal
+  amount           Decimal
+}
+
+enum PurchaseReturnStatus {
+  DRAFT
+  SENT
+  ACCEPTED
+  SETTLED
 }
 
 // ── Audit Log ─────────────────────────────────────────────────

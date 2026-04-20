@@ -1,0 +1,166 @@
+import { PurchaseReturnsService } from './purchase-returns.service';
+import { CreatePurchaseReturnDto } from './dto/create-purchase-return.dto';
+export declare class PurchaseReturnsController {
+    private readonly purchaseReturnsService;
+    constructor(purchaseReturnsService: PurchaseReturnsService);
+    create(dto: CreatePurchaseReturnDto, req: any): Promise<{
+        items: {
+            id: string;
+            purchaseRate: import("@prisma/client/runtime/library").Decimal;
+            productId: string;
+            productName: string;
+            batchNumber: string;
+            expiryDate: Date;
+            batchId: string;
+            gstPercent: import("@prisma/client/runtime/library").Decimal;
+            amount: import("@prisma/client/runtime/library").Decimal;
+            returnedQty: number;
+            purchaseReturnId: string;
+        }[];
+    } & {
+        id: string;
+        branchId: string | null;
+        createdAt: Date;
+        debitNoteNo: string;
+        date: Date;
+        grnId: string | null;
+        supplierId: string;
+        supplierName: string;
+        reason: string;
+        subtotal: import("@prisma/client/runtime/library").Decimal;
+        cgst: import("@prisma/client/runtime/library").Decimal;
+        sgst: import("@prisma/client/runtime/library").Decimal;
+        igst: import("@prisma/client/runtime/library").Decimal;
+        totalAmount: import("@prisma/client/runtime/library").Decimal;
+        status: import(".prisma/client").$Enums.PurchaseReturnStatus;
+        notes: string | null;
+        createdById: string;
+    }>;
+    findAll(req: any, q?: string, branchId?: string): import(".prisma/client").Prisma.PrismaPromise<({
+        grn: {
+            id: string;
+            branchId: string | null;
+            date: Date;
+            supplierId: string;
+            supplierName: string;
+            totalAmount: import("@prisma/client/runtime/library").Decimal;
+            status: import(".prisma/client").$Enums.GRNStatus;
+            grnNumber: string;
+            poId: string | null;
+            supplierInvoiceNo: string;
+            supplierInvoiceDate: Date;
+            supplierInvoiceAmount: import("@prisma/client/runtime/library").Decimal;
+        } | null;
+        items: {
+            id: string;
+            purchaseRate: import("@prisma/client/runtime/library").Decimal;
+            productId: string;
+            productName: string;
+            batchNumber: string;
+            expiryDate: Date;
+            batchId: string;
+            gstPercent: import("@prisma/client/runtime/library").Decimal;
+            amount: import("@prisma/client/runtime/library").Decimal;
+            returnedQty: number;
+            purchaseReturnId: string;
+        }[];
+    } & {
+        id: string;
+        branchId: string | null;
+        createdAt: Date;
+        debitNoteNo: string;
+        date: Date;
+        grnId: string | null;
+        supplierId: string;
+        supplierName: string;
+        reason: string;
+        subtotal: import("@prisma/client/runtime/library").Decimal;
+        cgst: import("@prisma/client/runtime/library").Decimal;
+        sgst: import("@prisma/client/runtime/library").Decimal;
+        igst: import("@prisma/client/runtime/library").Decimal;
+        totalAmount: import("@prisma/client/runtime/library").Decimal;
+        status: import(".prisma/client").$Enums.PurchaseReturnStatus;
+        notes: string | null;
+        createdById: string;
+    })[]>;
+    findOne(id: string, req: any): Promise<{
+        grn: {
+            id: string;
+            branchId: string | null;
+            date: Date;
+            supplierId: string;
+            supplierName: string;
+            totalAmount: import("@prisma/client/runtime/library").Decimal;
+            status: import(".prisma/client").$Enums.GRNStatus;
+            grnNumber: string;
+            poId: string | null;
+            supplierInvoiceNo: string;
+            supplierInvoiceDate: Date;
+            supplierInvoiceAmount: import("@prisma/client/runtime/library").Decimal;
+        } | null;
+        supplier: {
+            id: string;
+            email: string;
+            name: string;
+            phone: string;
+            isActive: boolean;
+            branchId: string | null;
+            address: string;
+            gstin: string;
+            drugLicense: string;
+            contactPerson: string;
+            paymentTerms: import(".prisma/client").$Enums.PaymentTerms;
+            bankDetails: string | null;
+        };
+        items: {
+            id: string;
+            purchaseRate: import("@prisma/client/runtime/library").Decimal;
+            productId: string;
+            productName: string;
+            batchNumber: string;
+            expiryDate: Date;
+            batchId: string;
+            gstPercent: import("@prisma/client/runtime/library").Decimal;
+            amount: import("@prisma/client/runtime/library").Decimal;
+            returnedQty: number;
+            purchaseReturnId: string;
+        }[];
+    } & {
+        id: string;
+        branchId: string | null;
+        createdAt: Date;
+        debitNoteNo: string;
+        date: Date;
+        grnId: string | null;
+        supplierId: string;
+        supplierName: string;
+        reason: string;
+        subtotal: import("@prisma/client/runtime/library").Decimal;
+        cgst: import("@prisma/client/runtime/library").Decimal;
+        sgst: import("@prisma/client/runtime/library").Decimal;
+        igst: import("@prisma/client/runtime/library").Decimal;
+        totalAmount: import("@prisma/client/runtime/library").Decimal;
+        status: import(".prisma/client").$Enums.PurchaseReturnStatus;
+        notes: string | null;
+        createdById: string;
+    }>;
+    updateStatus(id: string, status: any, req: any): Promise<{
+        id: string;
+        branchId: string | null;
+        createdAt: Date;
+        debitNoteNo: string;
+        date: Date;
+        grnId: string | null;
+        supplierId: string;
+        supplierName: string;
+        reason: string;
+        subtotal: import("@prisma/client/runtime/library").Decimal;
+        cgst: import("@prisma/client/runtime/library").Decimal;
+        sgst: import("@prisma/client/runtime/library").Decimal;
+        igst: import("@prisma/client/runtime/library").Decimal;
+        totalAmount: import("@prisma/client/runtime/library").Decimal;
+        status: import(".prisma/client").$Enums.PurchaseReturnStatus;
+        notes: string | null;
+        createdById: string;
+    }>;
+}

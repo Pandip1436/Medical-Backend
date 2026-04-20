@@ -18,6 +18,7 @@ class CreateUserDto {
     phone;
     password;
     role;
+    branchId;
     isActive;
 }
 exports.CreateUserDto = CreateUserDto;
@@ -46,6 +47,11 @@ __decorate([
     (0, class_validator_1.IsEnum)(client_1.Role),
     __metadata("design:type", String)
 ], CreateUserDto.prototype, "role", void 0);
+__decorate([
+    (0, class_validator_1.IsString)(),
+    (0, class_validator_1.IsOptional)(),
+    __metadata("design:type", String)
+], CreateUserDto.prototype, "branchId", void 0);
 __decorate([
     (0, class_validator_1.IsBoolean)(),
     (0, class_validator_1.IsOptional)(),

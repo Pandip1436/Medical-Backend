@@ -4,12 +4,15 @@ import { UpdateProductDto } from './dto/update-product.dto';
 export declare class ProductsService {
     private readonly prisma;
     constructor(prisma: PrismaService);
-    create(createProductDto: CreateProductDto): Promise<{
+    create(createProductDto: CreateProductDto & {
+        branchId?: string;
+    }): Promise<{
         id: string;
         name: string;
+        branchId: string | null;
         createdAt: Date;
-        barcode: string | null;
         genericName: string;
+        saltComposition: string | null;
         manufacturer: string;
         category: import(".prisma/client").$Enums.ProductCategory;
         subCategory: string | null;
@@ -28,12 +31,21 @@ export declare class ProductsService {
         maxStock: number;
         reorderQty: number;
         rackLocation: string;
+        barcode: string | null;
         totalStock: number;
     }>;
-    findAll(query?: string): Promise<({
+    findAll(opts?: {
+        query?: string;
+        category?: string;
+        schedule?: string;
+        skip?: number;
+        take?: number;
+        branchId?: string;
+    }): Promise<({
         batches: {
             id: string;
             createdAt: Date;
+            supplierId: string;
             mrp: import("@prisma/client/runtime/library").Decimal;
             purchaseRate: import("@prisma/client/runtime/library").Decimal;
             productId: string;
@@ -41,14 +53,14 @@ export declare class ProductsService {
             mfgDate: Date;
             expiryDate: Date;
             quantity: number;
-            supplierId: string;
         }[];
     } & {
         id: string;
         name: string;
+        branchId: string | null;
         createdAt: Date;
-        barcode: string | null;
         genericName: string;
+        saltComposition: string | null;
         manufacturer: string;
         category: import(".prisma/client").$Enums.ProductCategory;
         subCategory: string | null;
@@ -67,27 +79,29 @@ export declare class ProductsService {
         maxStock: number;
         reorderQty: number;
         rackLocation: string;
+        barcode: string | null;
         totalStock: number;
-    })[]>;
-    findOne(id: string): Promise<{
-        batches: {
-            id: string;
-            createdAt: Date;
-            mrp: import("@prisma/client/runtime/library").Decimal;
-            purchaseRate: import("@prisma/client/runtime/library").Decimal;
-            productId: string;
-            batchNumber: string;
-            mfgDate: Date;
-            expiryDate: Date;
-            quantity: number;
-            supplierId: string;
-        }[];
-        alternatives: {
+    })[] | {
+        data: ({
+            batches: {
+                id: string;
+                createdAt: Date;
+                supplierId: string;
+                mrp: import("@prisma/client/runtime/library").Decimal;
+                purchaseRate: import("@prisma/client/runtime/library").Decimal;
+                productId: string;
+                batchNumber: string;
+                mfgDate: Date;
+                expiryDate: Date;
+                quantity: number;
+            }[];
+        } & {
             id: string;
             name: string;
+            branchId: string | null;
             createdAt: Date;
-            barcode: string | null;
             genericName: string;
+            saltComposition: string | null;
             manufacturer: string;
             category: import(".prisma/client").$Enums.ProductCategory;
             subCategory: string | null;
@@ -106,14 +120,59 @@ export declare class ProductsService {
             maxStock: number;
             reorderQty: number;
             rackLocation: string;
+            barcode: string | null;
+            totalStock: number;
+        })[];
+        total: number;
+    }>;
+    findOne(id: string, branchId?: string): Promise<{
+        batches: {
+            id: string;
+            createdAt: Date;
+            supplierId: string;
+            mrp: import("@prisma/client/runtime/library").Decimal;
+            purchaseRate: import("@prisma/client/runtime/library").Decimal;
+            productId: string;
+            batchNumber: string;
+            mfgDate: Date;
+            expiryDate: Date;
+            quantity: number;
+        }[];
+        alternatives: {
+            id: string;
+            name: string;
+            branchId: string | null;
+            createdAt: Date;
+            genericName: string;
+            saltComposition: string | null;
+            manufacturer: string;
+            category: import(".prisma/client").$Enums.ProductCategory;
+            subCategory: string | null;
+            packSize: string;
+            unitOfMeasure: string;
+            schedule: import(".prisma/client").$Enums.Schedule;
+            hsnCode: string;
+            isNarcotic: boolean;
+            storageCondition: import(".prisma/client").$Enums.StorageCondition;
+            mrp: import("@prisma/client/runtime/library").Decimal;
+            purchaseRate: import("@prisma/client/runtime/library").Decimal;
+            sellingRate: import("@prisma/client/runtime/library").Decimal;
+            wholesaleRate: import("@prisma/client/runtime/library").Decimal;
+            gstRate: import("@prisma/client/runtime/library").Decimal;
+            minStock: number;
+            maxStock: number;
+            reorderQty: number;
+            rackLocation: string;
+            barcode: string | null;
             totalStock: number;
         }[];
     } & {
         id: string;
         name: string;
+        branchId: string | null;
         createdAt: Date;
-        barcode: string | null;
         genericName: string;
+        saltComposition: string | null;
         manufacturer: string;
         category: import(".prisma/client").$Enums.ProductCategory;
         subCategory: string | null;
@@ -132,14 +191,16 @@ export declare class ProductsService {
         maxStock: number;
         reorderQty: number;
         rackLocation: string;
+        barcode: string | null;
         totalStock: number;
     }>;
-    update(id: string, updateProductDto: UpdateProductDto): Promise<{
+    update(id: string, updateProductDto: UpdateProductDto, branchId?: string): Promise<{
         id: string;
         name: string;
+        branchId: string | null;
         createdAt: Date;
-        barcode: string | null;
         genericName: string;
+        saltComposition: string | null;
         manufacturer: string;
         category: import(".prisma/client").$Enums.ProductCategory;
         subCategory: string | null;
@@ -158,14 +219,16 @@ export declare class ProductsService {
         maxStock: number;
         reorderQty: number;
         rackLocation: string;
+        barcode: string | null;
         totalStock: number;
     }>;
-    remove(id: string): Promise<{
+    remove(id: string, branchId?: string): Promise<{
         id: string;
         name: string;
+        branchId: string | null;
         createdAt: Date;
-        barcode: string | null;
         genericName: string;
+        saltComposition: string | null;
         manufacturer: string;
         category: import(".prisma/client").$Enums.ProductCategory;
         subCategory: string | null;
@@ -184,6 +247,24 @@ export declare class ProductsService {
         maxStock: number;
         reorderQty: number;
         rackLocation: string;
+        barcode: string | null;
         totalStock: number;
+    }>;
+    importCsv(buffer: Buffer, branchId?: string): Promise<{
+        created: number;
+        skipped: number;
+        errors: string[];
+    }>;
+    adjustBatchStock(productId: string, batchId: string, dto: {
+        adjustedQty: number;
+        reason: string;
+        notes?: string;
+    }, branchId?: string): Promise<{
+        success: boolean;
+        batchId: string;
+        previousQty: number;
+        newQty: number;
+        diff: number;
+        reason: string;
     }>;
 }

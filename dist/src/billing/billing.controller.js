@@ -26,13 +26,41 @@ let BillingController = class BillingController {
         this.billingService = billingService;
     }
     create(createInvoiceDto, req) {
-        return this.billingService.create(createInvoiceDto, req.user.userId);
+        const effectiveBranchId = req.user.branchId ?? createInvoiceDto.branchId;
+        return this.billingService.create(createInvoiceDto, req.user.userId, effectiveBranchId);
     }
-    findAll(q) {
-        return this.billingService.findAll(q);
+    findAll(req, q, customerId, branchId, type) {
+        const effectiveBranchId = req.user.branchId ?? branchId;
+        return this.billingService.findAll(q, customerId, effectiveBranchId, type);
     }
-    findOne(id) {
-        return this.billingService.findOne(id);
+    findOne(id, req) {
+        return this.billingService.findOne(id, req.user.branchId);
+    }
+    convertToInvoice(id, req) {
+        return this.billingService.convertToInvoice(id, req.user.branchId);
+    }
+    collectPayment(id, amountReceived, paymentMode, req) {
+        return this.billingService.collectPayment(id, Number(amountReceived), paymentMode, req.user.branchId);
+    }
+    update(id, body, req) {
+        return this.billingService.update(id, body, req.user.branchId);
+    }
+    remove(id, req) {
+        return this.billingService.remove(id, req.user.branchId);
+    }
+    async exportTally(req, from, to, branchId, res) {
+        const effectiveBranchId = req.user.branchId ?? branchId;
+        const xml = await this.billingService.exportTallyXml(from, to, effectiveBranchId);
+        res.setHeader('Content-Type', 'application/xml');
+        res.setHeader('Content-Disposition', 'attachment; filename="tally-export.xml"');
+        res.send(xml);
+    }
+    async exportCsv(req, from, to, branchId, res) {
+        const effectiveBranchId = req.user.branchId ?? branchId;
+        const csv = await this.billingService.exportCsv(from, to, effectiveBranchId);
+        res.setHeader('Content-Type', 'text/csv');
+        res.setHeader('Content-Disposition', 'attachment; filename="invoices-export.csv"');
+        res.send(csv);
     }
 };
 exports.BillingController = BillingController;
@@ -50,10 +78,17 @@ __decorate([
     (0, common_1.Get)(),
     (0, roles_decorator_1.Roles)('ADMIN', 'PHARMACIST', 'ACCOUNTANT'),
     (0, swagger_1.ApiOperation)({ summary: 'Get all invoices or search' }),
-    (0, swagger_1.ApiQuery)({ name: 'q', required: false, description: 'Search invoice term' }),
-    __param(0, (0, common_1.Query)('q')),
+    (0, swagger_1.ApiQuery)({ name: 'q', required: false }),
+    (0, swagger_1.ApiQuery)({ name: 'customerId', required: false }),
+    (0, swagger_1.ApiQuery)({ name: 'branchId', required: false }),
+    (0, swagger_1.ApiQuery)({ name: 'type', required: false, description: 'INVOICE or QUOTATION' }),
+    __param(0, (0, common_1.Request)()),
+    __param(1, (0, common_1.Query)('q')),
+    __param(2, (0, common_1.Query)('customerId')),
+    __param(3, (0, common_1.Query)('branchId')),
+    __param(4, (0, common_1.Query)('type')),
     __metadata("design:type", Function),
-    __metadata("design:paramtypes", [String]),
+    __metadata("design:paramtypes", [Object, String, String, String, String]),
     __metadata("design:returntype", void 0)
 ], BillingController.prototype, "findAll", null);
 __decorate([
@@ -61,10 +96,86 @@ __decorate([
     (0, roles_decorator_1.Roles)('ADMIN', 'PHARMACIST', 'ACCOUNTANT'),
     (0, swagger_1.ApiOperation)({ summary: 'Get specific invoice by ID with items' }),
     __param(0, (0, common_1.Param)('id')),
+    __param(1, (0, common_1.Request)()),
     __metadata("design:type", Function),
-    __metadata("design:paramtypes", [String]),
+    __metadata("design:paramtypes", [String, Object]),
     __metadata("design:returntype", void 0)
 ], BillingController.prototype, "findOne", null);
+__decorate([
+    (0, common_1.Patch)(':id/convert'),
+    (0, roles_decorator_1.Roles)('ADMIN', 'PHARMACIST'),
+    (0, swagger_1.ApiOperation)({ summary: 'Convert a quotation to an invoice' }),
+    __param(0, (0, common_1.Param)('id')),
+    __param(1, (0, common_1.Request)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [String, Object]),
+    __metadata("design:returntype", void 0)
+], BillingController.prototype, "convertToInvoice", null);
+__decorate([
+    (0, common_1.Patch)(':id/collect-payment'),
+    (0, roles_decorator_1.Roles)('ADMIN', 'PHARMACIST', 'ACCOUNTANT'),
+    (0, swagger_1.ApiOperation)({ summary: 'Collect payment against a credit/partial invoice' }),
+    __param(0, (0, common_1.Param)('id')),
+    __param(1, (0, common_1.Body)('amountReceived')),
+    __param(2, (0, common_1.Body)('paymentMode')),
+    __param(3, (0, common_1.Request)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [String, Number, String, Object]),
+    __metadata("design:returntype", void 0)
+], BillingController.prototype, "collectPayment", null);
+__decorate([
+    (0, common_1.Patch)(':id'),
+    (0, roles_decorator_1.Roles)('ADMIN', 'PHARMACIST'),
+    (0, swagger_1.ApiOperation)({ summary: 'Update invoice fields (e.g. cancel)' }),
+    __param(0, (0, common_1.Param)('id')),
+    __param(1, (0, common_1.Body)()),
+    __param(2, (0, common_1.Request)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [String, Object, Object]),
+    __metadata("design:returntype", void 0)
+], BillingController.prototype, "update", null);
+__decorate([
+    (0, common_1.Delete)(':id'),
+    (0, roles_decorator_1.Roles)('ADMIN', 'PHARMACIST'),
+    (0, swagger_1.ApiOperation)({ summary: 'Delete a quotation or cancelled invoice' }),
+    __param(0, (0, common_1.Param)('id')),
+    __param(1, (0, common_1.Request)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [String, Object]),
+    __metadata("design:returntype", void 0)
+], BillingController.prototype, "remove", null);
+__decorate([
+    (0, common_1.Get)('export/tally-xml'),
+    (0, roles_decorator_1.Roles)('ADMIN', 'ACCOUNTANT'),
+    (0, swagger_1.ApiOperation)({ summary: 'Export invoices as Tally-compatible XML' }),
+    (0, swagger_1.ApiQuery)({ name: 'from', required: false }),
+    (0, swagger_1.ApiQuery)({ name: 'to', required: false }),
+    (0, swagger_1.ApiQuery)({ name: 'branchId', required: false }),
+    __param(0, (0, common_1.Request)()),
+    __param(1, (0, common_1.Query)('from')),
+    __param(2, (0, common_1.Query)('to')),
+    __param(3, (0, common_1.Query)('branchId')),
+    __param(4, (0, common_1.Res)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, String, String, String, Object]),
+    __metadata("design:returntype", Promise)
+], BillingController.prototype, "exportTally", null);
+__decorate([
+    (0, common_1.Get)('export/csv'),
+    (0, roles_decorator_1.Roles)('ADMIN', 'ACCOUNTANT', 'PHARMACIST'),
+    (0, swagger_1.ApiOperation)({ summary: 'Export invoices as CSV' }),
+    (0, swagger_1.ApiQuery)({ name: 'from', required: false }),
+    (0, swagger_1.ApiQuery)({ name: 'to', required: false }),
+    (0, swagger_1.ApiQuery)({ name: 'branchId', required: false }),
+    __param(0, (0, common_1.Request)()),
+    __param(1, (0, common_1.Query)('from')),
+    __param(2, (0, common_1.Query)('to')),
+    __param(3, (0, common_1.Query)('branchId')),
+    __param(4, (0, common_1.Res)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, String, String, String, Object]),
+    __metadata("design:returntype", Promise)
+], BillingController.prototype, "exportCsv", null);
 exports.BillingController = BillingController = __decorate([
     (0, swagger_1.ApiTags)('billing'),
     (0, swagger_1.ApiBearerAuth)(),

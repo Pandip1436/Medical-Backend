@@ -40,4 +40,8 @@ export class CreateSupplierDto {
   @IsBoolean()
   @IsOptional()
   isActive?: boolean;
+
+  @IsString()
+  @IsOptional()
+  branchId?: string;
 }

@@ -58,6 +58,7 @@ let AuthService = class AuthService {
     async login(loginDto) {
         const user = await this.prisma.user.findUnique({
             where: { email: loginDto.email },
+            include: { branch: { select: { id: true, name: true, code: true } } },
         });
         if (!user || !user.isActive) {
             throw new common_1.UnauthorizedException('Invalid credentials or account is inactive');
@@ -70,7 +71,7 @@ let AuthService = class AuthService {
             where: { id: user.id },
             data: { lastLogin: new Date() },
         });
-        const payload = { sub: user.id, email: user.email, role: user.role };
+        const payload = { sub: user.id, email: user.email, role: user.role, branchId: user.branchId ?? null };
         const token = this.jwtService.sign(payload);
         return {
             success: true,
@@ -80,6 +81,8 @@ let AuthService = class AuthService {
                     name: user.name,
                     email: user.email,
                     role: user.role,
+                    branchId: user.branchId ?? null,
+                    branch: user.branch ?? null,
                 },
                 accessToken: {
                     token: token,
@@ -127,7 +130,7 @@ let AuthService = class AuthService {
     async validateUser(userId) {
         return this.prisma.user.findUnique({
             where: { id: userId },
-            select: { id: true, name: true, email: true, role: true, isActive: true },
+            select: { id: true, name: true, email: true, role: true, isActive: true, branchId: true },
         });
     }
 };

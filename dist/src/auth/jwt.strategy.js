@@ -31,7 +31,7 @@ let JwtStrategy = class JwtStrategy extends (0, passport_1.PassportStrategy)(pas
         if (!user || !user.isActive) {
             throw new common_1.UnauthorizedException('User is not active or deleted');
         }
-        return { userId: payload.sub, email: payload.email, role: payload.role };
+        return { userId: payload.sub, email: payload.email, role: payload.role, branchId: user.branchId ?? null };
     }
 };
 exports.JwtStrategy = JwtStrategy;

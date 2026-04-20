@@ -4,36 +4,51 @@ import { UpdateSupplierDto } from './dto/update-supplier.dto';
 export declare class SuppliersController {
     private readonly suppliersService;
     constructor(suppliersService: SuppliersService);
-    create(createSupplierDto: CreateSupplierDto): import(".prisma/client").Prisma.Prisma__SupplierClient<{
+    create(createSupplierDto: CreateSupplierDto, req: any, qBranchId?: string): import(".prisma/client").Prisma.Prisma__SupplierClient<{
         id: string;
         email: string;
         name: string;
         phone: string;
         isActive: boolean;
+        branchId: string | null;
         address: string;
-        contactPerson: string;
         gstin: string;
         drugLicense: string;
+        contactPerson: string;
         paymentTerms: import(".prisma/client").$Enums.PaymentTerms;
         bankDetails: string | null;
     }, never, import("@prisma/client/runtime/library").DefaultArgs>;
-    findAll(q?: string): import(".prisma/client").Prisma.PrismaPromise<{
+    findAll(req: any, q?: string, branchId?: string): import(".prisma/client").Prisma.PrismaPromise<{
         id: string;
         email: string;
         name: string;
         phone: string;
         isActive: boolean;
+        branchId: string | null;
         address: string;
-        contactPerson: string;
         gstin: string;
         drugLicense: string;
+        contactPerson: string;
         paymentTerms: import(".prisma/client").$Enums.PaymentTerms;
         bankDetails: string | null;
     }[]>;
-    findOne(id: string): Promise<{
+    findOne(id: string, req: any): Promise<{
+        purchaseOrders: {
+            id: string;
+            branchId: string | null;
+            date: Date;
+            supplierId: string;
+            supplierName: string;
+            totalAmount: import("@prisma/client/runtime/library").Decimal;
+            status: import(".prisma/client").$Enums.POStatus;
+            poNumber: string;
+            expectedDelivery: Date | null;
+            createdBy: string;
+        }[];
         batches: {
             id: string;
             createdAt: Date;
+            supplierId: string;
             mrp: import("@prisma/client/runtime/library").Decimal;
             purchaseRate: import("@prisma/client/runtime/library").Decimal;
             productId: string;
@@ -41,18 +56,6 @@ export declare class SuppliersController {
             mfgDate: Date;
             expiryDate: Date;
             quantity: number;
-            supplierId: string;
-        }[];
-        purchaseOrders: {
-            id: string;
-            supplierId: string;
-            date: Date;
-            status: import(".prisma/client").$Enums.POStatus;
-            createdBy: string;
-            poNumber: string;
-            supplierName: string;
-            totalAmount: import("@prisma/client/runtime/library").Decimal;
-            expectedDelivery: Date | null;
         }[];
     } & {
         id: string;
@@ -60,36 +63,39 @@ export declare class SuppliersController {
         name: string;
         phone: string;
         isActive: boolean;
+        branchId: string | null;
         address: string;
-        contactPerson: string;
         gstin: string;
         drugLicense: string;
+        contactPerson: string;
         paymentTerms: import(".prisma/client").$Enums.PaymentTerms;
         bankDetails: string | null;
     }>;
-    update(id: string, updateSupplierDto: UpdateSupplierDto): Promise<{
+    update(id: string, updateSupplierDto: UpdateSupplierDto, req: any): Promise<{
         id: string;
         email: string;
         name: string;
         phone: string;
         isActive: boolean;
+        branchId: string | null;
         address: string;
-        contactPerson: string;
         gstin: string;
         drugLicense: string;
+        contactPerson: string;
         paymentTerms: import(".prisma/client").$Enums.PaymentTerms;
         bankDetails: string | null;
     }>;
-    remove(id: string): Promise<{
+    remove(id: string, req: any): Promise<{
         id: string;
         email: string;
         name: string;
         phone: string;
         isActive: boolean;
+        branchId: string | null;
         address: string;
-        contactPerson: string;
         gstin: string;
         drugLicense: string;
+        contactPerson: string;
         paymentTerms: import(".prisma/client").$Enums.PaymentTerms;
         bankDetails: string | null;
     }>;

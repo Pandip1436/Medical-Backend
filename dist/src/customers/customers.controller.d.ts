@@ -4,69 +4,74 @@ import { UpdateCustomerDto } from './dto/update-customer.dto';
 export declare class CustomersController {
     private readonly customersService;
     constructor(customersService: CustomersService);
-    create(createCustomerDto: CreateCustomerDto): import(".prisma/client").Prisma.Prisma__CustomerClient<{
+    create(createCustomerDto: CreateCustomerDto, req: any, branchId?: string): import(".prisma/client").Prisma.Prisma__CustomerClient<{
         id: string;
         email: string | null;
         name: string;
         phone: string;
+        branchId: string | null;
         createdAt: Date;
-        doctorRef: string | null;
+        notes: string | null;
         address: string | null;
-        alternatePhone: string | null;
         gstin: string | null;
+        alternatePhone: string | null;
         type: import(".prisma/client").$Enums.CustomerType;
+        doctorRef: string | null;
         creditLimit: import("@prisma/client/runtime/library").Decimal;
         currentOutstanding: import("@prisma/client/runtime/library").Decimal;
         loyaltyPoints: number;
         dlNumber: string | null;
-        notes: string | null;
     }, never, import("@prisma/client/runtime/library").DefaultArgs>;
-    findAll(q?: string): import(".prisma/client").Prisma.PrismaPromise<{
+    findAll(req: any, q?: string, branchId?: string): import(".prisma/client").Prisma.PrismaPromise<{
         id: string;
         email: string | null;
         name: string;
         phone: string;
+        branchId: string | null;
         createdAt: Date;
-        doctorRef: string | null;
+        notes: string | null;
         address: string | null;
-        alternatePhone: string | null;
         gstin: string | null;
+        alternatePhone: string | null;
         type: import(".prisma/client").$Enums.CustomerType;
+        doctorRef: string | null;
         creditLimit: import("@prisma/client/runtime/library").Decimal;
         currentOutstanding: import("@prisma/client/runtime/library").Decimal;
         loyaltyPoints: number;
         dlNumber: string | null;
-        notes: string | null;
     }[]>;
-    findOne(id: string): Promise<{
+    findOne(id: string, req: any): Promise<{
         invoices: {
             id: string;
+            branchId: string | null;
             createdAt: Date;
-            type: import(".prisma/client").$Enums.InvoiceType;
             date: Date;
+            subtotal: import("@prisma/client/runtime/library").Decimal;
+            cgst: import("@prisma/client/runtime/library").Decimal;
+            sgst: import("@prisma/client/runtime/library").Decimal;
+            igst: import("@prisma/client/runtime/library").Decimal;
+            status: import(".prisma/client").$Enums.InvoiceStatus;
+            createdById: string;
+            type: import(".prisma/client").$Enums.InvoiceType;
             invoiceNumber: string;
             billingType: import(".prisma/client").$Enums.BillingType;
             customerName: string;
             doctorName: string | null;
-            subtotal: import("@prisma/client/runtime/library").Decimal;
             productDiscount: import("@prisma/client/runtime/library").Decimal;
             taxableAmount: import("@prisma/client/runtime/library").Decimal;
-            cgst: import("@prisma/client/runtime/library").Decimal;
-            sgst: import("@prisma/client/runtime/library").Decimal;
-            igst: import("@prisma/client/runtime/library").Decimal;
             roundOff: import("@prisma/client/runtime/library").Decimal;
             grandTotal: import("@prisma/client/runtime/library").Decimal;
             paymentMode: import(".prisma/client").$Enums.PaymentMode;
             paymentDetails: import("@prisma/client/runtime/library").JsonValue | null;
-            status: import(".prisma/client").$Enums.InvoiceStatus;
             amountPaid: import("@prisma/client/runtime/library").Decimal;
             changeReturned: import("@prisma/client/runtime/library").Decimal;
             customerId: string | null;
-            createdById: string;
+            doctorId: string | null;
         }[];
         prescriptions: {
             id: string;
             isActive: boolean;
+            branchId: string | null;
             createdAt: Date;
             notes: string | null;
             doctorName: string;
@@ -79,50 +84,63 @@ export declare class CustomersController {
         email: string | null;
         name: string;
         phone: string;
+        branchId: string | null;
         createdAt: Date;
-        doctorRef: string | null;
+        notes: string | null;
         address: string | null;
-        alternatePhone: string | null;
         gstin: string | null;
+        alternatePhone: string | null;
         type: import(".prisma/client").$Enums.CustomerType;
+        doctorRef: string | null;
         creditLimit: import("@prisma/client/runtime/library").Decimal;
         currentOutstanding: import("@prisma/client/runtime/library").Decimal;
         loyaltyPoints: number;
         dlNumber: string | null;
-        notes: string | null;
     }>;
-    update(id: string, updateCustomerDto: UpdateCustomerDto): Promise<{
+    update(id: string, updateCustomerDto: UpdateCustomerDto, req: any): Promise<{
         id: string;
         email: string | null;
         name: string;
         phone: string;
+        branchId: string | null;
         createdAt: Date;
-        doctorRef: string | null;
+        notes: string | null;
         address: string | null;
-        alternatePhone: string | null;
         gstin: string | null;
+        alternatePhone: string | null;
         type: import(".prisma/client").$Enums.CustomerType;
+        doctorRef: string | null;
         creditLimit: import("@prisma/client/runtime/library").Decimal;
         currentOutstanding: import("@prisma/client/runtime/library").Decimal;
         loyaltyPoints: number;
         dlNumber: string | null;
-        notes: string | null;
     }>;
-    remove(id: string): Promise<{
+    recordPayment(id: string, body: {
+        amount: number;
+        paymentMode: string;
+        referenceNumber?: string;
+    }, req: any): Promise<{
+        success: boolean;
+        customerId: string;
+        amountRecorded: number;
+        newOutstanding: number;
+    }>;
+    remove(id: string, req: any): Promise<{
         id: string;
         email: string | null;
         name: string;
         phone: string;
+        branchId: string | null;
         createdAt: Date;
-        doctorRef: string | null;
+        notes: string | null;
         address: string | null;
-        alternatePhone: string | null;
         gstin: string | null;
+        alternatePhone: string | null;
         type: import(".prisma/client").$Enums.CustomerType;
+        doctorRef: string | null;
         creditLimit: import("@prisma/client/runtime/library").Decimal;
         currentOutstanding: import("@prisma/client/runtime/library").Decimal;
         loyaltyPoints: number;
         dlNumber: string | null;
-        notes: string | null;
     }>;
 }

@@ -10,4 +10,5 @@ export declare class CreateGrnDto {
     items: CreateGrnItemDto[];
     totalAmount: number;
     status: GRNStatus;
+    branchId?: string;
 }

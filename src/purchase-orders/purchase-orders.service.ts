@@ -7,13 +7,14 @@ import { UpdatePurchaseOrderDto } from './dto/update-purchase-order.dto';
 export class PurchaseOrdersService {
   constructor(private readonly prisma: PrismaService) {}
 
-  async create(createPurchaseOrderDto: CreatePurchaseOrderDto, userId: string) {
+  async create(createPurchaseOrderDto: CreatePurchaseOrderDto, userId: string, branchId?: string) {
     return this.prisma.$transaction(async (tx) => {
       const poNumber = `PO-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
 
       return tx.purchaseOrder.create({
         data: {
           poNumber,
+          branchId,
           supplierId: createPurchaseOrderDto.supplierId,
           supplierName: createPurchaseOrderDto.supplierName,
           totalAmount: createPurchaseOrderDto.totalAmount,
@@ -36,34 +37,37 @@ export class PurchaseOrdersService {
     });
   }
 
-  findAll(query?: string) {
+  findAll(query?: string, branchId?: string) {
+    const where: any = {};
+    if (branchId) where.branchId = branchId;
     if (query) {
-      return this.prisma.purchaseOrder.findMany({
-        where: {
-          OR: [
-            { poNumber: { contains: query, mode: 'insensitive' } },
-            { supplierName: { contains: query, mode: 'insensitive' } },
-          ],
-        },
-        orderBy: { date: 'desc' },
-      });
+      where.OR = [
+        { poNumber: { contains: query, mode: 'insensitive' } },
+        { supplierName: { contains: query, mode: 'insensitive' } },
+      ];
     }
-    return this.prisma.purchaseOrder.findMany({ orderBy: { date: 'desc' } });
+    return this.prisma.purchaseOrder.findMany({ where, include: { items: true }, orderBy: { date: 'desc' } });
   }
 
-  async findOne(id: string) {
+  async findOne(id: string, branchId?: string) {
     const po = await this.prisma.purchaseOrder.findUnique({
       where: { id },
       include: { items: true }
     });
     if (!po) throw new NotFoundException('Purchase Order not found');
+    if (branchId && po.branchId && po.branchId !== branchId) {
+      throw new NotFoundException('Purchase Order not found');
+    }
     return po;
   }
 
-  async update(id: string, updatePurchaseOrderDto: UpdatePurchaseOrderDto) {
+  async update(id: string, updatePurchaseOrderDto: UpdatePurchaseOrderDto, branchId?: string) {
     return this.prisma.$transaction(async (tx) => {
       const existingPo = await tx.purchaseOrder.findUnique({ where: { id }, include: { items: true } });
       if (!existingPo) throw new NotFoundException('Purchase order not found');
+      if (branchId && existingPo.branchId && existingPo.branchId !== branchId) {
+        throw new NotFoundException('Purchase order not found');
+      }
       
       if (updatePurchaseOrderDto.items) {
         // Delete existing items and recreate
@@ -96,9 +100,13 @@ export class PurchaseOrdersService {
     });
   }
 
-  async remove(id: string) {
-    // Only allow deletion if draft or maybe just generic delete. Usually Drafts can be deleted.
+  async remove(id: string, branchId?: string) {
     return this.prisma.$transaction(async (tx) => {
+      const existing = await tx.purchaseOrder.findUnique({ where: { id } });
+      if (!existing) throw new NotFoundException('Purchase order not found');
+      if (branchId && existing.branchId && existing.branchId !== branchId) {
+        throw new NotFoundException('Purchase order not found');
+      }
       await tx.purchaseOrderItem.deleteMany({ where: { purchaseOrderId: id } });
       return tx.purchaseOrder.delete({ where: { id } });
     });

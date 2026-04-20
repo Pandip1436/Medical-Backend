@@ -1,0 +1,82 @@
+import {
+  Controller,
+  Get,
+  Post,
+  Delete,
+  Param,
+  Body,
+  UploadedFile,
+  UseInterceptors,
+  UseGuards,
+  ParseFilePipe,
+  MaxFileSizeValidator,
+  FileTypeValidator,
+  Query,
+  Request,
+} from '@nestjs/common'
+import { FileInterceptor } from '@nestjs/platform-express'
+import { diskStorage } from 'multer'
+import { extname } from 'path'
+import { v4 as uuidv4 } from 'uuid'
+import { PrescriptionsService } from './prescriptions.service'
+import { JwtAuthGuard } from '../common/guards/jwt-auth.guard'
+import { RolesGuard } from '../common/guards/roles.guard'
+import { Roles } from '../common/decorators/roles.decorator'
+
+const multerOptions = {
+  storage: diskStorage({
+    destination: './uploads/prescriptions',
+    filename: (_req: any, file: Express.Multer.File, cb: (error: Error | null, filename: string) => void) => {
+      cb(null, `${uuidv4()}${extname(file.originalname)}`)
+    },
+  }),
+}
+
+@Controller('prescriptions')
+@UseGuards(JwtAuthGuard, RolesGuard)
+export class PrescriptionsController {
+  constructor(private readonly svc: PrescriptionsService) {}
+
+  @Post('upload')
+  @Roles('ADMIN', 'PHARMACIST')
+  @UseInterceptors(FileInterceptor('file', multerOptions))
+  upload(
+    @UploadedFile(
+      new ParseFilePipe({
+        validators: [
+          new MaxFileSizeValidator({ maxSize: 5 * 1024 * 1024 }), // 5 MB
+          new FileTypeValidator({ fileType: /(jpg|jpeg|png|webp|pdf)/ }),
+        ],
+      }),
+    )
+    file: Express.Multer.File,
+    @Body('customerId') customerId: string,
+    @Body('doctorName') doctorName: string,
+    @Request() req: any,
+    @Body('notes') notes?: string,
+    @Body('validUntil') validUntil?: string,
+    @Body('branchId') bodyBranchId?: string,
+  ) {
+    const effectiveBranchId = req.user.branchId ?? bodyBranchId
+    return this.svc.create(customerId, doctorName, notes, validUntil, file, effectiveBranchId)
+  }
+
+  @Get()
+  @Roles('ADMIN', 'PHARMACIST', 'ACCOUNTANT')
+  findByCustomer(@Query('customerId') customerId: string, @Request() req: any, @Query('branchId') branchId?: string) {
+    const effectiveBranchId = req.user.branchId ?? branchId
+    return this.svc.findByCustomer(customerId, effectiveBranchId)
+  }
+
+  @Get(':id')
+  @Roles('ADMIN', 'PHARMACIST', 'ACCOUNTANT')
+  findOne(@Param('id') id: string, @Request() req: any) {
+    return this.svc.findOne(id, req.user.branchId)
+  }
+
+  @Delete(':id')
+  @Roles('ADMIN', 'PHARMACIST')
+  remove(@Param('id') id: string, @Request() req: any) {
+    return this.svc.remove(id, req.user.branchId)
+  }
+}

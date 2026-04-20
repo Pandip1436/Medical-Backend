@@ -11,6 +11,10 @@ export class CreateProductDto {
   genericName: string;
 
   @IsString()
+  @IsOptional()
+  saltComposition?: string;
+
+  @IsString()
   @IsNotEmpty()
   manufacturer: string;
 

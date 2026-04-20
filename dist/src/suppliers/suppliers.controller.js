@@ -26,20 +26,22 @@ let SuppliersController = class SuppliersController {
     constructor(suppliersService) {
         this.suppliersService = suppliersService;
     }
-    create(createSupplierDto) {
-        return this.suppliersService.create(createSupplierDto);
+    create(createSupplierDto, req, qBranchId) {
+        const effectiveBranchId = req.user.branchId ?? createSupplierDto.branchId ?? qBranchId;
+        return this.suppliersService.create({ ...createSupplierDto, branchId: effectiveBranchId });
     }
-    findAll(q) {
-        return this.suppliersService.findAll(q);
+    findAll(req, q, branchId) {
+        const effectiveBranchId = req.user.branchId ?? branchId;
+        return this.suppliersService.findAll(q, effectiveBranchId);
     }
-    findOne(id) {
-        return this.suppliersService.findOne(id);
+    findOne(id, req) {
+        return this.suppliersService.findOne(id, req.user.branchId);
     }
-    update(id, updateSupplierDto) {
-        return this.suppliersService.update(id, updateSupplierDto);
+    update(id, updateSupplierDto, req) {
+        return this.suppliersService.update(id, updateSupplierDto, req.user.branchId);
     }
-    remove(id) {
-        return this.suppliersService.remove(id);
+    remove(id, req) {
+        return this.suppliersService.remove(id, req.user.branchId);
     }
 };
 exports.SuppliersController = SuppliersController;
@@ -48,18 +50,23 @@ __decorate([
     (0, roles_decorator_1.Roles)('ADMIN', 'INVENTORY_MANAGER'),
     (0, swagger_1.ApiOperation)({ summary: 'Create a new supplier' }),
     __param(0, (0, common_1.Body)()),
+    __param(1, (0, common_1.Request)()),
+    __param(2, (0, common_1.Query)('branchId')),
     __metadata("design:type", Function),
-    __metadata("design:paramtypes", [create_supplier_dto_1.CreateSupplierDto]),
+    __metadata("design:paramtypes", [create_supplier_dto_1.CreateSupplierDto, Object, String]),
     __metadata("design:returntype", void 0)
 ], SuppliersController.prototype, "create", null);
 __decorate([
     (0, common_1.Get)(),
     (0, roles_decorator_1.Roles)('ADMIN', 'INVENTORY_MANAGER', 'PHARMACIST', 'ACCOUNTANT'),
-    (0, swagger_1.ApiOperation)({ summary: 'Get all suppliers or search by name/gstin' }),
-    (0, swagger_1.ApiQuery)({ name: 'q', required: false, description: 'Search term for name or GSTIN' }),
-    __param(0, (0, common_1.Query)('q')),
+    (0, swagger_1.ApiOperation)({ summary: 'Get all suppliers for a branch or search by name/gstin' }),
+    (0, swagger_1.ApiQuery)({ name: 'q', required: false }),
+    (0, swagger_1.ApiQuery)({ name: 'branchId', required: false }),
+    __param(0, (0, common_1.Request)()),
+    __param(1, (0, common_1.Query)('q')),
+    __param(2, (0, common_1.Query)('branchId')),
     __metadata("design:type", Function),
-    __metadata("design:paramtypes", [String]),
+    __metadata("design:paramtypes", [Object, String, String]),
     __metadata("design:returntype", void 0)
 ], SuppliersController.prototype, "findAll", null);
 __decorate([
@@ -67,8 +74,9 @@ __decorate([
     (0, roles_decorator_1.Roles)('ADMIN', 'INVENTORY_MANAGER', 'PHARMACIST', 'ACCOUNTANT'),
     (0, swagger_1.ApiOperation)({ summary: 'Get supplier details including basic history' }),
     __param(0, (0, common_1.Param)('id')),
+    __param(1, (0, common_1.Request)()),
     __metadata("design:type", Function),
-    __metadata("design:paramtypes", [String]),
+    __metadata("design:paramtypes", [String, Object]),
     __metadata("design:returntype", void 0)
 ], SuppliersController.prototype, "findOne", null);
 __decorate([
@@ -77,8 +85,9 @@ __decorate([
     (0, swagger_1.ApiOperation)({ summary: 'Update a supplier' }),
     __param(0, (0, common_1.Param)('id')),
     __param(1, (0, common_1.Body)()),
+    __param(2, (0, common_1.Request)()),
     __metadata("design:type", Function),
-    __metadata("design:paramtypes", [String, update_supplier_dto_1.UpdateSupplierDto]),
+    __metadata("design:paramtypes", [String, update_supplier_dto_1.UpdateSupplierDto, Object]),
     __metadata("design:returntype", void 0)
 ], SuppliersController.prototype, "update", null);
 __decorate([
@@ -86,8 +95,9 @@ __decorate([
     (0, roles_decorator_1.Roles)('ADMIN'),
     (0, swagger_1.ApiOperation)({ summary: 'Delete a supplier (Admin only)' }),
     __param(0, (0, common_1.Param)('id')),
+    __param(1, (0, common_1.Request)()),
     __metadata("design:type", Function),
-    __metadata("design:paramtypes", [String]),
+    __metadata("design:paramtypes", [String, Object]),
     __metadata("design:returntype", void 0)
 ], SuppliersController.prototype, "remove", null);
 exports.SuppliersController = SuppliersController = __decorate([

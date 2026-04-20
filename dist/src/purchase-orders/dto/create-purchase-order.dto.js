@@ -21,6 +21,7 @@ class CreatePurchaseOrderDto {
     totalAmount;
     status;
     expectedDelivery;
+    branchId;
 }
 exports.CreatePurchaseOrderDto = CreatePurchaseOrderDto;
 __decorate([
@@ -53,4 +54,9 @@ __decorate([
     (0, class_validator_1.IsOptional)(),
     __metadata("design:type", String)
 ], CreatePurchaseOrderDto.prototype, "expectedDelivery", void 0);
+__decorate([
+    (0, class_validator_1.IsString)(),
+    (0, class_validator_1.IsOptional)(),
+    __metadata("design:type", String)
+], CreatePurchaseOrderDto.prototype, "branchId", void 0);
 //# sourceMappingURL=create-purchase-order.dto.js.map

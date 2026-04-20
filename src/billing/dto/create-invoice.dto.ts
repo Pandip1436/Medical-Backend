@@ -12,6 +12,10 @@ export class CreateInvoiceDto {
 
   @IsString()
   @IsOptional()
+  branchId?: string;
+
+  @IsString()
+  @IsOptional()
   customerId?: string;
 
   @IsString()

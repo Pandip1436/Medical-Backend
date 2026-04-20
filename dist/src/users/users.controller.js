@@ -26,20 +26,22 @@ let UsersController = class UsersController {
     constructor(usersService) {
         this.usersService = usersService;
     }
-    create(createUserDto) {
-        return this.usersService.create(createUserDto);
+    create(createUserDto, req) {
+        const effectiveBranchId = req.user.branchId ?? createUserDto.branchId;
+        return this.usersService.create({ ...createUserDto, branchId: effectiveBranchId });
     }
-    findAll() {
-        return this.usersService.findAll();
+    findAll(req, branchId) {
+        const effectiveBranchId = req.user.branchId ?? branchId;
+        return this.usersService.findAll(effectiveBranchId);
     }
-    findOne(id) {
-        return this.usersService.findOne(id);
+    findOne(id, req) {
+        return this.usersService.findOne(id, req.user.branchId);
     }
-    update(id, updateUserDto) {
-        return this.usersService.update(id, updateUserDto);
+    update(id, updateUserDto, req) {
+        return this.usersService.update(id, updateUserDto, req.user.branchId);
     }
-    remove(id) {
-        return this.usersService.remove(id);
+    remove(id, req) {
+        return this.usersService.remove(id, req.user.branchId);
     }
 };
 exports.UsersController = UsersController;
@@ -48,16 +50,20 @@ __decorate([
     (0, roles_decorator_1.Roles)('ADMIN'),
     (0, swagger_1.ApiOperation)({ summary: 'Create a new user/staff member' }),
     __param(0, (0, common_1.Body)()),
+    __param(1, (0, common_1.Request)()),
     __metadata("design:type", Function),
-    __metadata("design:paramtypes", [create_user_dto_1.CreateUserDto]),
+    __metadata("design:paramtypes", [create_user_dto_1.CreateUserDto, Object]),
     __metadata("design:returntype", void 0)
 ], UsersController.prototype, "create", null);
 __decorate([
     (0, common_1.Get)(),
     (0, roles_decorator_1.Roles)('ADMIN'),
     (0, swagger_1.ApiOperation)({ summary: 'Get all users' }),
+    (0, swagger_1.ApiQuery)({ name: 'branchId', required: false }),
+    __param(0, (0, common_1.Request)()),
+    __param(1, (0, common_1.Query)('branchId')),
     __metadata("design:type", Function),
-    __metadata("design:paramtypes", []),
+    __metadata("design:paramtypes", [Object, String]),
     __metadata("design:returntype", void 0)
 ], UsersController.prototype, "findAll", null);
 __decorate([
@@ -65,8 +71,9 @@ __decorate([
     (0, roles_decorator_1.Roles)('ADMIN'),
     (0, swagger_1.ApiOperation)({ summary: 'Get single user details' }),
     __param(0, (0, common_1.Param)('id')),
+    __param(1, (0, common_1.Request)()),
     __metadata("design:type", Function),
-    __metadata("design:paramtypes", [String]),
+    __metadata("design:paramtypes", [String, Object]),
     __metadata("design:returntype", void 0)
 ], UsersController.prototype, "findOne", null);
 __decorate([
@@ -75,8 +82,9 @@ __decorate([
     (0, swagger_1.ApiOperation)({ summary: 'Update a user' }),
     __param(0, (0, common_1.Param)('id')),
     __param(1, (0, common_1.Body)()),
+    __param(2, (0, common_1.Request)()),
     __metadata("design:type", Function),
-    __metadata("design:paramtypes", [String, update_user_dto_1.UpdateUserDto]),
+    __metadata("design:paramtypes", [String, update_user_dto_1.UpdateUserDto, Object]),
     __metadata("design:returntype", void 0)
 ], UsersController.prototype, "update", null);
 __decorate([
@@ -84,8 +92,9 @@ __decorate([
     (0, roles_decorator_1.Roles)('ADMIN'),
     (0, swagger_1.ApiOperation)({ summary: 'Delete a user' }),
     __param(0, (0, common_1.Param)('id')),
+    __param(1, (0, common_1.Request)()),
     __metadata("design:type", Function),
-    __metadata("design:paramtypes", [String]),
+    __metadata("design:paramtypes", [String, Object]),
     __metadata("design:returntype", void 0)
 ], UsersController.prototype, "remove", null);
 exports.UsersController = UsersController = __decorate([

@@ -5,5 +5,6 @@ export declare class CreateUserDto {
     phone: string;
     password: string;
     role: Role;
+    branchId?: string;
     isActive?: boolean;
 }

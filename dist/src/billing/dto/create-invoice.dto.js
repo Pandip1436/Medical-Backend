@@ -17,6 +17,7 @@ const create_invoice_item_dto_1 = require("./create-invoice-item.dto");
 class CreateInvoiceDto {
     type;
     billingType;
+    branchId;
     customerId;
     customerName;
     doctorName;
@@ -44,6 +45,11 @@ __decorate([
     (0, class_validator_1.IsEnum)(client_1.BillingType),
     __metadata("design:type", String)
 ], CreateInvoiceDto.prototype, "billingType", void 0);
+__decorate([
+    (0, class_validator_1.IsString)(),
+    (0, class_validator_1.IsOptional)(),
+    __metadata("design:type", String)
+], CreateInvoiceDto.prototype, "branchId", void 0);
 __decorate([
     (0, class_validator_1.IsString)(),
     (0, class_validator_1.IsOptional)(),

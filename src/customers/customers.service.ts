@@ -7,53 +7,54 @@ import { UpdateCustomerDto } from './dto/update-customer.dto';
 export class CustomersService {
   constructor(private readonly prisma: PrismaService) {}
 
-  create(createCustomerDto: CreateCustomerDto) {
-    return this.prisma.customer.create({
-      data: createCustomerDto,
-    });
+  create(createCustomerDto: CreateCustomerDto & { branchId?: string }) {
+    return this.prisma.customer.create({ data: createCustomerDto });
   }
 
-  findAll(query?: string) {
+  findAll(query?: string, branchId?: string) {
+    const where: any = {};
+    if (branchId) where.branchId = branchId;
     if (query) {
-      return this.prisma.customer.findMany({
-        where: {
-          OR: [
-            { name: { contains: query, mode: 'insensitive' } },
-            { phone: { contains: query } },
-          ],
-        },
-      });
+      where.OR = [
+        { name: { contains: query, mode: 'insensitive' } },
+        { phone: { contains: query } },
+      ];
     }
-    return this.prisma.customer.findMany();
+    return this.prisma.customer.findMany({ where });
   }
 
-  async findOne(id: string) {
+  async findOne(id: string, branchId?: string) {
     const customer = await this.prisma.customer.findUnique({
       where: { id },
       include: {
         prescriptions: true,
-        invoices: {
-          take: 10,
-          orderBy: { date: 'desc' }
-        }
-      }
+        invoices: { take: 10, orderBy: { date: 'desc' } },
+      },
     });
     if (!customer) throw new NotFoundException('Customer not found');
+    if (branchId && customer.branchId && customer.branchId !== branchId) {
+      throw new NotFoundException('Customer not found');
+    }
     return customer;
   }
 
-  async update(id: string, updateCustomerDto: UpdateCustomerDto) {
-    await this.findOne(id);
-    return this.prisma.customer.update({
-      where: { id },
-      data: updateCustomerDto,
-    });
+  async update(id: string, updateCustomerDto: UpdateCustomerDto, branchId?: string) {
+    await this.findOne(id, branchId);
+    return this.prisma.customer.update({ where: { id }, data: updateCustomerDto });
   }
 
-  async remove(id: string) {
-    await this.findOne(id);
-    return this.prisma.customer.delete({
+  async remove(id: string, branchId?: string) {
+    await this.findOne(id, branchId);
+    return this.prisma.customer.delete({ where: { id } });
+  }
+
+  async recordPayment(id: string, amount: number, paymentMode: string, referenceNumber?: string, branchId?: string) {
+    const customer = await this.findOne(id, branchId);
+    const newOutstanding = Math.max(0, Number(customer.currentOutstanding) - amount);
+    await this.prisma.customer.update({
       where: { id },
+      data: { currentOutstanding: newOutstanding },
     });
+    return { success: true, customerId: id, amountRecorded: amount, newOutstanding };
   }
 }

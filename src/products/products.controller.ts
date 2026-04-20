@@ -1,8 +1,10 @@
-import { Controller, Get, Post, Body, Patch, Param, Delete, Query, UseGuards } from '@nestjs/common';
+import { Controller, Get, Post, Body, Patch, Param, Delete, Query, UseGuards, UseInterceptors, UploadedFile, BadRequestException, Request } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { memoryStorage } from 'multer';
 import { ProductsService } from './products.service';
 import { CreateProductDto } from './dto/create-product.dto';
 import { UpdateProductDto } from './dto/update-product.dto';
-import { ApiTags, ApiOperation, ApiBearerAuth, ApiQuery } from '@nestjs/swagger';
+import { ApiTags, ApiOperation, ApiBearerAuth, ApiQuery, ApiConsumes } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
 import { Roles } from '../common/decorators/roles.decorator';
@@ -14,39 +16,95 @@ import { Roles } from '../common/decorators/roles.decorator';
 export class ProductsController {
   constructor(private readonly productsService: ProductsService) {}
 
+  @Post('import-csv')
+  @Roles('ADMIN', 'INVENTORY_MANAGER')
+  @ApiOperation({ summary: 'Bulk import products from a CSV file' })
+  @ApiConsumes('multipart/form-data')
+  @UseInterceptors(FileInterceptor('file', { storage: memoryStorage() }))
+  importCsv(
+    @UploadedFile() file: Express.Multer.File,
+    @Request() req: any,
+    @Query('branchId') branchId?: string,
+  ) {
+    if (!file) throw new BadRequestException('No file uploaded');
+    if (!file.originalname.endsWith('.csv') && file.mimetype !== 'text/csv') {
+      throw new BadRequestException('Only CSV files are accepted');
+    }
+    const effectiveBranchId = req.user.branchId ?? branchId;
+    return this.productsService.importCsv(file.buffer, effectiveBranchId);
+  }
+
   @Post()
   @Roles('ADMIN', 'PHARMACIST', 'INVENTORY_MANAGER')
-  @ApiOperation({ summary: 'Create a new product master record' })
-  create(@Body() createProductDto: CreateProductDto) {
-    return this.productsService.create(createProductDto);
+  @ApiOperation({ summary: 'Create a new product' })
+  create(
+    @Body() createProductDto: CreateProductDto,
+    @Request() req: any,
+    @Query('branchId') branchId?: string,
+  ) {
+    const effectiveBranchId = req.user.branchId ?? branchId ?? (createProductDto as any)['branchId'];
+    return this.productsService.create({ ...createProductDto, branchId: effectiveBranchId });
   }
 
   @Get()
   @Roles('ADMIN', 'PHARMACIST', 'INVENTORY_MANAGER', 'ACCOUNTANT')
-  @ApiOperation({ summary: 'Get all products or search by term' })
-  @ApiQuery({ name: 'q', required: false, description: 'Search term for name or barcode' })
-  findAll(@Query('q') q?: string) {
-    return this.productsService.findAll(q);
+  @ApiOperation({ summary: 'Get all products for a branch (paginated when skip/take provided)' })
+  @ApiQuery({ name: 'q', required: false })
+  @ApiQuery({ name: 'category', required: false })
+  @ApiQuery({ name: 'schedule', required: false })
+  @ApiQuery({ name: 'skip', required: false })
+  @ApiQuery({ name: 'take', required: false })
+  @ApiQuery({ name: 'branchId', required: false })
+  findAll(
+    @Request() req: any,
+    @Query('q') q?: string,
+    @Query('category') category?: string,
+    @Query('schedule') schedule?: string,
+    @Query('skip') skip?: string,
+    @Query('take') take?: string,
+    @Query('branchId') branchId?: string,
+  ) {
+    const effectiveBranchId = req.user.branchId ?? branchId;
+    return this.productsService.findAll({
+      query: q,
+      category,
+      schedule,
+      skip: skip !== undefined ? Number(skip) : undefined,
+      take: take !== undefined ? Number(take) : undefined,
+      branchId: effectiveBranchId,
+    });
   }
 
   @Get(':id')
   @Roles('ADMIN', 'PHARMACIST', 'INVENTORY_MANAGER')
   @ApiOperation({ summary: 'Get product details by ID including batches' })
-  findOne(@Param('id') id: string) {
-    return this.productsService.findOne(id);
+  findOne(@Param('id') id: string, @Request() req: any) {
+    return this.productsService.findOne(id, req.user.branchId);
   }
 
   @Patch(':id')
   @Roles('ADMIN', 'INVENTORY_MANAGER')
-  @ApiOperation({ summary: 'Update a product (Admin/Inventory Manager only)' })
-  update(@Param('id') id: string, @Body() updateProductDto: UpdateProductDto) {
-    return this.productsService.update(id, updateProductDto);
+  @ApiOperation({ summary: 'Update a product' })
+  update(@Param('id') id: string, @Body() updateProductDto: UpdateProductDto, @Request() req: any) {
+    return this.productsService.update(id, updateProductDto, req.user.branchId);
+  }
+
+  @Patch(':id/batches/:batchId/adjust')
+  @Roles('ADMIN', 'INVENTORY_MANAGER')
+  @ApiOperation({ summary: 'Adjust stock quantity for a specific batch' })
+  adjust(
+    @Param('id') id: string,
+    @Param('batchId') batchId: string,
+    @Body() body: { adjustedQty: number; reason: string; notes?: string },
+    @Request() req: any,
+  ) {
+    return this.productsService.adjustBatchStock(id, batchId, body, req.user.branchId);
   }
 
   @Delete(':id')
   @Roles('ADMIN')
   @ApiOperation({ summary: 'Delete a product (Admin only)' })
-  remove(@Param('id') id: string) {
-    return this.productsService.remove(id);
+  remove(@Param('id') id: string, @Request() req: any) {
+    return this.productsService.remove(id, req.user.branchId);
   }
 }

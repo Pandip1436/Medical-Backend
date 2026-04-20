@@ -24,6 +24,7 @@ class CreateGrnDto {
     items;
     totalAmount;
     status;
+    branchId;
 }
 exports.CreateGrnDto = CreateGrnDto;
 __decorate([
@@ -71,4 +72,9 @@ __decorate([
     (0, class_validator_1.IsEnum)(client_1.GRNStatus),
     __metadata("design:type", String)
 ], CreateGrnDto.prototype, "status", void 0);
+__decorate([
+    (0, class_validator_1.IsString)(),
+    (0, class_validator_1.IsOptional)(),
+    __metadata("design:type", String)
+], CreateGrnDto.prototype, "branchId", void 0);
 //# sourceMappingURL=create-grn.dto.js.map

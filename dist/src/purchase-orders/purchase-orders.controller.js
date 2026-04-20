@@ -27,19 +27,21 @@ let PurchaseOrdersController = class PurchaseOrdersController {
         this.poService = poService;
     }
     create(createPurchaseOrderDto, req) {
-        return this.poService.create(createPurchaseOrderDto, req.user.userId);
+        const effectiveBranchId = req.user.branchId ?? createPurchaseOrderDto.branchId;
+        return this.poService.create(createPurchaseOrderDto, req.user.userId, effectiveBranchId);
     }
-    findAll(q) {
-        return this.poService.findAll(q);
+    findAll(req, q, branchId) {
+        const effectiveBranchId = req.user.branchId ?? branchId;
+        return this.poService.findAll(q, effectiveBranchId);
     }
-    findOne(id) {
-        return this.poService.findOne(id);
+    findOne(id, req) {
+        return this.poService.findOne(id, req.user.branchId);
     }
-    update(id, updatePurchaseOrderDto) {
-        return this.poService.update(id, updatePurchaseOrderDto);
+    update(id, updatePurchaseOrderDto, req) {
+        return this.poService.update(id, updatePurchaseOrderDto, req.user.branchId);
     }
-    remove(id) {
-        return this.poService.remove(id);
+    remove(id, req) {
+        return this.poService.remove(id, req.user.branchId);
     }
 };
 exports.PurchaseOrdersController = PurchaseOrdersController;
@@ -57,10 +59,13 @@ __decorate([
     (0, common_1.Get)(),
     (0, roles_decorator_1.Roles)('ADMIN', 'INVENTORY_MANAGER', 'PHARMACIST', 'ACCOUNTANT'),
     (0, swagger_1.ApiOperation)({ summary: 'List all Purchase Orders or search' }),
+    (0, swagger_1.ApiQuery)({ name: 'branchId', required: false }),
     (0, swagger_1.ApiQuery)({ name: 'q', required: false, description: 'Search term for PO number or supplier' }),
-    __param(0, (0, common_1.Query)('q')),
+    __param(0, (0, common_1.Request)()),
+    __param(1, (0, common_1.Query)('q')),
+    __param(2, (0, common_1.Query)('branchId')),
     __metadata("design:type", Function),
-    __metadata("design:paramtypes", [String]),
+    __metadata("design:paramtypes", [Object, String, String]),
     __metadata("design:returntype", void 0)
 ], PurchaseOrdersController.prototype, "findAll", null);
 __decorate([
@@ -68,8 +73,9 @@ __decorate([
     (0, roles_decorator_1.Roles)('ADMIN', 'INVENTORY_MANAGER', 'PHARMACIST', 'ACCOUNTANT'),
     (0, swagger_1.ApiOperation)({ summary: 'Get specific Purchase Order details' }),
     __param(0, (0, common_1.Param)('id')),
+    __param(1, (0, common_1.Request)()),
     __metadata("design:type", Function),
-    __metadata("design:paramtypes", [String]),
+    __metadata("design:paramtypes", [String, Object]),
     __metadata("design:returntype", void 0)
 ], PurchaseOrdersController.prototype, "findOne", null);
 __decorate([
@@ -78,8 +84,9 @@ __decorate([
     (0, swagger_1.ApiOperation)({ summary: 'Update a Purchase Order' }),
     __param(0, (0, common_1.Param)('id')),
     __param(1, (0, common_1.Body)()),
+    __param(2, (0, common_1.Request)()),
     __metadata("design:type", Function),
-    __metadata("design:paramtypes", [String, update_purchase_order_dto_1.UpdatePurchaseOrderDto]),
+    __metadata("design:paramtypes", [String, update_purchase_order_dto_1.UpdatePurchaseOrderDto, Object]),
     __metadata("design:returntype", void 0)
 ], PurchaseOrdersController.prototype, "update", null);
 __decorate([
@@ -87,8 +94,9 @@ __decorate([
     (0, roles_decorator_1.Roles)('ADMIN', 'INVENTORY_MANAGER'),
     (0, swagger_1.ApiOperation)({ summary: 'Delete a Purchase Order' }),
     __param(0, (0, common_1.Param)('id')),
+    __param(1, (0, common_1.Request)()),
     __metadata("design:type", Function),
-    __metadata("design:paramtypes", [String]),
+    __metadata("design:paramtypes", [String, Object]),
     __metadata("design:returntype", void 0)
 ], PurchaseOrdersController.prototype, "remove", null);
 exports.PurchaseOrdersController = PurchaseOrdersController = __decorate([

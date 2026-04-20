@@ -15,6 +15,7 @@ const client_1 = require("@prisma/client");
 class CreateProductDto {
     name;
     genericName;
+    saltComposition;
     manufacturer;
     category;
     subCategory;
@@ -46,6 +47,11 @@ __decorate([
     (0, class_validator_1.IsNotEmpty)(),
     __metadata("design:type", String)
 ], CreateProductDto.prototype, "genericName", void 0);
+__decorate([
+    (0, class_validator_1.IsString)(),
+    (0, class_validator_1.IsOptional)(),
+    __metadata("design:type", String)
+], CreateProductDto.prototype, "saltComposition", void 0);
 __decorate([
     (0, class_validator_1.IsString)(),
     (0, class_validator_1.IsNotEmpty)(),

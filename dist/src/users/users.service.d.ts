@@ -12,9 +12,15 @@ export declare class UsersService {
         role: import(".prisma/client").$Enums.Role;
         isActive: boolean;
         lastLogin: Date | null;
+        branchId: string | null;
         createdAt: Date;
+        branch: {
+            id: string;
+            name: string;
+            code: string;
+        } | null;
     }>;
-    findAll(): import(".prisma/client").Prisma.PrismaPromise<{
+    findAll(branchId?: string): import(".prisma/client").Prisma.PrismaPromise<{
         id: string;
         email: string;
         name: string;
@@ -22,8 +28,14 @@ export declare class UsersService {
         role: import(".prisma/client").$Enums.Role;
         isActive: boolean;
         lastLogin: Date | null;
+        branchId: string | null;
+        branch: {
+            id: string;
+            name: string;
+            code: string;
+        } | null;
     }[]>;
-    findOne(id: string): Promise<{
+    findOne(id: string, branchId?: string): Promise<{
         id: string;
         email: string;
         name: string;
@@ -31,17 +43,29 @@ export declare class UsersService {
         role: import(".prisma/client").$Enums.Role;
         isActive: boolean;
         lastLogin: Date | null;
+        branchId: string | null;
         createdAt: Date;
+        branch: {
+            id: string;
+            name: string;
+            code: string;
+        } | null;
     }>;
-    update(id: string, updateUserDto: UpdateUserDto): Promise<{
+    update(id: string, updateUserDto: UpdateUserDto, branchId?: string): Promise<{
         id: string;
         email: string;
         name: string;
         phone: string;
         role: import(".prisma/client").$Enums.Role;
         isActive: boolean;
+        branchId: string | null;
+        branch: {
+            id: string;
+            name: string;
+            code: string;
+        } | null;
     }>;
-    remove(id: string): Promise<{
+    remove(id: string, branchId?: string): Promise<{
         password: string;
         id: string;
         email: string;
@@ -50,6 +74,7 @@ export declare class UsersService {
         role: import(".prisma/client").$Enums.Role;
         isActive: boolean;
         lastLogin: Date | null;
+        branchId: string | null;
         createdAt: Date;
     }>;
 }

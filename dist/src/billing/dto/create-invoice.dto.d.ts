@@ -3,6 +3,7 @@ import { CreateInvoiceItemDto } from './create-invoice-item.dto';
 export declare class CreateInvoiceDto {
     type: InvoiceType;
     billingType: BillingType;
+    branchId?: string;
     customerId?: string;
     customerName: string;
     doctorName?: string;

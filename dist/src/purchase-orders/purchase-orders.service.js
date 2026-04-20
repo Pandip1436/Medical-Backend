@@ -17,12 +17,13 @@ let PurchaseOrdersService = class PurchaseOrdersService {
     constructor(prisma) {
         this.prisma = prisma;
     }
-    async create(createPurchaseOrderDto, userId) {
+    async create(createPurchaseOrderDto, userId, branchId) {
         return this.prisma.$transaction(async (tx) => {
             const poNumber = `PO-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
             return tx.purchaseOrder.create({
                 data: {
                     poNumber,
+                    branchId,
                     supplierId: createPurchaseOrderDto.supplierId,
                     supplierName: createPurchaseOrderDto.supplierName,
                     totalAmount: createPurchaseOrderDto.totalAmount,
@@ -44,34 +45,38 @@ let PurchaseOrdersService = class PurchaseOrdersService {
             });
         });
     }
-    findAll(query) {
+    findAll(query, branchId) {
+        const where = {};
+        if (branchId)
+            where.branchId = branchId;
         if (query) {
-            return this.prisma.purchaseOrder.findMany({
-                where: {
-                    OR: [
-                        { poNumber: { contains: query, mode: 'insensitive' } },
-                        { supplierName: { contains: query, mode: 'insensitive' } },
-                    ],
-                },
-                orderBy: { date: 'desc' },
-            });
+            where.OR = [
+                { poNumber: { contains: query, mode: 'insensitive' } },
+                { supplierName: { contains: query, mode: 'insensitive' } },
+            ];
         }
-        return this.prisma.purchaseOrder.findMany({ orderBy: { date: 'desc' } });
+        return this.prisma.purchaseOrder.findMany({ where, include: { items: true }, orderBy: { date: 'desc' } });
     }
-    async findOne(id) {
+    async findOne(id, branchId) {
         const po = await this.prisma.purchaseOrder.findUnique({
             where: { id },
             include: { items: true }
         });
         if (!po)
             throw new common_1.NotFoundException('Purchase Order not found');
+        if (branchId && po.branchId && po.branchId !== branchId) {
+            throw new common_1.NotFoundException('Purchase Order not found');
+        }
         return po;
     }
-    async update(id, updatePurchaseOrderDto) {
+    async update(id, updatePurchaseOrderDto, branchId) {
         return this.prisma.$transaction(async (tx) => {
             const existingPo = await tx.purchaseOrder.findUnique({ where: { id }, include: { items: true } });
             if (!existingPo)
                 throw new common_1.NotFoundException('Purchase order not found');
+            if (branchId && existingPo.branchId && existingPo.branchId !== branchId) {
+                throw new common_1.NotFoundException('Purchase order not found');
+            }
             if (updatePurchaseOrderDto.items) {
                 await tx.purchaseOrderItem.deleteMany({ where: { purchaseOrderId: id } });
             }
@@ -100,8 +105,14 @@ let PurchaseOrdersService = class PurchaseOrdersService {
             });
         });
     }
-    async remove(id) {
+    async remove(id, branchId) {
         return this.prisma.$transaction(async (tx) => {
+            const existing = await tx.purchaseOrder.findUnique({ where: { id } });
+            if (!existing)
+                throw new common_1.NotFoundException('Purchase order not found');
+            if (branchId && existing.branchId && existing.branchId !== branchId) {
+                throw new common_1.NotFoundException('Purchase order not found');
+            }
             await tx.purchaseOrderItem.deleteMany({ where: { purchaseOrderId: id } });
             return tx.purchaseOrder.delete({ where: { id } });
         });

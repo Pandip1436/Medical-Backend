@@ -28,14 +28,19 @@ export class UsersService {
         role: true,
         phone: true,
         isActive: true,
+        branchId: true,
+        branch: { select: { id: true, name: true, code: true } },
         createdAt: true,
         lastLogin: true,
       }
     });
   }
 
-  findAll() {
+  findAll(branchId?: string) {
+    const where: any = {};
+    if (branchId) where.branchId = branchId;
     return this.prisma.user.findMany({
+      where,
       select: {
         id: true,
         name: true,
@@ -43,12 +48,14 @@ export class UsersService {
         role: true,
         phone: true,
         isActive: true,
+        branchId: true,
+        branch: { select: { id: true, name: true, code: true } },
         lastLogin: true,
       }
     });
   }
 
-  async findOne(id: string) {
+  async findOne(id: string, branchId?: string) {
     const user = await this.prisma.user.findUnique({
       where: { id },
       select: {
@@ -58,16 +65,21 @@ export class UsersService {
         role: true,
         phone: true,
         isActive: true,
+        branchId: true,
+        branch: { select: { id: true, name: true, code: true } },
         createdAt: true,
         lastLogin: true,
       }
     });
     if (!user) throw new NotFoundException('User not found');
+    if (branchId && user.branchId && user.branchId !== branchId) {
+      throw new NotFoundException('User not found');
+    }
     return user;
   }
 
-  async update(id: string, updateUserDto: UpdateUserDto) {
-    await this.findOne(id);
+  async update(id: string, updateUserDto: UpdateUserDto, branchId?: string) {
+    await this.findOne(id, branchId);
     
     let updateData: any = { ...updateUserDto };
     
@@ -85,12 +97,14 @@ export class UsersService {
         role: true,
         phone: true,
         isActive: true,
+        branchId: true,
+        branch: { select: { id: true, name: true, code: true } },
       }
     });
   }
 
-  async remove(id: string) {
-    await this.findOne(id);
+  async remove(id: string, branchId?: string) {
+    await this.findOne(id, branchId);
     return this.prisma.user.delete({
       where: { id },
     });

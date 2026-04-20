@@ -10,4 +10,5 @@ export declare class CreateSupplierDto {
     paymentTerms: PaymentTerms;
     bankDetails?: string;
     isActive?: boolean;
+    branchId?: string;
 }
