@@ -47,9 +47,8 @@ COPY --from=builder /app/prisma ./prisma
 # Create uploads folder
 RUN mkdir -p uploads
 
-# Expose port (Cloud Run sets PORT env var)
-ENV PORT=3001
-EXPOSE 3001
+# Cloud Run injects PORT automatically (default 8080)
+EXPOSE 8080
 
 # Command to run migrations and then start the server
 # Note: In production, 'prisma migrate deploy' is used for zero-downtime safe migrations
