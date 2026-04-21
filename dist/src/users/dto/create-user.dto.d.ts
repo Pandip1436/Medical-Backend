@@ -7,4 +7,5 @@ export declare class CreateUserDto {
     role: Role;
     branchId?: string;
     isActive?: boolean;
+    commissionRate?: number;
 }

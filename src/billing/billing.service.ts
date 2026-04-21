@@ -66,6 +66,8 @@ export class BillingService {
           status: createInvoiceDto.status,
           amountPaid: createInvoiceDto.amountPaid,
           changeReturned: createInvoiceDto.changeReturned,
+          salespersonId: createInvoiceDto.salespersonId ?? null,
+          salespersonName: createInvoiceDto.salespersonName ?? null,
           createdById: userId,
           items: {
             create: createInvoiceDto.items.map(item => ({

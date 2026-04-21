@@ -23,7 +23,7 @@ export class BillingController {
   }
 
   @Get()
-  @Roles('ADMIN', 'PHARMACIST', 'ACCOUNTANT')
+  @Roles('ADMIN', 'PHARMACIST', 'ACCOUNTANT', 'SALESPERSON')
   @ApiOperation({ summary: 'Get all invoices or search' })
   @ApiQuery({ name: 'q', required: false })
   @ApiQuery({ name: 'customerId', required: false })
@@ -41,7 +41,7 @@ export class BillingController {
   }
 
   @Get(':id')
-  @Roles('ADMIN', 'PHARMACIST', 'ACCOUNTANT')
+  @Roles('ADMIN', 'PHARMACIST', 'ACCOUNTANT', 'SALESPERSON')
   @ApiOperation({ summary: 'Get specific invoice by ID with items' })
   findOne(@Param('id') id: string, @Request() req: any) {
     return this.billingService.findOne(id, req.user.branchId);

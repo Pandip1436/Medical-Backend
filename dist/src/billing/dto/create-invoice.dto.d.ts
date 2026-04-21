@@ -21,4 +21,6 @@ export declare class CreateInvoiceDto {
     status: InvoiceStatus;
     amountPaid: number;
     changeReturned: number;
+    salespersonId?: string;
+    salespersonName?: string;
 }

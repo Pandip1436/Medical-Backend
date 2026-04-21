@@ -20,9 +20,16 @@ exports.AuthModule = AuthModule = __decorate([
     (0, common_1.Module)({
         imports: [
             passport_1.PassportModule,
-            jwt_1.JwtModule.register({
-                secret: process.env.JWT_SECRET || 'pbims-super-secret-key-2026',
-                signOptions: { expiresIn: (process.env.JWT_EXPIRES_IN || '8h') },
+            jwt_1.JwtModule.registerAsync({
+                useFactory: () => {
+                    const secret = process.env.JWT_SECRET;
+                    if (!secret)
+                        throw new Error('JWT_SECRET environment variable is not set');
+                    return {
+                        secret,
+                        signOptions: { expiresIn: (process.env.JWT_EXPIRES_IN || '8h') },
+                    };
+                },
             }),
         ],
         controllers: [auth_controller_1.AuthController],

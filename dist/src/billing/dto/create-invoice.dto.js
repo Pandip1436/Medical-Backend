@@ -35,6 +35,8 @@ class CreateInvoiceDto {
     status;
     amountPaid;
     changeReturned;
+    salespersonId;
+    salespersonName;
 }
 exports.CreateInvoiceDto = CreateInvoiceDto;
 __decorate([
@@ -133,4 +135,14 @@ __decorate([
     (0, class_validator_1.Min)(0),
     __metadata("design:type", Number)
 ], CreateInvoiceDto.prototype, "changeReturned", void 0);
+__decorate([
+    (0, class_validator_1.IsOptional)(),
+    (0, class_validator_1.IsString)(),
+    __metadata("design:type", String)
+], CreateInvoiceDto.prototype, "salespersonId", void 0);
+__decorate([
+    (0, class_validator_1.IsOptional)(),
+    (0, class_validator_1.IsString)(),
+    __metadata("design:type", String)
+], CreateInvoiceDto.prototype, "salespersonName", void 0);
 //# sourceMappingURL=create-invoice.dto.js.map

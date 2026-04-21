@@ -79,4 +79,12 @@ export class CreateInvoiceDto {
   @IsNumber()
   @Min(0)
   changeReturned: number;
+
+  @IsOptional()
+  @IsString()
+  salespersonId?: string;
+
+  @IsOptional()
+  @IsString()
+  salespersonName?: string;
 }

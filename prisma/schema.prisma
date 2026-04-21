@@ -36,19 +36,21 @@ model Branch {
 
 // ── Users & Auth ──────────────────────────────────────────────
 model User {
-  id          String    @id @default(cuid())
-  name        String
-  email       String    @unique
-  phone       String
-  password    String    // bcrypt hashed
-  role        Role      @default(PHARMACIST)
-  isActive    Boolean   @default(true)
-  lastLogin   DateTime?
-  branchId    String?
-  branch      Branch?   @relation(fields: [branchId], references: [id])
-  createdAt   DateTime  @default(now())
-  invoices    Invoice[]
-  auditLogs   AuditLog[]
+  id             String    @id @default(cuid())
+  name           String
+  email          String    @unique
+  phone          String
+  password       String    // bcrypt hashed
+  role           Role      @default(PHARMACIST)
+  isActive       Boolean   @default(true)
+  lastLogin      DateTime?
+  branchId       String?
+  branch         Branch?   @relation(fields: [branchId], references: [id])
+  commissionRate Decimal   @default(0) // % commission for SALESPERSON role
+  createdAt      DateTime  @default(now())
+  invoices             Invoice[]  @relation("UserInvoices")
+  salespersonInvoices  Invoice[]  @relation("SalespersonInvoices")
+  auditLogs            AuditLog[]
 }
 
 enum Role {
@@ -56,6 +58,7 @@ enum Role {
   PHARMACIST
   INVENTORY_MANAGER
   ACCOUNTANT
+  SALESPERSON
 }
 
 // ── Customers ─────────────────────────────────────────────────
@@ -236,6 +239,9 @@ model Invoice {
   doctorId        String?
   doctor          Doctor?       @relation(fields: [doctorId], references: [id])
   doctorName      String?
+  salespersonId   String?
+  salesperson     User?         @relation("SalespersonInvoices", fields: [salespersonId], references: [id])
+  salespersonName String?
   items           InvoiceItem[]
   subtotal        Decimal
   productDiscount Decimal       @default(0)
@@ -251,7 +257,7 @@ model Invoice {
   amountPaid      Decimal
   changeReturned  Decimal       @default(0)
   createdById     String
-  createdBy       User          @relation(fields: [createdById], references: [id])
+  createdBy       User          @relation(fields: [createdById], references: [id], name: "UserInvoices")
   createdAt       DateTime      @default(now())
   creditNotes     CreditNote[]
 }

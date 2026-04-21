@@ -76,7 +76,7 @@ __decorate([
 ], BillingController.prototype, "create", null);
 __decorate([
     (0, common_1.Get)(),
-    (0, roles_decorator_1.Roles)('ADMIN', 'PHARMACIST', 'ACCOUNTANT'),
+    (0, roles_decorator_1.Roles)('ADMIN', 'PHARMACIST', 'ACCOUNTANT', 'SALESPERSON'),
     (0, swagger_1.ApiOperation)({ summary: 'Get all invoices or search' }),
     (0, swagger_1.ApiQuery)({ name: 'q', required: false }),
     (0, swagger_1.ApiQuery)({ name: 'customerId', required: false }),
@@ -93,7 +93,7 @@ __decorate([
 ], BillingController.prototype, "findAll", null);
 __decorate([
     (0, common_1.Get)(':id'),
-    (0, roles_decorator_1.Roles)('ADMIN', 'PHARMACIST', 'ACCOUNTANT'),
+    (0, roles_decorator_1.Roles)('ADMIN', 'PHARMACIST', 'ACCOUNTANT', 'SALESPERSON'),
     (0, swagger_1.ApiOperation)({ summary: 'Get specific invoice by ID with items' }),
     __param(0, (0, common_1.Param)('id')),
     __param(1, (0, common_1.Request)()),

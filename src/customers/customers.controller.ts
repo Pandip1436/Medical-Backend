@@ -27,7 +27,7 @@ export class CustomersController {
   }
 
   @Get()
-  @Roles('ADMIN', 'PHARMACIST', 'ACCOUNTANT')
+  @Roles('ADMIN', 'PHARMACIST', 'ACCOUNTANT', 'SALESPERSON')
   @ApiOperation({ summary: 'Get all customers for a branch or search by name/phone' })
   @ApiQuery({ name: 'q', required: false })
   @ApiQuery({ name: 'branchId', required: false })
@@ -41,7 +41,7 @@ export class CustomersController {
   }
 
   @Get(':id')
-  @Roles('ADMIN', 'PHARMACIST', 'ACCOUNTANT')
+  @Roles('ADMIN', 'PHARMACIST', 'ACCOUNTANT', 'SALESPERSON')
   @ApiOperation({ summary: 'Get customer details including prescriptions and recent invoices' })
   findOne(@Param('id') id: string, @Request() req: any) {
     return this.customersService.findOne(id, req.user.branchId);

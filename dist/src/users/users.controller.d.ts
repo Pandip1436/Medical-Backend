@@ -75,6 +75,7 @@ export declare class UsersController {
         isActive: boolean;
         lastLogin: Date | null;
         branchId: string | null;
+        commissionRate: import("@prisma/client/runtime/library").Decimal;
         createdAt: Date;
     }>;
 }

@@ -20,6 +20,7 @@ class CreateUserDto {
     role;
     branchId;
     isActive;
+    commissionRate;
 }
 exports.CreateUserDto = CreateUserDto;
 __decorate([
@@ -57,4 +58,11 @@ __decorate([
     (0, class_validator_1.IsOptional)(),
     __metadata("design:type", Boolean)
 ], CreateUserDto.prototype, "isActive", void 0);
+__decorate([
+    (0, class_validator_1.IsNumber)(),
+    (0, class_validator_1.Min)(0),
+    (0, class_validator_1.Max)(100),
+    (0, class_validator_1.IsOptional)(),
+    __metadata("design:type", Number)
+], CreateUserDto.prototype, "commissionRate", void 0);
 //# sourceMappingURL=create-user.dto.js.map

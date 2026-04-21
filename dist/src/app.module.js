@@ -30,6 +30,7 @@ const prescriptions_module_1 = require("./prescriptions/prescriptions.module");
 const expenses_module_1 = require("./expenses/expenses.module");
 const doctors_module_1 = require("./doctors/doctors.module");
 const branches_module_1 = require("./branches/branches.module");
+const salespersons_module_1 = require("./salespersons/salespersons.module");
 const serve_static_1 = require("@nestjs/serve-static");
 const path_1 = require("path");
 let AppModule = class AppModule {
@@ -60,6 +61,7 @@ exports.AppModule = AppModule = __decorate([
             expenses_module_1.ExpensesModule,
             doctors_module_1.DoctorsModule,
             branches_module_1.BranchesModule,
+            salespersons_module_1.SalespersonsModule,
         ],
         controllers: [app_controller_1.AppController],
         providers: [

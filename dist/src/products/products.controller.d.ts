@@ -218,6 +218,25 @@ export declare class ProductsController {
         barcode: string | null;
         totalStock: number;
     }>;
+    bulkAdjust(body: {
+        items: {
+            productId: string;
+            batchId: string;
+            adjustedQty: number;
+            reason: string;
+        }[];
+    }, req: any): Promise<{
+        success: boolean;
+        adjusted: number;
+        items: {
+            productId: string;
+            batchId: string;
+            previousQty: number;
+            newQty: number;
+            diff: number;
+            reason: string;
+        }[];
+    }>;
     adjust(id: string, batchId: string, body: {
         adjustedQty: number;
         reason: string;

@@ -42,12 +42,12 @@ export class ProductsController {
     @Request() req: any,
     @Query('branchId') branchId?: string,
   ) {
-    const effectiveBranchId = req.user.branchId ?? branchId ?? (createProductDto as any)['branchId'];
+    const effectiveBranchId = req.user.branchId ?? branchId;
     return this.productsService.create({ ...createProductDto, branchId: effectiveBranchId });
   }
 
   @Get()
-  @Roles('ADMIN', 'PHARMACIST', 'INVENTORY_MANAGER', 'ACCOUNTANT')
+  @Roles('ADMIN', 'PHARMACIST', 'INVENTORY_MANAGER', 'ACCOUNTANT', 'SALESPERSON')
   @ApiOperation({ summary: 'Get all products for a branch (paginated when skip/take provided)' })
   @ApiQuery({ name: 'q', required: false })
   @ApiQuery({ name: 'category', required: false })
@@ -76,7 +76,7 @@ export class ProductsController {
   }
 
   @Get(':id')
-  @Roles('ADMIN', 'PHARMACIST', 'INVENTORY_MANAGER')
+  @Roles('ADMIN', 'PHARMACIST', 'INVENTORY_MANAGER', 'SALESPERSON')
   @ApiOperation({ summary: 'Get product details by ID including batches' })
   findOne(@Param('id') id: string, @Request() req: any) {
     return this.productsService.findOne(id, req.user.branchId);

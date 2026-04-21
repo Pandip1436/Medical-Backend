@@ -35,6 +35,7 @@ export declare class BillingService {
         billingType: import(".prisma/client").$Enums.BillingType;
         customerName: string;
         doctorName: string | null;
+        salespersonName: string | null;
         productDiscount: import("@prisma/client/runtime/library").Decimal;
         taxableAmount: import("@prisma/client/runtime/library").Decimal;
         roundOff: import("@prisma/client/runtime/library").Decimal;
@@ -45,6 +46,7 @@ export declare class BillingService {
         changeReturned: import("@prisma/client/runtime/library").Decimal;
         customerId: string | null;
         doctorId: string | null;
+        salespersonId: string | null;
     }>;
     findAll(query?: string, customerId?: string, branchId?: string, type?: string): import(".prisma/client").Prisma.PrismaPromise<({
         items: {
@@ -78,6 +80,7 @@ export declare class BillingService {
         billingType: import(".prisma/client").$Enums.BillingType;
         customerName: string;
         doctorName: string | null;
+        salespersonName: string | null;
         productDiscount: import("@prisma/client/runtime/library").Decimal;
         taxableAmount: import("@prisma/client/runtime/library").Decimal;
         roundOff: import("@prisma/client/runtime/library").Decimal;
@@ -88,6 +91,7 @@ export declare class BillingService {
         changeReturned: import("@prisma/client/runtime/library").Decimal;
         customerId: string | null;
         doctorId: string | null;
+        salespersonId: string | null;
     })[]>;
     findOne(id: string, branchId?: string): Promise<{
         items: {
@@ -124,6 +128,7 @@ export declare class BillingService {
         billingType: import(".prisma/client").$Enums.BillingType;
         customerName: string;
         doctorName: string | null;
+        salespersonName: string | null;
         productDiscount: import("@prisma/client/runtime/library").Decimal;
         taxableAmount: import("@prisma/client/runtime/library").Decimal;
         roundOff: import("@prisma/client/runtime/library").Decimal;
@@ -134,6 +139,7 @@ export declare class BillingService {
         changeReturned: import("@prisma/client/runtime/library").Decimal;
         customerId: string | null;
         doctorId: string | null;
+        salespersonId: string | null;
     }>;
     convertToInvoice(id: string, branchId?: string): Promise<{
         items: {
@@ -167,6 +173,7 @@ export declare class BillingService {
         billingType: import(".prisma/client").$Enums.BillingType;
         customerName: string;
         doctorName: string | null;
+        salespersonName: string | null;
         productDiscount: import("@prisma/client/runtime/library").Decimal;
         taxableAmount: import("@prisma/client/runtime/library").Decimal;
         roundOff: import("@prisma/client/runtime/library").Decimal;
@@ -177,6 +184,7 @@ export declare class BillingService {
         changeReturned: import("@prisma/client/runtime/library").Decimal;
         customerId: string | null;
         doctorId: string | null;
+        salespersonId: string | null;
     }>;
     collectPayment(id: string, amountReceived: number, paymentMode: string, branchId?: string): Promise<{
         items: {
@@ -210,6 +218,7 @@ export declare class BillingService {
         billingType: import(".prisma/client").$Enums.BillingType;
         customerName: string;
         doctorName: string | null;
+        salespersonName: string | null;
         productDiscount: import("@prisma/client/runtime/library").Decimal;
         taxableAmount: import("@prisma/client/runtime/library").Decimal;
         roundOff: import("@prisma/client/runtime/library").Decimal;
@@ -220,6 +229,7 @@ export declare class BillingService {
         changeReturned: import("@prisma/client/runtime/library").Decimal;
         customerId: string | null;
         doctorId: string | null;
+        salespersonId: string | null;
     }>;
     update(id: string, data: any, branchId?: string): Promise<{
         id: string;
@@ -237,6 +247,7 @@ export declare class BillingService {
         billingType: import(".prisma/client").$Enums.BillingType;
         customerName: string;
         doctorName: string | null;
+        salespersonName: string | null;
         productDiscount: import("@prisma/client/runtime/library").Decimal;
         taxableAmount: import("@prisma/client/runtime/library").Decimal;
         roundOff: import("@prisma/client/runtime/library").Decimal;
@@ -247,6 +258,7 @@ export declare class BillingService {
         changeReturned: import("@prisma/client/runtime/library").Decimal;
         customerId: string | null;
         doctorId: string | null;
+        salespersonId: string | null;
     }>;
     remove(id: string, branchId?: string): Promise<{
         id: string;
@@ -264,6 +276,7 @@ export declare class BillingService {
         billingType: import(".prisma/client").$Enums.BillingType;
         customerName: string;
         doctorName: string | null;
+        salespersonName: string | null;
         productDiscount: import("@prisma/client/runtime/library").Decimal;
         taxableAmount: import("@prisma/client/runtime/library").Decimal;
         roundOff: import("@prisma/client/runtime/library").Decimal;
@@ -274,6 +287,7 @@ export declare class BillingService {
         changeReturned: import("@prisma/client/runtime/library").Decimal;
         customerId: string | null;
         doctorId: string | null;
+        salespersonId: string | null;
     }>;
     exportTallyXml(fromDate?: string, toDate?: string, branchId?: string): Promise<string>;
     private escXml;

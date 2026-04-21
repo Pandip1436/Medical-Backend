@@ -267,4 +267,21 @@ export declare class ProductsService {
         diff: number;
         reason: string;
     }>;
+    bulkAdjustStock(items: {
+        productId: string;
+        batchId: string;
+        adjustedQty: number;
+        reason: string;
+    }[], branchId?: string): Promise<{
+        success: boolean;
+        adjusted: number;
+        items: {
+            productId: string;
+            batchId: string;
+            previousQty: number;
+            newQty: number;
+            diff: number;
+            reason: string;
+        }[];
+    }>;
 }

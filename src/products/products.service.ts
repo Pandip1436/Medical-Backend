@@ -8,6 +8,7 @@ export class ProductsService {
   constructor(private readonly prisma: PrismaService) {}
 
   async create(createProductDto: CreateProductDto & { branchId?: string }) {
+    if (!createProductDto.barcode?.trim()) createProductDto.barcode = undefined;
     if (createProductDto.barcode && createProductDto.branchId) {
       const existing = await this.prisma.product.findUnique({
         where: { barcode_branchId: { barcode: createProductDto.barcode, branchId: createProductDto.branchId } },

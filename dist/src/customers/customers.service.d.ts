@@ -59,6 +59,7 @@ export declare class CustomersService {
             billingType: import(".prisma/client").$Enums.BillingType;
             customerName: string;
             doctorName: string | null;
+            salespersonName: string | null;
             productDiscount: import("@prisma/client/runtime/library").Decimal;
             taxableAmount: import("@prisma/client/runtime/library").Decimal;
             roundOff: import("@prisma/client/runtime/library").Decimal;
@@ -69,6 +70,7 @@ export declare class CustomersService {
             changeReturned: import("@prisma/client/runtime/library").Decimal;
             customerId: string | null;
             doctorId: string | null;
+            salespersonId: string | null;
         }[];
         prescriptions: {
             id: string;

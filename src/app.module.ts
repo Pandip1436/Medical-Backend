@@ -21,6 +21,7 @@ import { PrescriptionsModule } from './prescriptions/prescriptions.module';
 import { ExpensesModule } from './expenses/expenses.module';
 import { DoctorsModule } from './doctors/doctors.module';
 import { BranchesModule } from './branches/branches.module';
+import { SalespersonsModule } from './salespersons/salespersons.module';
 import { ServeStaticModule } from '@nestjs/serve-static';
 import { join } from 'path';
 
@@ -48,6 +49,7 @@ import { join } from 'path';
     ExpensesModule,
     DoctorsModule,
     BranchesModule,
+    SalespersonsModule,
   ],
   controllers: [AppController],
   providers: [

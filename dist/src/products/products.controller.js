@@ -38,7 +38,7 @@ let ProductsController = class ProductsController {
         return this.productsService.importCsv(file.buffer, effectiveBranchId);
     }
     create(createProductDto, req, branchId) {
-        const effectiveBranchId = req.user.branchId ?? branchId ?? createProductDto['branchId'];
+        const effectiveBranchId = req.user.branchId ?? branchId;
         return this.productsService.create({ ...createProductDto, branchId: effectiveBranchId });
     }
     findAll(req, q, category, schedule, skip, take, branchId) {
@@ -57,6 +57,9 @@ let ProductsController = class ProductsController {
     }
     update(id, updateProductDto, req) {
         return this.productsService.update(id, updateProductDto, req.user.branchId);
+    }
+    bulkAdjust(body, req) {
+        return this.productsService.bulkAdjustStock(body.items, req.user.branchId);
     }
     adjust(id, batchId, body, req) {
         return this.productsService.adjustBatchStock(id, batchId, body, req.user.branchId);
@@ -92,7 +95,7 @@ __decorate([
 ], ProductsController.prototype, "create", null);
 __decorate([
     (0, common_1.Get)(),
-    (0, roles_decorator_1.Roles)('ADMIN', 'PHARMACIST', 'INVENTORY_MANAGER', 'ACCOUNTANT'),
+    (0, roles_decorator_1.Roles)('ADMIN', 'PHARMACIST', 'INVENTORY_MANAGER', 'ACCOUNTANT', 'SALESPERSON'),
     (0, swagger_1.ApiOperation)({ summary: 'Get all products for a branch (paginated when skip/take provided)' }),
     (0, swagger_1.ApiQuery)({ name: 'q', required: false }),
     (0, swagger_1.ApiQuery)({ name: 'category', required: false }),
@@ -113,7 +116,7 @@ __decorate([
 ], ProductsController.prototype, "findAll", null);
 __decorate([
     (0, common_1.Get)(':id'),
-    (0, roles_decorator_1.Roles)('ADMIN', 'PHARMACIST', 'INVENTORY_MANAGER'),
+    (0, roles_decorator_1.Roles)('ADMIN', 'PHARMACIST', 'INVENTORY_MANAGER', 'SALESPERSON'),
     (0, swagger_1.ApiOperation)({ summary: 'Get product details by ID including batches' }),
     __param(0, (0, common_1.Param)('id')),
     __param(1, (0, common_1.Request)()),
@@ -132,6 +135,16 @@ __decorate([
     __metadata("design:paramtypes", [String, update_product_dto_1.UpdateProductDto, Object]),
     __metadata("design:returntype", void 0)
 ], ProductsController.prototype, "update", null);
+__decorate([
+    (0, common_1.Post)('bulk-adjust'),
+    (0, roles_decorator_1.Roles)('ADMIN', 'INVENTORY_MANAGER'),
+    (0, swagger_1.ApiOperation)({ summary: 'Atomically adjust stock for multiple batches in one transaction' }),
+    __param(0, (0, common_1.Body)()),
+    __param(1, (0, common_1.Request)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, Object]),
+    __metadata("design:returntype", void 0)
+], ProductsController.prototype, "bulkAdjust", null);
 __decorate([
     (0, common_1.Patch)(':id/batches/:batchId/adjust'),
     (0, roles_decorator_1.Roles)('ADMIN', 'INVENTORY_MANAGER'),
