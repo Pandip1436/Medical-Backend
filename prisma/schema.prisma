@@ -83,6 +83,7 @@ model Customer {
   invoices           Invoice[]
   prescriptions      Prescription[]
   creditNotes        CreditNote[]
+  quotations         Quotation[]
 }
 
 enum CustomerType {
@@ -508,4 +509,76 @@ model AuditLog {
   newValue  Json?
   ipAddress String?
   createdAt DateTime @default(now())
+}
+
+// ── Global Settings ───────────────────────────────────────────
+model GlobalSetting {
+  id        String   @id @default(cuid())
+  key       String   @unique
+  value     Json
+  updatedAt DateTime @updatedAt
+}
+
+// ── Discount Rules ────────────────────────────────────────────
+model DiscountRule {
+  id           String       @id @default(cuid())
+  name         String
+  type         DiscountType @default(PERCENTAGE)
+  value        Decimal
+  applicableTo String?
+  validFrom    DateTime?
+  validTo      DateTime?
+  isActive     Boolean      @default(true)
+  branchId     String?
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+}
+
+enum DiscountType {
+  PERCENTAGE
+  FLAT
+}
+
+// ── Quotations ────────────────────────────────────────────────
+model Quotation {
+  id              String          @id @default(cuid())
+  quotationNumber String          @unique
+  date            DateTime        @default(now())
+  customerId      String?
+  customer        Customer?       @relation(fields: [customerId], references: [id])
+  customerName    String
+  items           QuotationItem[]
+  subtotal        Decimal         @default(0)
+  cgst            Decimal         @default(0)
+  sgst            Decimal         @default(0)
+  total           Decimal
+  validUntil      DateTime?
+  notes           String?
+  status          QuotationStatus @default(DRAFT)
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+}
+
+model QuotationItem {
+  id              String    @id @default(cuid())
+  quotationId     String
+  quotation       Quotation @relation(fields: [quotationId], references: [id], onDelete: Cascade)
+  productId       String?
+  productName     String
+  batchId         String?
+  batchNumber     String?
+  quantity        Int
+  mrp             Decimal   @default(0)
+  rate            Decimal
+  discountPercent Decimal   @default(0)
+  gstPercent      Decimal   @default(0)
+  amount          Decimal
+}
+
+enum QuotationStatus {
+  DRAFT
+  SENT
+  ACCEPTED
+  REJECTED
+  CONVERTED
 }
