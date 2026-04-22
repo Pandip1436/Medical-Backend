@@ -20,8 +20,8 @@ export declare class SalespersonsController {
     constructor(salespersonsService: SalespersonsService, usersService: UsersService);
     findAll(branchId?: string): Promise<{
         id: string;
-        name: string;
         email: string;
+        name: string;
         phone: string;
         isActive: boolean;
         lastLogin: Date | null;
@@ -31,8 +31,8 @@ export declare class SalespersonsController {
     }[]>;
     create(dto: CreateSalespersonDto): Promise<{
         id: string;
-        name: string;
         email: string;
+        name: string;
         phone: string;
         role: import(".prisma/client").$Enums.Role;
         isActive: boolean;
@@ -47,8 +47,8 @@ export declare class SalespersonsController {
     }>;
     update(id: string, dto: UpdateSalespersonDto, req: any): Promise<{
         id: string;
-        name: string;
         email: string;
+        name: string;
         phone: string;
         role: import(".prisma/client").$Enums.Role;
         isActive: boolean;
@@ -61,8 +61,8 @@ export declare class SalespersonsController {
     }>;
     toggle(id: string, req: any): Promise<{
         id: string;
-        name: string;
         email: string;
+        name: string;
         phone: string;
         role: import(".prisma/client").$Enums.Role;
         isActive: boolean;

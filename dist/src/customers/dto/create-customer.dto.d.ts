@@ -11,4 +11,5 @@ export declare class CreateCustomerDto {
     gstin?: string;
     dlNumber?: string;
     notes?: string;
+    referredBy?: string;
 }

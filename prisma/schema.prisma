@@ -69,8 +69,9 @@ model Customer {
   alternatePhone     String?
   email              String?
   address            String?
-  type               CustomerType   @default(WALK_IN)
+  type               CustomerType   @default(RETAIL)
   doctorRef          String?
+  referredBy         String?        // salesperson name
   creditLimit        Decimal        @default(0)
   currentOutstanding Decimal        @default(0)
   loyaltyPoints      Int            @default(0)
@@ -87,9 +88,7 @@ model Customer {
 }
 
 enum CustomerType {
-  WALK_IN
-  REGULAR
-  HOSPITAL
+  RETAIL
   WHOLESALE
   DOCTOR
 }

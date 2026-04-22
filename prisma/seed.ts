@@ -223,16 +223,16 @@ async function main() {
   // HQ Customers
   console.log('👥 Seeding customers (per branch)...');
   const [cust1, cust3, cust4, walkIn] = await Promise.all([
-    prisma.customer.create({ data: { id: 'CUS-001', name: 'Apollo Hospital - Madurai', phone: '9944112233', email: 'pharmacy@apollomadurai.com', address: '11, KK Nagar, Madurai - 625020', type: CustomerType.HOSPITAL, creditLimit: 500000, currentOutstanding: 0, gstin: '33AABCA1234A1Z5', dlNumber: 'TN/MDU/20B/2021/1001', branchId: hq.id } }),
+    prisma.customer.create({ data: { id: 'CUS-001', name: 'Apollo Hospital - Madurai', phone: '9944112233', email: 'pharmacy@apollomadurai.com', address: '11, KK Nagar, Madurai - 625020', type: CustomerType.WHOLESALE, creditLimit: 500000, currentOutstanding: 0, gstin: '33AABCA1234A1Z5', dlNumber: 'TN/MDU/20B/2021/1001', branchId: hq.id } }),
     prisma.customer.create({ data: { id: 'CUS-003', name: 'MedPlus - Madurai', phone: '9944445566', email: 'madurai@medplus.in', address: '45, Anna Nagar, Madurai', type: CustomerType.WHOLESALE, creditLimit: 300000, currentOutstanding: 0, gstin: '33AABCD3456D4Z3', dlNumber: 'TN/MDU/21B/2022/1205', branchId: hq.id } }),
-    prisma.customer.create({ data: { id: 'CUS-004', name: 'Murugan S', phone: '9944667788', address: '12/3, Simmakkal, Madurai', type: CustomerType.REGULAR, creditLimit: 10000, currentOutstanding: 0, loyaltyPoints: 320, branchId: hq.id } }),
-    prisma.customer.create({ data: { id: 'CUS-WALKIN-HQ', name: 'Walk-in Customer (HQ)', phone: '0000000001', type: CustomerType.WALK_IN, creditLimit: 0, currentOutstanding: 0, branchId: hq.id } }),
+    prisma.customer.create({ data: { id: 'CUS-004', name: 'Murugan S', phone: '9944667788', address: '12/3, Simmakkal, Madurai', type: CustomerType.RETAIL, creditLimit: 10000, currentOutstanding: 0, loyaltyPoints: 320, branchId: hq.id } }),
+    prisma.customer.create({ data: { id: 'CUS-WALKIN-HQ', name: 'Walk-in Customer (HQ)', phone: '0000000001', type: CustomerType.RETAIL, creditLimit: 0, currentOutstanding: 0, branchId: hq.id } }),
   ]);
   // Chennai Customers
   const [cust2, cust5, walkIn2] = await Promise.all([
-    prisma.customer.create({ data: { id: 'CUS-002', name: 'MIOT Hospital - Chennai', phone: '9944223344', email: 'purchase@miothospitals.com', address: '4/112, Mount Poonamallee Road, Chennai - 600089', type: CustomerType.HOSPITAL, creditLimit: 750000, currentOutstanding: 0, gstin: '33AABCM5678B2Z1', dlNumber: 'TN/CHE/20B/2020/0852', branchId: br1.id } }),
-    prisma.customer.create({ data: { id: 'CUS-005', name: 'Lakshmi K', phone: '9944778899', address: '56, Tallakulam, Madurai', type: CustomerType.REGULAR, creditLimit: 15000, currentOutstanding: 0, loyaltyPoints: 540, branchId: br1.id } }),
-    prisma.customer.create({ data: { id: 'CUS-WALKIN-BR1', name: 'Walk-in Customer (Chennai)', phone: '0000000002', type: CustomerType.WALK_IN, creditLimit: 0, currentOutstanding: 0, branchId: br1.id } }),
+    prisma.customer.create({ data: { id: 'CUS-002', name: 'MIOT Hospital - Chennai', phone: '9944223344', email: 'purchase@miothospitals.com', address: '4/112, Mount Poonamallee Road, Chennai - 600089', type: CustomerType.WHOLESALE, creditLimit: 750000, currentOutstanding: 0, gstin: '33AABCM5678B2Z1', dlNumber: 'TN/CHE/20B/2020/0852', branchId: br1.id } }),
+    prisma.customer.create({ data: { id: 'CUS-005', name: 'Lakshmi K', phone: '9944778899', address: '56, Tallakulam, Madurai', type: CustomerType.RETAIL, creditLimit: 15000, currentOutstanding: 0, loyaltyPoints: 540, branchId: br1.id } }),
+    prisma.customer.create({ data: { id: 'CUS-WALKIN-BR1', name: 'Walk-in Customer (Chennai)', phone: '0000000002', type: CustomerType.RETAIL, creditLimit: 0, currentOutstanding: 0, branchId: br1.id } }),
   ]);
   console.log('  ✅ 4 HQ customers + 3 Chennai customers\n');
 

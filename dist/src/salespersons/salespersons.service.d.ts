@@ -4,8 +4,8 @@ export declare class SalespersonsService {
     constructor(prisma: PrismaService);
     findAll(branchId?: string): Promise<{
         id: string;
-        name: string;
         email: string;
+        name: string;
         phone: string;
         isActive: boolean;
         lastLogin: Date | null;

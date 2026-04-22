@@ -24,6 +24,7 @@ class CreateCustomerDto {
     gstin;
     dlNumber;
     notes;
+    referredBy;
 }
 exports.CreateCustomerDto = CreateCustomerDto;
 __decorate([
@@ -82,4 +83,9 @@ __decorate([
     (0, class_validator_1.IsOptional)(),
     __metadata("design:type", String)
 ], CreateCustomerDto.prototype, "notes", void 0);
+__decorate([
+    (0, class_validator_1.IsString)(),
+    (0, class_validator_1.IsOptional)(),
+    __metadata("design:type", String)
+], CreateCustomerDto.prototype, "referredBy", void 0);
 //# sourceMappingURL=create-customer.dto.js.map

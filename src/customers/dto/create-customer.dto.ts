@@ -4,11 +4,11 @@ import { CustomerType } from '@prisma/client';
 export class CreateCustomerDto {
   @IsString()
   @IsNotEmpty()
-  name: string;
+  name!: string;
 
   @IsString()
   @IsNotEmpty()
-  phone: string;
+  phone!: string;
 
   @IsString()
   @IsOptional()
@@ -46,4 +46,8 @@ export class CreateCustomerDto {
   @IsString()
   @IsOptional()
   notes?: string;
+
+  @IsString()
+  @IsOptional()
+  referredBy?: string;
 }

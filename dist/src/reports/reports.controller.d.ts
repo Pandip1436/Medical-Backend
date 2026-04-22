@@ -369,6 +369,7 @@ export declare class ReportsController {
             alternatePhone: string | null;
             type: import(".prisma/client").$Enums.CustomerType;
             doctorRef: string | null;
+            referredBy: string | null;
             creditLimit: import("@prisma/client/runtime/library").Decimal;
             currentOutstanding: import("@prisma/client/runtime/library").Decimal;
             loyaltyPoints: number;
