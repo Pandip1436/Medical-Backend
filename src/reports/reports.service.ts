@@ -279,7 +279,7 @@ export class ReportsService {
     });
     const categoryValuation = new Map<string, number>();
     const tableData = batches.map((b) => {
-      const cat = b.product.category;
+      const cat = b.product.categoryId ?? 'OTHER';
       const purchaseValue = Number(b.purchaseRate) * b.quantity;
       categoryValuation.set(cat, (categoryValuation.get(cat) || 0) + purchaseValue);
       return {
@@ -982,8 +982,8 @@ export class ReportsService {
       where: { invoice: { date: { gte: from, lte: to }, ...bFilter } },
       include: { invoice: { select: { date: true } } },
     });
-    const products = await this.prisma.product.findMany({ select: { id: true, category: true } });
-    const catMap = new Map(products.map((p) => [p.id, p.category]));
+    const products = await this.prisma.product.findMany({ select: { id: true, categoryId: true } });
+    const catMap = new Map(products.map((p) => [p.id, p.categoryId ?? 'OTHER']));
     const byCategory = new Map<string, { category: string; qty: number; revenue: number }>();
     items.forEach((it) => {
       const cat = catMap.get(it.productId) ?? 'OTHER';
@@ -1014,7 +1014,7 @@ export class ReportsService {
     });
     const tableData = products.map((p) => ({
       product: p.name,
-      category: p.category,
+      category: p.categoryId ?? '',
       totalStock: p.totalStock,
       minStock: p.minStock,
       mrp: Number(p.mrp),

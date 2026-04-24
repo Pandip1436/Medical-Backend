@@ -108,6 +108,18 @@ model Prescription {
   validUntil DateTime?
 }
 
+// ── Categories ────────────────────────────────────────────────
+model Category {
+  id          String    @id @default(cuid())
+  name        String    @unique
+  description String?
+  color       String?   // hex color for UI badge
+  isActive    Boolean   @default(true)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  products    Product[]
+}
+
 // ── Products & Batches ────────────────────────────────────────
 model Product {
   id               String           @id @default(cuid())
@@ -115,7 +127,8 @@ model Product {
   genericName      String
   saltComposition  String?
   manufacturer     String
-  category         ProductCategory
+  categoryId       String?
+  category         Category?        @relation(fields: [categoryId], references: [id])
   subCategory      String?
   packSize         String
   unitOfMeasure    String
@@ -142,14 +155,6 @@ model Product {
   createdAt        DateTime         @default(now())
 
   @@unique([barcode, branchId])
-}
-
-enum ProductCategory {
-  NEPHROLOGY
-  ONCOLOGY
-  GENERAL
-  OTC
-  SURGICAL
 }
 
 enum Schedule {

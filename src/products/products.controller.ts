@@ -50,7 +50,7 @@ export class ProductsController {
   @Roles('ADMIN', 'PHARMACIST', 'INVENTORY_MANAGER', 'ACCOUNTANT', 'SALESPERSON')
   @ApiOperation({ summary: 'Get all products for a branch (paginated when skip/take provided)' })
   @ApiQuery({ name: 'q', required: false })
-  @ApiQuery({ name: 'category', required: false })
+  @ApiQuery({ name: 'categoryId', required: false })
   @ApiQuery({ name: 'schedule', required: false })
   @ApiQuery({ name: 'skip', required: false })
   @ApiQuery({ name: 'take', required: false })
@@ -58,7 +58,7 @@ export class ProductsController {
   findAll(
     @Request() req: any,
     @Query('q') q?: string,
-    @Query('category') category?: string,
+    @Query('categoryId') categoryId?: string,
     @Query('schedule') schedule?: string,
     @Query('skip') skip?: string,
     @Query('take') take?: string,
@@ -67,12 +67,19 @@ export class ProductsController {
     const effectiveBranchId = req.user.branchId ?? branchId;
     return this.productsService.findAll({
       query: q,
-      category,
+      categoryId,
       schedule,
       skip: skip !== undefined ? Number(skip) : undefined,
       take: take !== undefined ? Number(take) : undefined,
       branchId: effectiveBranchId,
     });
+  }
+
+  @Get(':id/history')
+  @Roles('ADMIN', 'PHARMACIST', 'INVENTORY_MANAGER', 'ACCOUNTANT', 'SALESPERSON')
+  @ApiOperation({ summary: 'Get full sales and purchase history for a product' })
+  getHistory(@Param('id') id: string, @Request() req: any) {
+    return this.productsService.getProductHistory(id, req.user.branchId);
   }
 
   @Get(':id')

@@ -17,8 +17,8 @@ export class ExpensesController {
   @Post()
   @Roles('ADMIN', 'ACCOUNTANT')
   @ApiOperation({ summary: 'Create a new expense' })
-  create(@Body() dto: CreateExpenseDto, @Request() req: any) {
-    const effectiveBranchId = req.user.branchId ?? dto.branchId;
+  create(@Body() dto: CreateExpenseDto, @Request() req: any, @Query('branchId') branchId?: string) {
+    const effectiveBranchId = req.user.branchId ?? branchId;
     return this.expensesService.create(dto, effectiveBranchId);
   }
 

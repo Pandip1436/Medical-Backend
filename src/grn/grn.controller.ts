@@ -16,8 +16,8 @@ export class GrnController {
   @Post()
   @Roles('ADMIN', 'INVENTORY_MANAGER')
   @ApiOperation({ summary: 'Create a new Goods Receipt Note and spawn batches' })
-  create(@Body() createGrnDto: CreateGrnDto, @Request() req: any) {
-    const effectiveBranchId = req.user.branchId ?? createGrnDto.branchId;
+  create(@Body() createGrnDto: CreateGrnDto, @Request() req: any, @Query('branchId') branchId?: string) {
+    const effectiveBranchId = req.user.branchId ?? branchId;
     return this.grnService.create(createGrnDto, effectiveBranchId);
   }
 

@@ -14,7 +14,7 @@
  */
 
 import {
-  PrismaClient, Role, CustomerType, ProductCategory, Schedule,
+  PrismaClient, Role, CustomerType, Schedule,
   StorageCondition, PaymentTerms, POStatus, GRNStatus,
   InvoiceType, BillingType, PaymentMode, InvoiceStatus,
   SettlementMode, PurchaseReturnStatus,
@@ -239,9 +239,22 @@ async function main() {
   // HQ Products (PRD-001 to PRD-006)
   console.log('💊 Seeding products (per branch)...');
 
+  // Upsert categories first and build a name→id map
+  const categoryDefs = [
+    { name: 'NEPHROLOGY', description: 'Kidney and renal care medicines', color: '#3B82F6' },
+    { name: 'ONCOLOGY', description: 'Cancer treatment medicines', color: '#8B5CF6' },
+    { name: 'GENERAL', description: 'General medicines', color: '#10B981' },
+    { name: 'OTC', description: 'Over the counter medicines', color: '#F59E0B' },
+    { name: 'SURGICAL', description: 'Surgical supplies and equipment', color: '#EF4444' },
+  ];
+  const seededCats = await Promise.all(
+    categoryDefs.map(c => prisma.category.upsert({ where: { name: c.name }, update: {}, create: c }))
+  );
+  const catId = (name: string) => seededCats.find(c => c.name === name)!.id;
+
   type ProductInput = {
     id: string; name: string; generic: string; manufacturer: string;
-    cat: ProductCategory; sub: string; pack: string; uom: string;
+    cat: string; sub: string; pack: string; uom: string;
     sched: Schedule; hsn: string; storage: StorageCondition;
     mrp: number; pr: number; sr: number; wr: number; gst: number;
     min: number; max: number; reorder: number; rack: string; barcode: string;
@@ -249,26 +262,26 @@ async function main() {
   };
 
   const hqProductDefs: ProductInput[] = [
-    { id: 'PRD-HQ-001', name: 'Torsemide 20mg Tab', generic: 'Torsemide', manufacturer: 'Cipla Ltd', cat: ProductCategory.NEPHROLOGY, sub: 'Diuretics', pack: '10x10', uom: 'Strip', sched: Schedule.H, hsn: '30049099', storage: StorageCondition.ROOM_TEMP, mrp: 85, pr: 52, sr: 78, wr: 68, gst: 12, min: 100, max: 1000, reorder: 200, rack: 'A1-01', barcode: 'HQ-8901234560011', branchId: hq.id },
-    { id: 'PRD-HQ-002', name: 'Erythropoietin 4000IU Inj', generic: 'Epoetin Alfa', manufacturer: "Dr. Reddy's", cat: ProductCategory.NEPHROLOGY, sub: 'Hematopoietic Agents', pack: '1 Vial', uom: 'Vial', sched: Schedule.H, hsn: '30021200', storage: StorageCondition.REFRIGERATED, mrp: 1250, pr: 850, sr: 1150, wr: 1020, gst: 12, min: 20, max: 200, reorder: 50, rack: 'R1-01', barcode: 'HQ-8901234560028', branchId: hq.id },
-    { id: 'PRD-HQ-003', name: 'Ondansetron 4mg Tab', generic: 'Ondansetron', manufacturer: 'Sun Pharmaceutical', cat: ProductCategory.ONCOLOGY, sub: 'Antiemetics', pack: '10x10', uom: 'Strip', sched: Schedule.H, hsn: '30049099', storage: StorageCondition.ROOM_TEMP, mrp: 62.5, pr: 38, sr: 56, wr: 48, gst: 12, min: 150, max: 1500, reorder: 300, rack: 'B2-03', barcode: 'HQ-8901234560035', branchId: hq.id },
-    { id: 'PRD-HQ-004', name: 'Tacrolimus 1mg Cap', generic: 'Tacrolimus', manufacturer: 'Hetero Drugs', cat: ProductCategory.NEPHROLOGY, sub: 'Immunosuppressants', pack: '10x6', uom: 'Strip', sched: Schedule.H1, hsn: '30049099', storage: StorageCondition.COOL_DRY, mrp: 320, pr: 210, sr: 295, wr: 260, gst: 12, min: 50, max: 500, reorder: 100, rack: 'A2-04', barcode: 'HQ-8901234560042', branchId: hq.id },
-    { id: 'PRD-HQ-005', name: 'Losartan 50mg Tab', generic: 'Losartan Potassium', manufacturer: 'Cipla Ltd', cat: ProductCategory.NEPHROLOGY, sub: 'ARBs', pack: '10x10', uom: 'Strip', sched: Schedule.H, hsn: '30049099', storage: StorageCondition.ROOM_TEMP, mrp: 68, pr: 40, sr: 62, wr: 54, gst: 12, min: 200, max: 2000, reorder: 400, rack: 'A1-05', barcode: 'HQ-8901234560128', branchId: hq.id },
-    { id: 'PRD-HQ-006', name: 'Furosemide 40mg Tab', generic: 'Furosemide', manufacturer: 'Cipla Ltd', cat: ProductCategory.NEPHROLOGY, sub: 'Loop Diuretics', pack: '10x15', uom: 'Strip', sched: Schedule.H, hsn: '30049099', storage: StorageCondition.ROOM_TEMP, mrp: 28, pr: 16, sr: 25, wr: 22, gst: 12, min: 300, max: 3000, reorder: 500, rack: 'A1-02', barcode: 'HQ-8901234560142', branchId: hq.id },
+    { id: 'PRD-HQ-001', name: 'Torsemide 20mg Tab', generic: 'Torsemide', manufacturer: 'Cipla Ltd', cat: 'NEPHROLOGY', sub: 'Diuretics', pack: '10x10', uom: 'Strip', sched: Schedule.H, hsn: '30049099', storage: StorageCondition.ROOM_TEMP, mrp: 85, pr: 52, sr: 78, wr: 68, gst: 12, min: 100, max: 1000, reorder: 200, rack: 'A1-01', barcode: 'HQ-8901234560011', branchId: hq.id },
+    { id: 'PRD-HQ-002', name: 'Erythropoietin 4000IU Inj', generic: 'Epoetin Alfa', manufacturer: "Dr. Reddy's", cat: 'NEPHROLOGY', sub: 'Hematopoietic Agents', pack: '1 Vial', uom: 'Vial', sched: Schedule.H, hsn: '30021200', storage: StorageCondition.REFRIGERATED, mrp: 1250, pr: 850, sr: 1150, wr: 1020, gst: 12, min: 20, max: 200, reorder: 50, rack: 'R1-01', barcode: 'HQ-8901234560028', branchId: hq.id },
+    { id: 'PRD-HQ-003', name: 'Ondansetron 4mg Tab', generic: 'Ondansetron', manufacturer: 'Sun Pharmaceutical', cat: 'ONCOLOGY', sub: 'Antiemetics', pack: '10x10', uom: 'Strip', sched: Schedule.H, hsn: '30049099', storage: StorageCondition.ROOM_TEMP, mrp: 62.5, pr: 38, sr: 56, wr: 48, gst: 12, min: 150, max: 1500, reorder: 300, rack: 'B2-03', barcode: 'HQ-8901234560035', branchId: hq.id },
+    { id: 'PRD-HQ-004', name: 'Tacrolimus 1mg Cap', generic: 'Tacrolimus', manufacturer: 'Hetero Drugs', cat: 'NEPHROLOGY', sub: 'Immunosuppressants', pack: '10x6', uom: 'Strip', sched: Schedule.H1, hsn: '30049099', storage: StorageCondition.COOL_DRY, mrp: 320, pr: 210, sr: 295, wr: 260, gst: 12, min: 50, max: 500, reorder: 100, rack: 'A2-04', barcode: 'HQ-8901234560042', branchId: hq.id },
+    { id: 'PRD-HQ-005', name: 'Losartan 50mg Tab', generic: 'Losartan Potassium', manufacturer: 'Cipla Ltd', cat: 'NEPHROLOGY', sub: 'ARBs', pack: '10x10', uom: 'Strip', sched: Schedule.H, hsn: '30049099', storage: StorageCondition.ROOM_TEMP, mrp: 68, pr: 40, sr: 62, wr: 54, gst: 12, min: 200, max: 2000, reorder: 400, rack: 'A1-05', barcode: 'HQ-8901234560128', branchId: hq.id },
+    { id: 'PRD-HQ-006', name: 'Furosemide 40mg Tab', generic: 'Furosemide', manufacturer: 'Cipla Ltd', cat: 'NEPHROLOGY', sub: 'Loop Diuretics', pack: '10x15', uom: 'Strip', sched: Schedule.H, hsn: '30049099', storage: StorageCondition.ROOM_TEMP, mrp: 28, pr: 16, sr: 25, wr: 22, gst: 12, min: 300, max: 3000, reorder: 500, rack: 'A1-02', barcode: 'HQ-8901234560142', branchId: hq.id },
   ];
 
   const br1ProductDefs: ProductInput[] = [
-    { id: 'PRD-BR1-001', name: 'Cisplatin 50mg Inj', generic: 'Cisplatin', manufacturer: 'Natco Pharma', cat: ProductCategory.ONCOLOGY, sub: 'Alkylating Agents', pack: '1 Vial', uom: 'Vial', sched: Schedule.H, hsn: '30049099', storage: StorageCondition.ROOM_TEMP, mrp: 450, pr: 290, sr: 420, wr: 370, gst: 12, min: 30, max: 300, reorder: 50, rack: 'C1-02', barcode: 'BR1-8901234560059', branchId: br1.id },
-    { id: 'PRD-BR1-002', name: 'Imatinib 400mg Tab', generic: 'Imatinib Mesylate', manufacturer: 'Natco Pharma', cat: ProductCategory.ONCOLOGY, sub: 'Tyrosine Kinase Inhibitors', pack: '10x3', uom: 'Strip', sched: Schedule.H1, hsn: '30049099', storage: StorageCondition.ROOM_TEMP, mrp: 2800, pr: 1850, sr: 2600, wr: 2300, gst: 12, min: 20, max: 200, reorder: 40, rack: 'C2-01', barcode: 'BR1-8901234560111', branchId: br1.id },
-    { id: 'PRD-BR1-003', name: 'Paclitaxel 260mg Inj', generic: 'Paclitaxel', manufacturer: 'Natco Pharma', cat: ProductCategory.ONCOLOGY, sub: 'Taxanes', pack: '1 Vial', uom: 'Vial', sched: Schedule.H, hsn: '30049099', storage: StorageCondition.REFRIGERATED, mrp: 8500, pr: 5800, sr: 7900, wr: 7200, gst: 12, min: 10, max: 100, reorder: 20, rack: 'R1-03', barcode: 'BR1-8901234560073', branchId: br1.id },
-    { id: 'PRD-BR1-004', name: 'Rituximab 500mg Inj', generic: 'Rituximab', manufacturer: 'Hetero Drugs', cat: ProductCategory.ONCOLOGY, sub: 'Monoclonal Antibodies', pack: '1 Vial', uom: 'Vial', sched: Schedule.H, hsn: '30021400', storage: StorageCondition.REFRIGERATED, mrp: 25000, pr: 18000, sr: 23500, wr: 21500, gst: 12, min: 5, max: 50, reorder: 10, rack: 'R2-01', barcode: 'BR1-8901234560204', branchId: br1.id },
+    { id: 'PRD-BR1-001', name: 'Cisplatin 50mg Inj', generic: 'Cisplatin', manufacturer: 'Natco Pharma', cat: 'ONCOLOGY', sub: 'Alkylating Agents', pack: '1 Vial', uom: 'Vial', sched: Schedule.H, hsn: '30049099', storage: StorageCondition.ROOM_TEMP, mrp: 450, pr: 290, sr: 420, wr: 370, gst: 12, min: 30, max: 300, reorder: 50, rack: 'C1-02', barcode: 'BR1-8901234560059', branchId: br1.id },
+    { id: 'PRD-BR1-002', name: 'Imatinib 400mg Tab', generic: 'Imatinib Mesylate', manufacturer: 'Natco Pharma', cat: 'ONCOLOGY', sub: 'Tyrosine Kinase Inhibitors', pack: '10x3', uom: 'Strip', sched: Schedule.H1, hsn: '30049099', storage: StorageCondition.ROOM_TEMP, mrp: 2800, pr: 1850, sr: 2600, wr: 2300, gst: 12, min: 20, max: 200, reorder: 40, rack: 'C2-01', barcode: 'BR1-8901234560111', branchId: br1.id },
+    { id: 'PRD-BR1-003', name: 'Paclitaxel 260mg Inj', generic: 'Paclitaxel', manufacturer: 'Natco Pharma', cat: 'ONCOLOGY', sub: 'Taxanes', pack: '1 Vial', uom: 'Vial', sched: Schedule.H, hsn: '30049099', storage: StorageCondition.REFRIGERATED, mrp: 8500, pr: 5800, sr: 7900, wr: 7200, gst: 12, min: 10, max: 100, reorder: 20, rack: 'R1-03', barcode: 'BR1-8901234560073', branchId: br1.id },
+    { id: 'PRD-BR1-004', name: 'Rituximab 500mg Inj', generic: 'Rituximab', manufacturer: 'Hetero Drugs', cat: 'ONCOLOGY', sub: 'Monoclonal Antibodies', pack: '1 Vial', uom: 'Vial', sched: Schedule.H, hsn: '30021400', storage: StorageCondition.REFRIGERATED, mrp: 25000, pr: 18000, sr: 23500, wr: 21500, gst: 12, min: 5, max: 50, reorder: 10, rack: 'R2-01', barcode: 'BR1-8901234560204', branchId: br1.id },
   ];
 
   const hqProducts = await Promise.all(hqProductDefs.map(p =>
     prisma.product.create({
       data: {
         id: p.id, name: p.name, genericName: p.generic, manufacturer: p.manufacturer,
-        category: p.cat, subCategory: p.sub, packSize: p.pack, unitOfMeasure: p.uom,
+        categoryId: catId(p.cat), subCategory: p.sub, packSize: p.pack, unitOfMeasure: p.uom,
         schedule: p.sched, hsnCode: p.hsn, storageCondition: p.storage,
         mrp: p.mrp, purchaseRate: p.pr, sellingRate: p.sr, wholesaleRate: p.wr,
         gstRate: p.gst, minStock: p.min, maxStock: p.max, reorderQty: p.reorder,
@@ -281,7 +294,7 @@ async function main() {
     prisma.product.create({
       data: {
         id: p.id, name: p.name, genericName: p.generic, manufacturer: p.manufacturer,
-        category: p.cat, subCategory: p.sub, packSize: p.pack, unitOfMeasure: p.uom,
+        categoryId: catId(p.cat), subCategory: p.sub, packSize: p.pack, unitOfMeasure: p.uom,
         schedule: p.sched, hsnCode: p.hsn, storageCondition: p.storage,
         mrp: p.mrp, purchaseRate: p.pr, sellingRate: p.sr, wholesaleRate: p.wr,
         gstRate: p.gst, minStock: p.min, maxStock: p.max, reorderQty: p.reorder,

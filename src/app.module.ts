@@ -24,6 +24,7 @@ import { BranchesModule } from './branches/branches.module';
 import { SalespersonsModule } from './salespersons/salespersons.module';
 import { SettingsModule } from './settings/settings.module';
 import { QuotationsModule } from './quotations/quotations.module';
+import { CategoriesModule } from './categories/categories.module';
 import { ServeStaticModule } from '@nestjs/serve-static';
 import { join } from 'path';
 
@@ -54,6 +55,7 @@ import { join } from 'path';
     SalespersonsModule,
     SettingsModule,
     QuotationsModule,
+    CategoriesModule,
   ],
   controllers: [AppController],
   providers: [

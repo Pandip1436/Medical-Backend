@@ -1,5 +1,6 @@
-import { Injectable, NotFoundException, ConflictException, BadRequestException } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { Prisma } from '@prisma/client';
 import { CreateProductDto } from './dto/create-product.dto';
 import { UpdateProductDto } from './dto/update-product.dto';
 
@@ -8,25 +9,21 @@ export class ProductsService {
   constructor(private readonly prisma: PrismaService) {}
 
   async create(createProductDto: CreateProductDto & { branchId?: string }) {
-    if (!createProductDto.barcode?.trim()) createProductDto.barcode = undefined;
-    if (createProductDto.barcode && createProductDto.branchId) {
-      const existing = await this.prisma.product.findUnique({
-        where: { barcode_branchId: { barcode: createProductDto.barcode, branchId: createProductDto.branchId } },
-      });
-      if (existing) throw new ConflictException('Product with this barcode already exists in this branch');
-    }
-    return this.prisma.product.create({ data: createProductDto });
+    const { categoryId, branchId, ...rest } = createProductDto;
+    return this.prisma.product.create({
+      data: { ...rest, categoryId, ...(branchId ? { branchId } : {}) } as unknown as Prisma.ProductUncheckedCreateInput,
+    });
   }
 
   async findAll(opts: {
     query?: string;
-    category?: string;
+    categoryId?: string;
     schedule?: string;
     skip?: number;
     take?: number;
     branchId?: string;
   } = {}) {
-    const { query, category, schedule, skip = 0, take, branchId } = opts;
+    const { query, categoryId, schedule, skip = 0, take, branchId } = opts;
 
     const where: any = {};
     if (branchId) where.branchId = branchId;
@@ -35,27 +32,28 @@ export class ProductsService {
         { name: { contains: query, mode: 'insensitive' } },
         { genericName: { contains: query, mode: 'insensitive' } },
         { manufacturer: { contains: query, mode: 'insensitive' } },
-        { barcode: { contains: query, mode: 'insensitive' } },
       ];
     }
-    if (category) where.category = category;
+    if (categoryId) where.categoryId = categoryId;
     if (schedule) where.schedule = schedule;
+
+    const include = { batches: true, category: true };
 
     if (take !== undefined) {
       const [data, total] = await Promise.all([
-        this.prisma.product.findMany({ where, include: { batches: true }, skip, take, orderBy: { name: 'asc' } }),
+        this.prisma.product.findMany({ where, include, skip, take, orderBy: { name: 'asc' } }),
         this.prisma.product.count({ where }),
       ]);
       return { data, total };
     }
 
-    return this.prisma.product.findMany({ where, include: { batches: true }, orderBy: { name: 'asc' } });
+    return this.prisma.product.findMany({ where, include, orderBy: { name: 'asc' } });
   }
 
   async findOne(id: string, branchId?: string) {
     const product = await this.prisma.product.findUnique({
       where: { id },
-      include: { batches: true, alternatives: true },
+      include: { batches: true, alternatives: true, category: true },
     });
     if (!product) throw new NotFoundException('Product not found');
     if (branchId && product.branchId && product.branchId !== branchId) {
@@ -163,6 +161,93 @@ export class ProductsService {
     ]);
 
     return { success: true, batchId, previousQty: batch.quantity, newQty: dto.adjustedQty, diff, reason: dto.reason };
+  }
+
+  async getProductHistory(productId: string, branchId?: string) {
+    const product = await this.prisma.product.findUnique({
+      where: { id: productId },
+      include: { batches: true, category: true },
+    });
+    if (!product) throw new NotFoundException('Product not found');
+    if (branchId && product.branchId && product.branchId !== branchId) {
+      throw new NotFoundException('Product not found');
+    }
+
+    const salesItems = await this.prisma.invoiceItem.findMany({
+      where: { productId },
+      include: {
+        invoice: {
+          select: { invoiceNumber: true, date: true, customerName: true, status: true },
+        },
+      },
+      orderBy: { invoice: { date: 'desc' } },
+      take: 100,
+    });
+
+    const purchaseItems = await this.prisma.gRNItem.findMany({
+      where: { productId },
+      include: {
+        grn: {
+          select: { grnNumber: true, date: true, supplierName: true, status: true },
+        },
+      },
+      orderBy: { grn: { date: 'desc' } },
+      take: 100,
+    });
+
+    const totalSoldQty = salesItems.reduce((sum, i) => sum + i.quantity, 0);
+    const totalPurchasedQty = purchaseItems.reduce((sum, i) => sum + i.receivedQty, 0);
+    const totalSalesValue = salesItems.reduce((sum, i) => sum + Number(i.amount), 0);
+    const totalPurchaseValue = purchaseItems.reduce((sum, i) => sum + Number(i.purchaseRate) * i.receivedQty, 0);
+    const activeBatches = product.batches.filter((b) => b.quantity > 0).length;
+
+    return {
+      product: {
+        id: product.id,
+        name: product.name,
+        genericName: product.genericName,
+        manufacturer: product.manufacturer,
+        category: product.category,
+        totalStock: product.totalStock,
+        batchCount: product.batches.length,
+        activeBatches,
+      },
+      summary: {
+        salesCount: salesItems.length,
+        purchaseCount: purchaseItems.length,
+        totalSoldQty,
+        totalPurchasedQty,
+        totalSalesValue,
+        totalPurchaseValue,
+        currentStock: product.totalStock,
+      },
+      sales: salesItems.map((i) => ({
+        id: i.id,
+        invoiceNumber: i.invoice.invoiceNumber,
+        date: i.invoice.date,
+        customerName: i.invoice.customerName,
+        status: i.invoice.status,
+        batchNumber: i.batchNumber,
+        quantity: i.quantity,
+        rate: Number(i.rate),
+        amount: Number(i.amount),
+        gstPercent: Number(i.gstPercent),
+        discountPercent: Number(i.discountPercent),
+      })),
+      purchases: purchaseItems.map((i) => ({
+        id: i.id,
+        grnNumber: i.grn.grnNumber,
+        date: i.grn.date,
+        supplierName: i.grn.supplierName,
+        status: i.grn.status,
+        batchNumber: i.batchNumber,
+        receivedQty: i.receivedQty,
+        freeQty: i.freeQty,
+        purchaseRate: Number(i.purchaseRate),
+        mrp: Number(i.mrp),
+        amount: Number(i.purchaseRate) * i.receivedQty,
+      })),
+    };
   }
 
   async bulkAdjustStock(

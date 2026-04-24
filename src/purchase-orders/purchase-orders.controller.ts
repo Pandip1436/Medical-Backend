@@ -17,8 +17,8 @@ export class PurchaseOrdersController {
   @Post()
   @Roles('ADMIN', 'INVENTORY_MANAGER')
   @ApiOperation({ summary: 'Create a new Purchase Order' })
-  create(@Body() createPurchaseOrderDto: CreatePurchaseOrderDto, @Request() req: any) {
-    const effectiveBranchId = req.user.branchId ?? createPurchaseOrderDto.branchId;
+  create(@Body() createPurchaseOrderDto: CreatePurchaseOrderDto, @Request() req: any, @Query('branchId') branchId?: string) {
+    const effectiveBranchId = req.user.branchId ?? branchId;
     return this.poService.create(createPurchaseOrderDto, req.user.userId, effectiveBranchId);
   }
 

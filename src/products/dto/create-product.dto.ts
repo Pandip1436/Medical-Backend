@@ -1,5 +1,5 @@
 import { IsString, IsNotEmpty, IsEnum, IsNumber, IsBoolean, IsOptional, Min } from 'class-validator';
-import { ProductCategory, Schedule, StorageCondition } from '@prisma/client';
+import { Schedule, StorageCondition } from '@prisma/client';
 
 export class CreateProductDto {
   @IsString()
@@ -18,8 +18,9 @@ export class CreateProductDto {
   @IsNotEmpty()
   manufacturer: string;
 
-  @IsEnum(ProductCategory)
-  category: ProductCategory;
+  @IsString()
+  @IsOptional()
+  categoryId?: string;
 
   @IsString()
   @IsOptional()
@@ -82,8 +83,4 @@ export class CreateProductDto {
   @IsString()
   @IsNotEmpty()
   rackLocation: string;
-
-  @IsString()
-  @IsOptional()
-  barcode?: string;
 }
