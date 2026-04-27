@@ -40,6 +40,14 @@ export class CustomersController {
     return this.customersService.findAll(q, effectiveBranchId);
   }
 
+  @Get('outstanding')
+  @Roles('ADMIN', 'PHARMACIST', 'ACCOUNTANT', 'SALESPERSON')
+  @ApiOperation({ summary: 'Get live outstanding balances computed from invoices' })
+  getOutstanding(@Request() req: any, @Query('branchId') branchId?: string) {
+    const effectiveBranchId = req.user.branchId ?? branchId;
+    return this.customersService.getOutstanding(effectiveBranchId);
+  }
+
   @Get(':id')
   @Roles('ADMIN', 'PHARMACIST', 'ACCOUNTANT', 'SALESPERSON')
   @ApiOperation({ summary: 'Get customer details including prescriptions and recent invoices' })
@@ -56,13 +64,20 @@ export class CustomersController {
 
   @Post(':id/payment')
   @Roles('ADMIN', 'PHARMACIST', 'ACCOUNTANT')
-  @ApiOperation({ summary: 'Record a payment against customer outstanding balance' })
+  @ApiOperation({ summary: 'Record a payment against customer outstanding balance (FIFO allocation)' })
   recordPayment(
     @Param('id') id: string,
     @Body() body: { amount: number; paymentMode: string; referenceNumber?: string },
     @Request() req: any,
   ) {
     return this.customersService.recordPayment(id, body.amount, body.paymentMode, body.referenceNumber, req.user.branchId);
+  }
+
+  @Get(':id/payments')
+  @Roles('ADMIN', 'PHARMACIST', 'ACCOUNTANT')
+  @ApiOperation({ summary: 'Get payment history for a customer' })
+  getPaymentHistory(@Param('id') id: string, @Request() req: any) {
+    return this.customersService.getPaymentHistory(id, req.user.branchId);
   }
 
   @Delete(':id')

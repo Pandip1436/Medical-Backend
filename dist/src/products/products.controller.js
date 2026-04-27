@@ -41,16 +41,19 @@ let ProductsController = class ProductsController {
         const effectiveBranchId = req.user.branchId ?? branchId;
         return this.productsService.create({ ...createProductDto, branchId: effectiveBranchId });
     }
-    findAll(req, q, category, schedule, skip, take, branchId) {
+    findAll(req, q, categoryId, schedule, skip, take, branchId) {
         const effectiveBranchId = req.user.branchId ?? branchId;
         return this.productsService.findAll({
             query: q,
-            category,
+            categoryId,
             schedule,
             skip: skip !== undefined ? Number(skip) : undefined,
             take: take !== undefined ? Number(take) : undefined,
             branchId: effectiveBranchId,
         });
+    }
+    getHistory(id, req) {
+        return this.productsService.getProductHistory(id, req.user.branchId);
     }
     findOne(id, req) {
         return this.productsService.findOne(id, req.user.branchId);
@@ -59,10 +62,22 @@ let ProductsController = class ProductsController {
         return this.productsService.update(id, updateProductDto, req.user.branchId);
     }
     bulkAdjust(body, req) {
-        return this.productsService.bulkAdjustStock(body.items, req.user.branchId);
+        const user = { userId: req.user.userId, name: req.user.name ?? req.user.email ?? 'Unknown' };
+        return this.productsService.bulkAdjustStock(body.items, req.user.branchId, user);
     }
     adjust(id, batchId, body, req) {
-        return this.productsService.adjustBatchStock(id, batchId, body, req.user.branchId);
+        const user = { userId: req.user.userId, name: req.user.name ?? req.user.email ?? 'Unknown' };
+        return this.productsService.adjustBatchStock(id, batchId, body, req.user.branchId, user);
+    }
+    toggleActive(id, req) {
+        return this.productsService.toggleActive(id, req.user.branchId);
+    }
+    getAdjustmentLogs(id) {
+        return this.productsService['prisma'].stockAdjustmentLog.findMany({
+            where: { productId: id },
+            orderBy: { createdAt: 'desc' },
+            take: 100,
+        });
     }
     remove(id, req) {
         return this.productsService.remove(id, req.user.branchId);
@@ -98,14 +113,14 @@ __decorate([
     (0, roles_decorator_1.Roles)('ADMIN', 'PHARMACIST', 'INVENTORY_MANAGER', 'ACCOUNTANT', 'SALESPERSON'),
     (0, swagger_1.ApiOperation)({ summary: 'Get all products for a branch (paginated when skip/take provided)' }),
     (0, swagger_1.ApiQuery)({ name: 'q', required: false }),
-    (0, swagger_1.ApiQuery)({ name: 'category', required: false }),
+    (0, swagger_1.ApiQuery)({ name: 'categoryId', required: false }),
     (0, swagger_1.ApiQuery)({ name: 'schedule', required: false }),
     (0, swagger_1.ApiQuery)({ name: 'skip', required: false }),
     (0, swagger_1.ApiQuery)({ name: 'take', required: false }),
     (0, swagger_1.ApiQuery)({ name: 'branchId', required: false }),
     __param(0, (0, common_1.Request)()),
     __param(1, (0, common_1.Query)('q')),
-    __param(2, (0, common_1.Query)('category')),
+    __param(2, (0, common_1.Query)('categoryId')),
     __param(3, (0, common_1.Query)('schedule')),
     __param(4, (0, common_1.Query)('skip')),
     __param(5, (0, common_1.Query)('take')),
@@ -114,6 +129,16 @@ __decorate([
     __metadata("design:paramtypes", [Object, String, String, String, String, String, String]),
     __metadata("design:returntype", void 0)
 ], ProductsController.prototype, "findAll", null);
+__decorate([
+    (0, common_1.Get)(':id/history'),
+    (0, roles_decorator_1.Roles)('ADMIN', 'PHARMACIST', 'INVENTORY_MANAGER', 'ACCOUNTANT', 'SALESPERSON'),
+    (0, swagger_1.ApiOperation)({ summary: 'Get full sales and purchase history for a product' }),
+    __param(0, (0, common_1.Param)('id')),
+    __param(1, (0, common_1.Request)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [String, Object]),
+    __metadata("design:returntype", void 0)
+], ProductsController.prototype, "getHistory", null);
 __decorate([
     (0, common_1.Get)(':id'),
     (0, roles_decorator_1.Roles)('ADMIN', 'PHARMACIST', 'INVENTORY_MANAGER', 'SALESPERSON'),
@@ -157,6 +182,25 @@ __decorate([
     __metadata("design:paramtypes", [String, String, Object, Object]),
     __metadata("design:returntype", void 0)
 ], ProductsController.prototype, "adjust", null);
+__decorate([
+    (0, common_1.Patch)(':id/toggle-active'),
+    (0, roles_decorator_1.Roles)('ADMIN', 'INVENTORY_MANAGER'),
+    (0, swagger_1.ApiOperation)({ summary: 'Toggle product active/inactive status (soft delete)' }),
+    __param(0, (0, common_1.Param)('id')),
+    __param(1, (0, common_1.Request)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [String, Object]),
+    __metadata("design:returntype", void 0)
+], ProductsController.prototype, "toggleActive", null);
+__decorate([
+    (0, common_1.Get)(':id/adjustment-logs'),
+    (0, roles_decorator_1.Roles)('ADMIN', 'INVENTORY_MANAGER'),
+    (0, swagger_1.ApiOperation)({ summary: 'Get stock adjustment audit trail for a product' }),
+    __param(0, (0, common_1.Param)('id')),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [String]),
+    __metadata("design:returntype", void 0)
+], ProductsController.prototype, "getAdjustmentLogs", null);
 __decorate([
     (0, common_1.Delete)(':id'),
     (0, roles_decorator_1.Roles)('ADMIN'),

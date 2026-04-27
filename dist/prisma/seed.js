@@ -197,37 +197,44 @@ async function main() {
     ]);
     console.log('  ✅ 2 HQ doctors + 1 Chennai doctor\n');
     console.log('👥 Seeding customers (per branch)...');
-    const [cust1, cust3, cust4, walkIn] = await Promise.all([
+    const [cust1, cust3, cust4] = await Promise.all([
         prisma.customer.create({ data: { id: 'CUS-001', name: 'Apollo Hospital - Madurai', phone: '9944112233', email: 'pharmacy@apollomadurai.com', address: '11, KK Nagar, Madurai - 625020', type: client_1.CustomerType.WHOLESALE, creditLimit: 500000, currentOutstanding: 0, gstin: '33AABCA1234A1Z5', dlNumber: 'TN/MDU/20B/2021/1001', branchId: hq.id } }),
         prisma.customer.create({ data: { id: 'CUS-003', name: 'MedPlus - Madurai', phone: '9944445566', email: 'madurai@medplus.in', address: '45, Anna Nagar, Madurai', type: client_1.CustomerType.WHOLESALE, creditLimit: 300000, currentOutstanding: 0, gstin: '33AABCD3456D4Z3', dlNumber: 'TN/MDU/21B/2022/1205', branchId: hq.id } }),
         prisma.customer.create({ data: { id: 'CUS-004', name: 'Murugan S', phone: '9944667788', address: '12/3, Simmakkal, Madurai', type: client_1.CustomerType.RETAIL, creditLimit: 10000, currentOutstanding: 0, loyaltyPoints: 320, branchId: hq.id } }),
-        prisma.customer.create({ data: { id: 'CUS-WALKIN-HQ', name: 'Walk-in Customer (HQ)', phone: '0000000001', type: client_1.CustomerType.RETAIL, creditLimit: 0, currentOutstanding: 0, branchId: hq.id } }),
     ]);
-    const [cust2, cust5, walkIn2] = await Promise.all([
+    const [cust2, cust5] = await Promise.all([
         prisma.customer.create({ data: { id: 'CUS-002', name: 'MIOT Hospital - Chennai', phone: '9944223344', email: 'purchase@miothospitals.com', address: '4/112, Mount Poonamallee Road, Chennai - 600089', type: client_1.CustomerType.WHOLESALE, creditLimit: 750000, currentOutstanding: 0, gstin: '33AABCM5678B2Z1', dlNumber: 'TN/CHE/20B/2020/0852', branchId: br1.id } }),
         prisma.customer.create({ data: { id: 'CUS-005', name: 'Lakshmi K', phone: '9944778899', address: '56, Tallakulam, Madurai', type: client_1.CustomerType.RETAIL, creditLimit: 15000, currentOutstanding: 0, loyaltyPoints: 540, branchId: br1.id } }),
-        prisma.customer.create({ data: { id: 'CUS-WALKIN-BR1', name: 'Walk-in Customer (Chennai)', phone: '0000000002', type: client_1.CustomerType.RETAIL, creditLimit: 0, currentOutstanding: 0, branchId: br1.id } }),
     ]);
-    console.log('  ✅ 4 HQ customers + 3 Chennai customers\n');
+    console.log('  ✅ 3 HQ customers + 2 Chennai customers\n');
     console.log('💊 Seeding products (per branch)...');
+    const categoryDefs = [
+        { name: 'NEPHROLOGY', description: 'Kidney and renal care medicines', color: '#3B82F6' },
+        { name: 'ONCOLOGY', description: 'Cancer treatment medicines', color: '#8B5CF6' },
+        { name: 'GENERAL', description: 'General medicines', color: '#10B981' },
+        { name: 'OTC', description: 'Over the counter medicines', color: '#F59E0B' },
+        { name: 'SURGICAL', description: 'Surgical supplies and equipment', color: '#EF4444' },
+    ];
+    const seededCats = await Promise.all(categoryDefs.map(c => prisma.category.upsert({ where: { name: c.name }, update: {}, create: c })));
+    const catId = (name) => seededCats.find(c => c.name === name).id;
     const hqProductDefs = [
-        { id: 'PRD-HQ-001', name: 'Torsemide 20mg Tab', generic: 'Torsemide', manufacturer: 'Cipla Ltd', cat: client_1.ProductCategory.NEPHROLOGY, sub: 'Diuretics', pack: '10x10', uom: 'Strip', sched: client_1.Schedule.H, hsn: '30049099', storage: client_1.StorageCondition.ROOM_TEMP, mrp: 85, pr: 52, sr: 78, wr: 68, gst: 12, min: 100, max: 1000, reorder: 200, rack: 'A1-01', barcode: 'HQ-8901234560011', branchId: hq.id },
-        { id: 'PRD-HQ-002', name: 'Erythropoietin 4000IU Inj', generic: 'Epoetin Alfa', manufacturer: "Dr. Reddy's", cat: client_1.ProductCategory.NEPHROLOGY, sub: 'Hematopoietic Agents', pack: '1 Vial', uom: 'Vial', sched: client_1.Schedule.H, hsn: '30021200', storage: client_1.StorageCondition.REFRIGERATED, mrp: 1250, pr: 850, sr: 1150, wr: 1020, gst: 12, min: 20, max: 200, reorder: 50, rack: 'R1-01', barcode: 'HQ-8901234560028', branchId: hq.id },
-        { id: 'PRD-HQ-003', name: 'Ondansetron 4mg Tab', generic: 'Ondansetron', manufacturer: 'Sun Pharmaceutical', cat: client_1.ProductCategory.ONCOLOGY, sub: 'Antiemetics', pack: '10x10', uom: 'Strip', sched: client_1.Schedule.H, hsn: '30049099', storage: client_1.StorageCondition.ROOM_TEMP, mrp: 62.5, pr: 38, sr: 56, wr: 48, gst: 12, min: 150, max: 1500, reorder: 300, rack: 'B2-03', barcode: 'HQ-8901234560035', branchId: hq.id },
-        { id: 'PRD-HQ-004', name: 'Tacrolimus 1mg Cap', generic: 'Tacrolimus', manufacturer: 'Hetero Drugs', cat: client_1.ProductCategory.NEPHROLOGY, sub: 'Immunosuppressants', pack: '10x6', uom: 'Strip', sched: client_1.Schedule.H1, hsn: '30049099', storage: client_1.StorageCondition.COOL_DRY, mrp: 320, pr: 210, sr: 295, wr: 260, gst: 12, min: 50, max: 500, reorder: 100, rack: 'A2-04', barcode: 'HQ-8901234560042', branchId: hq.id },
-        { id: 'PRD-HQ-005', name: 'Losartan 50mg Tab', generic: 'Losartan Potassium', manufacturer: 'Cipla Ltd', cat: client_1.ProductCategory.NEPHROLOGY, sub: 'ARBs', pack: '10x10', uom: 'Strip', sched: client_1.Schedule.H, hsn: '30049099', storage: client_1.StorageCondition.ROOM_TEMP, mrp: 68, pr: 40, sr: 62, wr: 54, gst: 12, min: 200, max: 2000, reorder: 400, rack: 'A1-05', barcode: 'HQ-8901234560128', branchId: hq.id },
-        { id: 'PRD-HQ-006', name: 'Furosemide 40mg Tab', generic: 'Furosemide', manufacturer: 'Cipla Ltd', cat: client_1.ProductCategory.NEPHROLOGY, sub: 'Loop Diuretics', pack: '10x15', uom: 'Strip', sched: client_1.Schedule.H, hsn: '30049099', storage: client_1.StorageCondition.ROOM_TEMP, mrp: 28, pr: 16, sr: 25, wr: 22, gst: 12, min: 300, max: 3000, reorder: 500, rack: 'A1-02', barcode: 'HQ-8901234560142', branchId: hq.id },
+        { id: 'PRD-HQ-001', name: 'Torsemide 20mg Tab', generic: 'Torsemide', manufacturer: 'Cipla Ltd', cat: 'NEPHROLOGY', sub: 'Diuretics', pack: '10x10', uom: 'Strip', sched: client_1.Schedule.H, hsn: '30049099', storage: client_1.StorageCondition.ROOM_TEMP, mrp: 85, pr: 52, sr: 78, wr: 68, gst: 12, min: 100, max: 1000, reorder: 200, rack: 'A1-01', barcode: 'HQ-8901234560011', branchId: hq.id },
+        { id: 'PRD-HQ-002', name: 'Erythropoietin 4000IU Inj', generic: 'Epoetin Alfa', manufacturer: "Dr. Reddy's", cat: 'NEPHROLOGY', sub: 'Hematopoietic Agents', pack: '1 Vial', uom: 'Vial', sched: client_1.Schedule.H, hsn: '30021200', storage: client_1.StorageCondition.REFRIGERATED, mrp: 1250, pr: 850, sr: 1150, wr: 1020, gst: 12, min: 20, max: 200, reorder: 50, rack: 'R1-01', barcode: 'HQ-8901234560028', branchId: hq.id },
+        { id: 'PRD-HQ-003', name: 'Ondansetron 4mg Tab', generic: 'Ondansetron', manufacturer: 'Sun Pharmaceutical', cat: 'ONCOLOGY', sub: 'Antiemetics', pack: '10x10', uom: 'Strip', sched: client_1.Schedule.H, hsn: '30049099', storage: client_1.StorageCondition.ROOM_TEMP, mrp: 62.5, pr: 38, sr: 56, wr: 48, gst: 12, min: 150, max: 1500, reorder: 300, rack: 'B2-03', barcode: 'HQ-8901234560035', branchId: hq.id },
+        { id: 'PRD-HQ-004', name: 'Tacrolimus 1mg Cap', generic: 'Tacrolimus', manufacturer: 'Hetero Drugs', cat: 'NEPHROLOGY', sub: 'Immunosuppressants', pack: '10x6', uom: 'Strip', sched: client_1.Schedule.H1, hsn: '30049099', storage: client_1.StorageCondition.COOL_DRY, mrp: 320, pr: 210, sr: 295, wr: 260, gst: 12, min: 50, max: 500, reorder: 100, rack: 'A2-04', barcode: 'HQ-8901234560042', branchId: hq.id },
+        { id: 'PRD-HQ-005', name: 'Losartan 50mg Tab', generic: 'Losartan Potassium', manufacturer: 'Cipla Ltd', cat: 'NEPHROLOGY', sub: 'ARBs', pack: '10x10', uom: 'Strip', sched: client_1.Schedule.H, hsn: '30049099', storage: client_1.StorageCondition.ROOM_TEMP, mrp: 68, pr: 40, sr: 62, wr: 54, gst: 12, min: 200, max: 2000, reorder: 400, rack: 'A1-05', barcode: 'HQ-8901234560128', branchId: hq.id },
+        { id: 'PRD-HQ-006', name: 'Furosemide 40mg Tab', generic: 'Furosemide', manufacturer: 'Cipla Ltd', cat: 'NEPHROLOGY', sub: 'Loop Diuretics', pack: '10x15', uom: 'Strip', sched: client_1.Schedule.H, hsn: '30049099', storage: client_1.StorageCondition.ROOM_TEMP, mrp: 28, pr: 16, sr: 25, wr: 22, gst: 12, min: 300, max: 3000, reorder: 500, rack: 'A1-02', barcode: 'HQ-8901234560142', branchId: hq.id },
     ];
     const br1ProductDefs = [
-        { id: 'PRD-BR1-001', name: 'Cisplatin 50mg Inj', generic: 'Cisplatin', manufacturer: 'Natco Pharma', cat: client_1.ProductCategory.ONCOLOGY, sub: 'Alkylating Agents', pack: '1 Vial', uom: 'Vial', sched: client_1.Schedule.H, hsn: '30049099', storage: client_1.StorageCondition.ROOM_TEMP, mrp: 450, pr: 290, sr: 420, wr: 370, gst: 12, min: 30, max: 300, reorder: 50, rack: 'C1-02', barcode: 'BR1-8901234560059', branchId: br1.id },
-        { id: 'PRD-BR1-002', name: 'Imatinib 400mg Tab', generic: 'Imatinib Mesylate', manufacturer: 'Natco Pharma', cat: client_1.ProductCategory.ONCOLOGY, sub: 'Tyrosine Kinase Inhibitors', pack: '10x3', uom: 'Strip', sched: client_1.Schedule.H1, hsn: '30049099', storage: client_1.StorageCondition.ROOM_TEMP, mrp: 2800, pr: 1850, sr: 2600, wr: 2300, gst: 12, min: 20, max: 200, reorder: 40, rack: 'C2-01', barcode: 'BR1-8901234560111', branchId: br1.id },
-        { id: 'PRD-BR1-003', name: 'Paclitaxel 260mg Inj', generic: 'Paclitaxel', manufacturer: 'Natco Pharma', cat: client_1.ProductCategory.ONCOLOGY, sub: 'Taxanes', pack: '1 Vial', uom: 'Vial', sched: client_1.Schedule.H, hsn: '30049099', storage: client_1.StorageCondition.REFRIGERATED, mrp: 8500, pr: 5800, sr: 7900, wr: 7200, gst: 12, min: 10, max: 100, reorder: 20, rack: 'R1-03', barcode: 'BR1-8901234560073', branchId: br1.id },
-        { id: 'PRD-BR1-004', name: 'Rituximab 500mg Inj', generic: 'Rituximab', manufacturer: 'Hetero Drugs', cat: client_1.ProductCategory.ONCOLOGY, sub: 'Monoclonal Antibodies', pack: '1 Vial', uom: 'Vial', sched: client_1.Schedule.H, hsn: '30021400', storage: client_1.StorageCondition.REFRIGERATED, mrp: 25000, pr: 18000, sr: 23500, wr: 21500, gst: 12, min: 5, max: 50, reorder: 10, rack: 'R2-01', barcode: 'BR1-8901234560204', branchId: br1.id },
+        { id: 'PRD-BR1-001', name: 'Cisplatin 50mg Inj', generic: 'Cisplatin', manufacturer: 'Natco Pharma', cat: 'ONCOLOGY', sub: 'Alkylating Agents', pack: '1 Vial', uom: 'Vial', sched: client_1.Schedule.H, hsn: '30049099', storage: client_1.StorageCondition.ROOM_TEMP, mrp: 450, pr: 290, sr: 420, wr: 370, gst: 12, min: 30, max: 300, reorder: 50, rack: 'C1-02', barcode: 'BR1-8901234560059', branchId: br1.id },
+        { id: 'PRD-BR1-002', name: 'Imatinib 400mg Tab', generic: 'Imatinib Mesylate', manufacturer: 'Natco Pharma', cat: 'ONCOLOGY', sub: 'Tyrosine Kinase Inhibitors', pack: '10x3', uom: 'Strip', sched: client_1.Schedule.H1, hsn: '30049099', storage: client_1.StorageCondition.ROOM_TEMP, mrp: 2800, pr: 1850, sr: 2600, wr: 2300, gst: 12, min: 20, max: 200, reorder: 40, rack: 'C2-01', barcode: 'BR1-8901234560111', branchId: br1.id },
+        { id: 'PRD-BR1-003', name: 'Paclitaxel 260mg Inj', generic: 'Paclitaxel', manufacturer: 'Natco Pharma', cat: 'ONCOLOGY', sub: 'Taxanes', pack: '1 Vial', uom: 'Vial', sched: client_1.Schedule.H, hsn: '30049099', storage: client_1.StorageCondition.REFRIGERATED, mrp: 8500, pr: 5800, sr: 7900, wr: 7200, gst: 12, min: 10, max: 100, reorder: 20, rack: 'R1-03', barcode: 'BR1-8901234560073', branchId: br1.id },
+        { id: 'PRD-BR1-004', name: 'Rituximab 500mg Inj', generic: 'Rituximab', manufacturer: 'Hetero Drugs', cat: 'ONCOLOGY', sub: 'Monoclonal Antibodies', pack: '1 Vial', uom: 'Vial', sched: client_1.Schedule.H, hsn: '30021400', storage: client_1.StorageCondition.REFRIGERATED, mrp: 25000, pr: 18000, sr: 23500, wr: 21500, gst: 12, min: 5, max: 50, reorder: 10, rack: 'R2-01', barcode: 'BR1-8901234560204', branchId: br1.id },
     ];
     const hqProducts = await Promise.all(hqProductDefs.map(p => prisma.product.create({
         data: {
             id: p.id, name: p.name, genericName: p.generic, manufacturer: p.manufacturer,
-            category: p.cat, subCategory: p.sub, packSize: p.pack, unitOfMeasure: p.uom,
+            categoryId: catId(p.cat), subCategory: p.sub, packSize: p.pack, unitOfMeasure: p.uom,
             schedule: p.sched, hsnCode: p.hsn, storageCondition: p.storage,
             mrp: p.mrp, purchaseRate: p.pr, sellingRate: p.sr, wholesaleRate: p.wr,
             gstRate: p.gst, minStock: p.min, maxStock: p.max, reorderQty: p.reorder,
@@ -237,7 +244,7 @@ async function main() {
     const br1Products = await Promise.all(br1ProductDefs.map(p => prisma.product.create({
         data: {
             id: p.id, name: p.name, genericName: p.generic, manufacturer: p.manufacturer,
-            category: p.cat, subCategory: p.sub, packSize: p.pack, unitOfMeasure: p.uom,
+            categoryId: catId(p.cat), subCategory: p.sub, packSize: p.pack, unitOfMeasure: p.uom,
             schedule: p.sched, hsnCode: p.hsn, storageCondition: p.storage,
             mrp: p.mrp, purchaseRate: p.pr, sellingRate: p.sr, wholesaleRate: p.wr,
             gstRate: p.gst, minStock: p.min, maxStock: p.max, reorderQty: p.reorder,
@@ -316,9 +323,9 @@ async function main() {
         { days: 45, amount: 9800, cust: cust3, mode: client_1.PaymentMode.CASH, status: client_1.InvoiceStatus.PAID, amountPaid: 9800, product: products[0], batch: hqBatch1, qty: 30 },
         { days: 30, amount: 5600, cust: cust4, mode: client_1.PaymentMode.UPI, status: client_1.InvoiceStatus.PAID, amountPaid: 5600, product: products[4], batch: hqBatch3, qty: 25 },
         { days: 20, amount: 42000, cust: cust1, mode: client_1.PaymentMode.CREDIT, status: client_1.InvoiceStatus.PARTIAL, amountPaid: 20000, product: products[3], batch: hqBatch2, qty: 20 },
-        { days: 15, amount: 3400, cust: walkIn, mode: client_1.PaymentMode.CASH, status: client_1.InvoiceStatus.PAID, amountPaid: 3400, product: products[0], batch: hqBatch1, qty: 10 },
+        { days: 15, amount: 3400, cust: cust4, mode: client_1.PaymentMode.CASH, status: client_1.InvoiceStatus.PAID, amountPaid: 3400, product: products[0], batch: hqBatch1, qty: 10 },
         { days: 10, amount: 17000, cust: cust3, mode: client_1.PaymentMode.CARD, status: client_1.InvoiceStatus.PAID, amountPaid: 17000, product: products[4], batch: hqBatch3, qty: 80 },
-        { days: 5, amount: 2800, cust: walkIn, mode: client_1.PaymentMode.UPI, status: client_1.InvoiceStatus.PAID, amountPaid: 2800, product: products[0], batch: hqBatch1, qty: 8 },
+        { days: 5, amount: 2800, cust: cust4, mode: client_1.PaymentMode.UPI, status: client_1.InvoiceStatus.PAID, amountPaid: 2800, product: products[0], batch: hqBatch1, qty: 8 },
         { days: 2, amount: 6800, cust: cust4, mode: client_1.PaymentMode.CASH, status: client_1.InvoiceStatus.PAID, amountPaid: 6800, product: products[4], batch: hqBatch3, qty: 30 },
         { days: 1, amount: 9600, cust: cust3, mode: client_1.PaymentMode.UPI, status: client_1.InvoiceStatus.PAID, amountPaid: 9600, product: products[0], batch: hqBatch1, qty: 28 },
         { days: 0, amount: 21000, cust: cust1, mode: client_1.PaymentMode.CREDIT, status: client_1.InvoiceStatus.CREDIT, amountPaid: 0, product: products[3], batch: hqBatch2, qty: 10 },
@@ -525,7 +532,7 @@ async function main() {
         { days: 30, amount: 8500, cust: cust5, mode: client_1.PaymentMode.UPI, status: client_1.InvoiceStatus.PAID, amountPaid: 8500, product: products[6], batch: br1Batch1, qty: 20 },
         { days: 20, amount: 17000, cust: cust2, mode: client_1.PaymentMode.CREDIT, status: client_1.InvoiceStatus.CREDIT, amountPaid: 0, product: products[6], batch: br1Batch1, qty: 40 },
         { days: 14, amount: 125000, cust: cust2, mode: client_1.PaymentMode.CREDIT, status: client_1.InvoiceStatus.CREDIT, amountPaid: 0, product: products[9], batch: br1Batch3, qty: 5 },
-        { days: 10, amount: 4500, cust: walkIn2, mode: client_1.PaymentMode.CASH, status: client_1.InvoiceStatus.PAID, amountPaid: 4500, product: products[6], batch: br1Batch1, qty: 10 },
+        { days: 10, amount: 4500, cust: cust5, mode: client_1.PaymentMode.CASH, status: client_1.InvoiceStatus.PAID, amountPaid: 4500, product: products[6], batch: br1Batch1, qty: 10 },
         { days: 7, amount: 34000, cust: cust2, mode: client_1.PaymentMode.CARD, status: client_1.InvoiceStatus.PAID, amountPaid: 34000, product: products[8], batch: br1Batch2, qty: 4 },
         { days: 3, amount: 9000, cust: cust5, mode: client_1.PaymentMode.UPI, status: client_1.InvoiceStatus.PAID, amountPaid: 9000, product: products[6], batch: br1Batch1, qty: 20 },
         { days: 1, amount: 47500, cust: cust2, mode: client_1.PaymentMode.CREDIT, status: client_1.InvoiceStatus.CREDIT, amountPaid: 0, product: products[9], batch: br1Batch3, qty: 2 },

@@ -26,8 +26,8 @@ let ExpensesController = class ExpensesController {
     constructor(expensesService) {
         this.expensesService = expensesService;
     }
-    create(dto, req) {
-        const effectiveBranchId = req.user.branchId ?? dto.branchId;
+    create(dto, req, branchId) {
+        const effectiveBranchId = req.user.branchId ?? branchId;
         return this.expensesService.create(dto, effectiveBranchId);
     }
     findAll(req, category, from, to, branchId) {
@@ -51,8 +51,9 @@ __decorate([
     (0, swagger_1.ApiOperation)({ summary: 'Create a new expense' }),
     __param(0, (0, common_1.Body)()),
     __param(1, (0, common_1.Request)()),
+    __param(2, (0, common_1.Query)('branchId')),
     __metadata("design:type", Function),
-    __metadata("design:paramtypes", [create_expense_dto_1.CreateExpenseDto, Object]),
+    __metadata("design:paramtypes", [create_expense_dto_1.CreateExpenseDto, Object, String]),
     __metadata("design:returntype", void 0)
 ], ExpensesController.prototype, "create", null);
 __decorate([

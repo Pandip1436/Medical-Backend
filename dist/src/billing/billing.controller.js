@@ -25,8 +25,8 @@ let BillingController = class BillingController {
     constructor(billingService) {
         this.billingService = billingService;
     }
-    create(createInvoiceDto, req) {
-        const effectiveBranchId = req.user.branchId ?? createInvoiceDto.branchId;
+    create(createInvoiceDto, req, branchId) {
+        const effectiveBranchId = req.user.branchId ?? branchId;
         return this.billingService.create(createInvoiceDto, req.user.userId, effectiveBranchId);
     }
     findAll(req, q, customerId, branchId, type) {
@@ -70,8 +70,9 @@ __decorate([
     (0, swagger_1.ApiOperation)({ summary: 'Create a new invoice transaction' }),
     __param(0, (0, common_1.Body)()),
     __param(1, (0, common_1.Request)()),
+    __param(2, (0, common_1.Query)('branchId')),
     __metadata("design:type", Function),
-    __metadata("design:paramtypes", [create_invoice_dto_1.CreateInvoiceDto, Object]),
+    __metadata("design:paramtypes", [create_invoice_dto_1.CreateInvoiceDto, Object, String]),
     __metadata("design:returntype", void 0)
 ], BillingController.prototype, "create", null);
 __decorate([

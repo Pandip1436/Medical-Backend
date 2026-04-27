@@ -12,12 +12,12 @@ export declare class ProductsController {
     create(createProductDto: CreateProductDto, req: any, branchId?: string): Promise<{
         id: string;
         name: string;
+        isActive: boolean;
         branchId: string | null;
         createdAt: Date;
         genericName: string;
         saltComposition: string | null;
         manufacturer: string;
-        category: import(".prisma/client").$Enums.ProductCategory;
         subCategory: string | null;
         packSize: string;
         unitOfMeasure: string;
@@ -36,8 +36,9 @@ export declare class ProductsController {
         rackLocation: string;
         barcode: string | null;
         totalStock: number;
+        categoryId: string | null;
     }>;
-    findAll(req: any, q?: string, category?: string, schedule?: string, skip?: string, take?: string, branchId?: string): Promise<({
+    findAll(req: any, q?: string, categoryId?: string, schedule?: string, skip?: string, take?: string, branchId?: string): Promise<({
         batches: {
             id: string;
             createdAt: Date;
@@ -50,15 +51,24 @@ export declare class ProductsController {
             expiryDate: Date;
             quantity: number;
         }[];
+        category: {
+            id: string;
+            name: string;
+            isActive: boolean;
+            createdAt: Date;
+            description: string | null;
+            color: string | null;
+            updatedAt: Date;
+        } | null;
     } & {
         id: string;
         name: string;
+        isActive: boolean;
         branchId: string | null;
         createdAt: Date;
         genericName: string;
         saltComposition: string | null;
         manufacturer: string;
-        category: import(".prisma/client").$Enums.ProductCategory;
         subCategory: string | null;
         packSize: string;
         unitOfMeasure: string;
@@ -77,6 +87,7 @@ export declare class ProductsController {
         rackLocation: string;
         barcode: string | null;
         totalStock: number;
+        categoryId: string | null;
     })[] | {
         data: ({
             batches: {
@@ -91,15 +102,24 @@ export declare class ProductsController {
                 expiryDate: Date;
                 quantity: number;
             }[];
+            category: {
+                id: string;
+                name: string;
+                isActive: boolean;
+                createdAt: Date;
+                description: string | null;
+                color: string | null;
+                updatedAt: Date;
+            } | null;
         } & {
             id: string;
             name: string;
+            isActive: boolean;
             branchId: string | null;
             createdAt: Date;
             genericName: string;
             saltComposition: string | null;
             manufacturer: string;
-            category: import(".prisma/client").$Enums.ProductCategory;
             subCategory: string | null;
             packSize: string;
             unitOfMeasure: string;
@@ -118,8 +138,64 @@ export declare class ProductsController {
             rackLocation: string;
             barcode: string | null;
             totalStock: number;
+            categoryId: string | null;
         })[];
         total: number;
+    }>;
+    getHistory(id: string, req: any): Promise<{
+        product: {
+            id: string;
+            name: string;
+            genericName: string;
+            manufacturer: string;
+            category: {
+                id: string;
+                name: string;
+                isActive: boolean;
+                createdAt: Date;
+                description: string | null;
+                color: string | null;
+                updatedAt: Date;
+            } | null;
+            totalStock: number;
+            batchCount: number;
+            activeBatches: number;
+        };
+        summary: {
+            salesCount: number;
+            purchaseCount: number;
+            totalSoldQty: number;
+            totalPurchasedQty: number;
+            totalSalesValue: number;
+            totalPurchaseValue: number;
+            currentStock: number;
+        };
+        sales: {
+            id: string;
+            invoiceNumber: string;
+            date: Date;
+            customerName: string;
+            status: import(".prisma/client").$Enums.InvoiceStatus;
+            batchNumber: string;
+            quantity: number;
+            rate: number;
+            amount: number;
+            gstPercent: number;
+            discountPercent: number;
+        }[];
+        purchases: {
+            id: string;
+            grnNumber: string;
+            date: Date;
+            supplierName: string;
+            status: import(".prisma/client").$Enums.GRNStatus;
+            batchNumber: string;
+            receivedQty: number;
+            freeQty: number;
+            purchaseRate: number;
+            mrp: number;
+            amount: number;
+        }[];
     }>;
     findOne(id: string, req: any): Promise<{
         batches: {
@@ -134,15 +210,24 @@ export declare class ProductsController {
             expiryDate: Date;
             quantity: number;
         }[];
+        category: {
+            id: string;
+            name: string;
+            isActive: boolean;
+            createdAt: Date;
+            description: string | null;
+            color: string | null;
+            updatedAt: Date;
+        } | null;
         alternatives: {
             id: string;
             name: string;
+            isActive: boolean;
             branchId: string | null;
             createdAt: Date;
             genericName: string;
             saltComposition: string | null;
             manufacturer: string;
-            category: import(".prisma/client").$Enums.ProductCategory;
             subCategory: string | null;
             packSize: string;
             unitOfMeasure: string;
@@ -161,16 +246,17 @@ export declare class ProductsController {
             rackLocation: string;
             barcode: string | null;
             totalStock: number;
+            categoryId: string | null;
         }[];
     } & {
         id: string;
         name: string;
+        isActive: boolean;
         branchId: string | null;
         createdAt: Date;
         genericName: string;
         saltComposition: string | null;
         manufacturer: string;
-        category: import(".prisma/client").$Enums.ProductCategory;
         subCategory: string | null;
         packSize: string;
         unitOfMeasure: string;
@@ -189,16 +275,17 @@ export declare class ProductsController {
         rackLocation: string;
         barcode: string | null;
         totalStock: number;
+        categoryId: string | null;
     }>;
     update(id: string, updateProductDto: UpdateProductDto, req: any): Promise<{
         id: string;
         name: string;
+        isActive: boolean;
         branchId: string | null;
         createdAt: Date;
         genericName: string;
         saltComposition: string | null;
         manufacturer: string;
-        category: import(".prisma/client").$Enums.ProductCategory;
         subCategory: string | null;
         packSize: string;
         unitOfMeasure: string;
@@ -217,6 +304,7 @@ export declare class ProductsController {
         rackLocation: string;
         barcode: string | null;
         totalStock: number;
+        categoryId: string | null;
     }>;
     bulkAdjust(body: {
         items: {
@@ -249,15 +337,15 @@ export declare class ProductsController {
         diff: number;
         reason: string;
     }>;
-    remove(id: string, req: any): Promise<{
+    toggleActive(id: string, req: any): Promise<{
         id: string;
         name: string;
+        isActive: boolean;
         branchId: string | null;
         createdAt: Date;
         genericName: string;
         saltComposition: string | null;
         manufacturer: string;
-        category: import(".prisma/client").$Enums.ProductCategory;
         subCategory: string | null;
         packSize: string;
         unitOfMeasure: string;
@@ -276,5 +364,36 @@ export declare class ProductsController {
         rackLocation: string;
         barcode: string | null;
         totalStock: number;
+        categoryId: string | null;
+    }>;
+    getAdjustmentLogs(id: string): any;
+    remove(id: string, req: any): Promise<{
+        id: string;
+        name: string;
+        isActive: boolean;
+        branchId: string | null;
+        createdAt: Date;
+        genericName: string;
+        saltComposition: string | null;
+        manufacturer: string;
+        subCategory: string | null;
+        packSize: string;
+        unitOfMeasure: string;
+        schedule: import(".prisma/client").$Enums.Schedule;
+        hsnCode: string;
+        isNarcotic: boolean;
+        storageCondition: import(".prisma/client").$Enums.StorageCondition;
+        mrp: import("@prisma/client/runtime/library").Decimal;
+        purchaseRate: import("@prisma/client/runtime/library").Decimal;
+        sellingRate: import("@prisma/client/runtime/library").Decimal;
+        wholesaleRate: import("@prisma/client/runtime/library").Decimal;
+        gstRate: import("@prisma/client/runtime/library").Decimal;
+        minStock: number;
+        maxStock: number;
+        reorderQty: number;
+        rackLocation: string;
+        barcode: string | null;
+        totalStock: number;
+        categoryId: string | null;
     }>;
 }

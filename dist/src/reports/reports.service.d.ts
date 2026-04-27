@@ -465,7 +465,7 @@ export declare class ReportsService {
         }[];
         tableData: {
             product: string;
-            category: import(".prisma/client").$Enums.ProductCategory;
+            category: string;
             totalStock: number;
             minStock: number;
             mrp: number;

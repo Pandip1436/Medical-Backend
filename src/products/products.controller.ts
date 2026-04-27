@@ -103,7 +103,8 @@ export class ProductsController {
     @Body() body: { items: { productId: string; batchId: string; adjustedQty: number; reason: string }[] },
     @Request() req: any,
   ) {
-    return this.productsService.bulkAdjustStock(body.items, req.user.branchId);
+    const user = { userId: req.user.userId, name: req.user.name ?? req.user.email ?? 'Unknown' };
+    return this.productsService.bulkAdjustStock(body.items, req.user.branchId, user);
   }
 
   @Patch(':id/batches/:batchId/adjust')
@@ -115,7 +116,26 @@ export class ProductsController {
     @Body() body: { adjustedQty: number; reason: string; notes?: string },
     @Request() req: any,
   ) {
-    return this.productsService.adjustBatchStock(id, batchId, body, req.user.branchId);
+    const user = { userId: req.user.userId, name: req.user.name ?? req.user.email ?? 'Unknown' };
+    return this.productsService.adjustBatchStock(id, batchId, body, req.user.branchId, user);
+  }
+
+  @Patch(':id/toggle-active')
+  @Roles('ADMIN', 'INVENTORY_MANAGER')
+  @ApiOperation({ summary: 'Toggle product active/inactive status (soft delete)' })
+  toggleActive(@Param('id') id: string, @Request() req: any) {
+    return this.productsService.toggleActive(id, req.user.branchId);
+  }
+
+  @Get(':id/adjustment-logs')
+  @Roles('ADMIN', 'INVENTORY_MANAGER')
+  @ApiOperation({ summary: 'Get stock adjustment audit trail for a product' })
+  getAdjustmentLogs(@Param('id') id: string) {
+    return (this.productsService['prisma'] as any).stockAdjustmentLog.findMany({
+      where: { productId: id },
+      orderBy: { createdAt: 'desc' },
+      take: 100,
+    });
   }
 
   @Delete(':id')

@@ -17,7 +17,7 @@ class CreateProductDto {
     genericName;
     saltComposition;
     manufacturer;
-    category;
+    categoryId;
     subCategory;
     packSize;
     unitOfMeasure;
@@ -34,7 +34,6 @@ class CreateProductDto {
     maxStock;
     reorderQty;
     rackLocation;
-    barcode;
 }
 exports.CreateProductDto = CreateProductDto;
 __decorate([
@@ -58,9 +57,10 @@ __decorate([
     __metadata("design:type", String)
 ], CreateProductDto.prototype, "manufacturer", void 0);
 __decorate([
-    (0, class_validator_1.IsEnum)(client_1.ProductCategory),
+    (0, class_validator_1.IsString)(),
+    (0, class_validator_1.IsOptional)(),
     __metadata("design:type", String)
-], CreateProductDto.prototype, "category", void 0);
+], CreateProductDto.prototype, "categoryId", void 0);
 __decorate([
     (0, class_validator_1.IsString)(),
     (0, class_validator_1.IsOptional)(),
@@ -139,9 +139,4 @@ __decorate([
     (0, class_validator_1.IsNotEmpty)(),
     __metadata("design:type", String)
 ], CreateProductDto.prototype, "rackLocation", void 0);
-__decorate([
-    (0, class_validator_1.IsString)(),
-    (0, class_validator_1.IsOptional)(),
-    __metadata("design:type", String)
-], CreateProductDto.prototype, "barcode", void 0);
 //# sourceMappingURL=create-product.dto.js.map

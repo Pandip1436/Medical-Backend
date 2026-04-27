@@ -4,7 +4,7 @@ import { CreateInvoiceDto } from './dto/create-invoice.dto';
 export declare class BillingController {
     private readonly billingService;
     constructor(billingService: BillingService);
-    create(createInvoiceDto: CreateInvoiceDto, req: any): Promise<{
+    create(createInvoiceDto: CreateInvoiceDto, req: any, branchId?: string): Promise<{
         items: {
             id: string;
             mrp: import("@prisma/client/runtime/library").Decimal;

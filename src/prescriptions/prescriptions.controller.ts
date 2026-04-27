@@ -32,7 +32,7 @@ const multerOptions = {
   }),
 }
 
-@Controller('prescriptions')
+@Controller('api/v1/prescriptions')
 @UseGuards(JwtAuthGuard, RolesGuard)
 export class PrescriptionsController {
   constructor(private readonly svc: PrescriptionsService) {}

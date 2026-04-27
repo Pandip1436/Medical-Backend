@@ -15,6 +15,14 @@ export class ProductsService {
     });
   }
 
+  async toggleActive(id: string, branchId?: string) {
+    const product = await this.findOne(id, branchId);
+    return this.prisma.product.update({
+      where: { id },
+      data: { isActive: !(product as any).isActive } as any,
+    });
+  }
+
   async findAll(opts: {
     query?: string;
     categoryId?: string;
@@ -22,10 +30,12 @@ export class ProductsService {
     skip?: number;
     take?: number;
     branchId?: string;
+    includeInactive?: boolean;
   } = {}) {
-    const { query, categoryId, schedule, skip = 0, take, branchId } = opts;
+    const { query, categoryId, schedule, skip = 0, take, branchId, includeInactive } = opts;
 
     const where: any = {};
+    if (!includeInactive) where.isActive = true;
     if (branchId) where.branchId = branchId;
     if (query) {
       where.OR = [
@@ -144,6 +154,7 @@ export class ProductsService {
     batchId: string,
     dto: { adjustedQty: number; reason: string; notes?: string },
     branchId?: string,
+    user?: { userId: string; name: string },
   ) {
     const product = await this.prisma.product.findUnique({ where: { id: productId } });
     if (!product) throw new NotFoundException('Product not found');
@@ -158,6 +169,19 @@ export class ProductsService {
     await this.prisma.$transaction([
       this.prisma.batch.update({ where: { id: batchId }, data: { quantity: dto.adjustedQty } }),
       this.prisma.product.update({ where: { id: productId }, data: { totalStock: { increment: diff } } }),
+      ...(user ? [(this.prisma as any).stockAdjustmentLog.create({ data: {
+        productId,
+        batchId,
+        batchNumber: batch.batchNumber,
+        userId: user.userId,
+        userName: user.name,
+        reason: dto.reason,
+        previousQty: batch.quantity,
+        adjustedQty: dto.adjustedQty,
+        diff,
+        notes: dto.notes ?? null,
+        branchId: product.branchId ?? branchId ?? null,
+      }})] : []),
     ]);
 
     return { success: true, batchId, previousQty: batch.quantity, newQty: dto.adjustedQty, diff, reason: dto.reason };
@@ -253,8 +277,8 @@ export class ProductsService {
   async bulkAdjustStock(
     items: { productId: string; batchId: string; adjustedQty: number; reason: string }[],
     branchId?: string,
+    user?: { userId: string; name: string },
   ) {
-    // Validate all items first before touching the DB
     const resolved = await Promise.all(
       items.map(async (item) => {
         const product = await this.prisma.product.findUnique({ where: { id: item.productId } });
@@ -264,17 +288,30 @@ export class ProductsService {
         }
         const batch = await this.prisma.batch.findFirst({ where: { id: item.batchId, productId: item.productId } });
         if (!batch) throw new NotFoundException(`Batch ${item.batchId} not found`);
-        return { ...item, previousQty: batch.quantity, diff: item.adjustedQty - batch.quantity };
+        return { ...item, previousQty: batch.quantity, diff: item.adjustedQty - batch.quantity, branchId: product.branchId, batchNumber: batch.batchNumber };
       }),
     );
 
-    // Single atomic transaction — all succeed or all fail
-    await this.prisma.$transaction(
-      resolved.flatMap((item) => [
+    await this.prisma.$transaction([
+      ...resolved.flatMap((item) => [
         this.prisma.batch.update({ where: { id: item.batchId }, data: { quantity: item.adjustedQty } }),
         this.prisma.product.update({ where: { id: item.productId }, data: { totalStock: { increment: item.diff } } }),
       ]),
-    );
+      ...(user ? resolved.map((item) =>
+        (this.prisma as any).stockAdjustmentLog.create({ data: {
+          productId: item.productId,
+          batchId: item.batchId,
+          batchNumber: item.batchNumber,
+          userId: user.userId,
+          userName: user.name,
+          reason: item.reason,
+          previousQty: item.previousQty,
+          adjustedQty: item.adjustedQty,
+          diff: item.diff,
+          branchId: item.branchId ?? branchId ?? null,
+        }})
+      ) : []),
+    ]);
 
     return { success: true, adjusted: resolved.length, items: resolved.map(({ productId, batchId, previousQty, adjustedQty, diff, reason }) => ({ productId, batchId, previousQty, newQty: adjustedQty, diff, reason })) };
   }

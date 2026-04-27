@@ -34,6 +34,10 @@ let CustomersController = class CustomersController {
         const effectiveBranchId = req.user.branchId ?? branchId;
         return this.customersService.findAll(q, effectiveBranchId);
     }
+    getOutstanding(req, branchId) {
+        const effectiveBranchId = req.user.branchId ?? branchId;
+        return this.customersService.getOutstanding(effectiveBranchId);
+    }
     findOne(id, req) {
         return this.customersService.findOne(id, req.user.branchId);
     }
@@ -42,6 +46,9 @@ let CustomersController = class CustomersController {
     }
     recordPayment(id, body, req) {
         return this.customersService.recordPayment(id, body.amount, body.paymentMode, body.referenceNumber, req.user.branchId);
+    }
+    getPaymentHistory(id, req) {
+        return this.customersService.getPaymentHistory(id, req.user.branchId);
     }
     remove(id, req) {
         return this.customersService.remove(id, req.user.branchId);
@@ -73,6 +80,16 @@ __decorate([
     __metadata("design:returntype", void 0)
 ], CustomersController.prototype, "findAll", null);
 __decorate([
+    (0, common_1.Get)('outstanding'),
+    (0, roles_decorator_1.Roles)('ADMIN', 'PHARMACIST', 'ACCOUNTANT', 'SALESPERSON'),
+    (0, swagger_1.ApiOperation)({ summary: 'Get live outstanding balances computed from invoices' }),
+    __param(0, (0, common_1.Request)()),
+    __param(1, (0, common_1.Query)('branchId')),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, String]),
+    __metadata("design:returntype", void 0)
+], CustomersController.prototype, "getOutstanding", null);
+__decorate([
     (0, common_1.Get)(':id'),
     (0, roles_decorator_1.Roles)('ADMIN', 'PHARMACIST', 'ACCOUNTANT', 'SALESPERSON'),
     (0, swagger_1.ApiOperation)({ summary: 'Get customer details including prescriptions and recent invoices' }),
@@ -96,7 +113,7 @@ __decorate([
 __decorate([
     (0, common_1.Post)(':id/payment'),
     (0, roles_decorator_1.Roles)('ADMIN', 'PHARMACIST', 'ACCOUNTANT'),
-    (0, swagger_1.ApiOperation)({ summary: 'Record a payment against customer outstanding balance' }),
+    (0, swagger_1.ApiOperation)({ summary: 'Record a payment against customer outstanding balance (FIFO allocation)' }),
     __param(0, (0, common_1.Param)('id')),
     __param(1, (0, common_1.Body)()),
     __param(2, (0, common_1.Request)()),
@@ -104,6 +121,16 @@ __decorate([
     __metadata("design:paramtypes", [String, Object, Object]),
     __metadata("design:returntype", void 0)
 ], CustomersController.prototype, "recordPayment", null);
+__decorate([
+    (0, common_1.Get)(':id/payments'),
+    (0, roles_decorator_1.Roles)('ADMIN', 'PHARMACIST', 'ACCOUNTANT'),
+    (0, swagger_1.ApiOperation)({ summary: 'Get payment history for a customer' }),
+    __param(0, (0, common_1.Param)('id')),
+    __param(1, (0, common_1.Request)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [String, Object]),
+    __metadata("design:returntype", void 0)
+], CustomersController.prototype, "getPaymentHistory", null);
 __decorate([
     (0, common_1.Delete)(':id'),
     (0, roles_decorator_1.Roles)('ADMIN'),

@@ -35,8 +35,8 @@ export declare class SettingsController {
         branchId: string | null;
         createdAt: Date;
         type: import(".prisma/client").$Enums.DiscountType;
-        value: import("@prisma/client/runtime/library").Decimal;
         updatedAt: Date;
+        value: import("@prisma/client/runtime/library").Decimal;
         applicableTo: string | null;
         validFrom: Date | null;
         validTo: Date | null;
@@ -48,8 +48,8 @@ export declare class SettingsController {
         branchId: string | null;
         createdAt: Date;
         type: import(".prisma/client").$Enums.DiscountType;
-        value: import("@prisma/client/runtime/library").Decimal;
         updatedAt: Date;
+        value: import("@prisma/client/runtime/library").Decimal;
         applicableTo: string | null;
         validFrom: Date | null;
         validTo: Date | null;
@@ -61,8 +61,8 @@ export declare class SettingsController {
         branchId: string | null;
         createdAt: Date;
         type: import(".prisma/client").$Enums.DiscountType;
-        value: import("@prisma/client/runtime/library").Decimal;
         updatedAt: Date;
+        value: import("@prisma/client/runtime/library").Decimal;
         applicableTo: string | null;
         validFrom: Date | null;
         validTo: Date | null;
@@ -74,8 +74,8 @@ export declare class SettingsController {
         branchId: string | null;
         createdAt: Date;
         type: import(".prisma/client").$Enums.DiscountType;
-        value: import("@prisma/client/runtime/library").Decimal;
         updatedAt: Date;
+        value: import("@prisma/client/runtime/library").Decimal;
         applicableTo: string | null;
         validFrom: Date | null;
         validTo: Date | null;
@@ -83,8 +83,8 @@ export declare class SettingsController {
     getSetting(key: string): Promise<string | number | true | import("@prisma/client/runtime/library").JsonObject | import("@prisma/client/runtime/library").JsonArray>;
     updateSetting(key: string, value: any): Promise<{
         id: string;
+        updatedAt: Date;
         value: import("@prisma/client/runtime/library").JsonValue;
         key: string;
-        updatedAt: Date;
     }>;
 }

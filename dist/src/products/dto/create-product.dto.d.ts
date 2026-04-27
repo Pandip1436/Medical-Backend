@@ -1,10 +1,10 @@
-import { ProductCategory, Schedule, StorageCondition } from '@prisma/client';
+import { Schedule, StorageCondition } from '@prisma/client';
 export declare class CreateProductDto {
     name: string;
     genericName: string;
     saltComposition?: string;
     manufacturer: string;
-    category: ProductCategory;
+    categoryId?: string;
     subCategory?: string;
     packSize: string;
     unitOfMeasure: string;
@@ -21,5 +21,4 @@ export declare class CreateProductDto {
     maxStock: number;
     reorderQty: number;
     rackLocation: string;
-    barcode?: string;
 }

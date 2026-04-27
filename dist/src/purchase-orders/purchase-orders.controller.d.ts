@@ -4,7 +4,7 @@ import { UpdatePurchaseOrderDto } from './dto/update-purchase-order.dto';
 export declare class PurchaseOrdersController {
     private readonly poService;
     constructor(poService: PurchaseOrdersService);
-    create(createPurchaseOrderDto: CreatePurchaseOrderDto, req: any): Promise<{
+    create(createPurchaseOrderDto: CreatePurchaseOrderDto, req: any, branchId?: string): Promise<{
         items: {
             id: string;
             productId: string;

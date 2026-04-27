@@ -26,8 +26,8 @@ let PurchaseOrdersController = class PurchaseOrdersController {
     constructor(poService) {
         this.poService = poService;
     }
-    create(createPurchaseOrderDto, req) {
-        const effectiveBranchId = req.user.branchId ?? createPurchaseOrderDto.branchId;
+    create(createPurchaseOrderDto, req, branchId) {
+        const effectiveBranchId = req.user.branchId ?? branchId;
         return this.poService.create(createPurchaseOrderDto, req.user.userId, effectiveBranchId);
     }
     findAll(req, q, branchId) {
@@ -51,8 +51,9 @@ __decorate([
     (0, swagger_1.ApiOperation)({ summary: 'Create a new Purchase Order' }),
     __param(0, (0, common_1.Body)()),
     __param(1, (0, common_1.Request)()),
+    __param(2, (0, common_1.Query)('branchId')),
     __metadata("design:type", Function),
-    __metadata("design:paramtypes", [create_purchase_order_dto_1.CreatePurchaseOrderDto, Object]),
+    __metadata("design:paramtypes", [create_purchase_order_dto_1.CreatePurchaseOrderDto, Object, String]),
     __metadata("design:returntype", void 0)
 ], PurchaseOrdersController.prototype, "create", null);
 __decorate([

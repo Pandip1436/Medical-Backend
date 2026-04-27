@@ -25,8 +25,8 @@ let GrnController = class GrnController {
     constructor(grnService) {
         this.grnService = grnService;
     }
-    create(createGrnDto, req) {
-        const effectiveBranchId = req.user.branchId ?? createGrnDto.branchId;
+    create(createGrnDto, req, branchId) {
+        const effectiveBranchId = req.user.branchId ?? branchId;
         return this.grnService.create(createGrnDto, effectiveBranchId);
     }
     findAll(req, q, branchId) {
@@ -44,8 +44,9 @@ __decorate([
     (0, swagger_1.ApiOperation)({ summary: 'Create a new Goods Receipt Note and spawn batches' }),
     __param(0, (0, common_1.Body)()),
     __param(1, (0, common_1.Request)()),
+    __param(2, (0, common_1.Query)('branchId')),
     __metadata("design:type", Function),
-    __metadata("design:paramtypes", [create_grn_dto_1.CreateGrnDto, Object]),
+    __metadata("design:paramtypes", [create_grn_dto_1.CreateGrnDto, Object, String]),
     __metadata("design:returntype", void 0)
 ], GrnController.prototype, "create", null);
 __decorate([

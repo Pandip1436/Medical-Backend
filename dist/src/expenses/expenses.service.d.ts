@@ -8,10 +8,10 @@ export declare class ExpensesService {
         id: string;
         branchId: string | null;
         date: Date;
+        description: string;
         category: string;
         paymentMode: string;
         amount: import("@prisma/client/runtime/library").Decimal;
-        description: string;
         receiptImage: string | null;
     }>;
     findAll(category?: string, from?: string, to?: string, branchId?: string): Promise<{
@@ -19,9 +19,9 @@ export declare class ExpensesService {
         id: string;
         branchId: string | null;
         date: Date;
+        description: string;
         category: string;
         paymentMode: string;
-        description: string;
         receiptImage: string | null;
     }[]>;
     findOne(id: string, branchId?: string): Promise<{
@@ -29,9 +29,9 @@ export declare class ExpensesService {
         id: string;
         branchId: string | null;
         date: Date;
+        description: string;
         category: string;
         paymentMode: string;
-        description: string;
         receiptImage: string | null;
     }>;
     update(id: string, dto: UpdateExpenseDto, branchId?: string): Promise<{
@@ -39,19 +39,19 @@ export declare class ExpensesService {
         id: string;
         branchId: string | null;
         date: Date;
+        description: string;
         category: string;
         paymentMode: string;
-        description: string;
         receiptImage: string | null;
     }>;
     remove(id: string, branchId?: string): Promise<{
         id: string;
         branchId: string | null;
         date: Date;
+        description: string;
         category: string;
         paymentMode: string;
         amount: import("@prisma/client/runtime/library").Decimal;
-        description: string;
         receiptImage: string | null;
     }>;
 }

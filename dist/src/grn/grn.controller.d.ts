@@ -3,7 +3,7 @@ import { CreateGrnDto } from './dto/create-grn.dto';
 export declare class GrnController {
     private readonly grnService;
     constructor(grnService: GrnService);
-    create(createGrnDto: CreateGrnDto, req: any): Promise<{
+    create(createGrnDto: CreateGrnDto, req: any, branchId?: string): Promise<{
         items: {
             id: string;
             grnId: string;

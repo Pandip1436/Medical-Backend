@@ -18,20 +18,23 @@ let ProductsService = class ProductsService {
         this.prisma = prisma;
     }
     async create(createProductDto) {
-        if (!createProductDto.barcode?.trim())
-            createProductDto.barcode = undefined;
-        if (createProductDto.barcode && createProductDto.branchId) {
-            const existing = await this.prisma.product.findUnique({
-                where: { barcode_branchId: { barcode: createProductDto.barcode, branchId: createProductDto.branchId } },
-            });
-            if (existing)
-                throw new common_1.ConflictException('Product with this barcode already exists in this branch');
-        }
-        return this.prisma.product.create({ data: createProductDto });
+        const { categoryId, branchId, ...rest } = createProductDto;
+        return this.prisma.product.create({
+            data: { ...rest, categoryId, ...(branchId ? { branchId } : {}) },
+        });
+    }
+    async toggleActive(id, branchId) {
+        const product = await this.findOne(id, branchId);
+        return this.prisma.product.update({
+            where: { id },
+            data: { isActive: !product.isActive },
+        });
     }
     async findAll(opts = {}) {
-        const { query, category, schedule, skip = 0, take, branchId } = opts;
+        const { query, categoryId, schedule, skip = 0, take, branchId, includeInactive } = opts;
         const where = {};
+        if (!includeInactive)
+            where.isActive = true;
         if (branchId)
             where.branchId = branchId;
         if (query) {
@@ -39,26 +42,26 @@ let ProductsService = class ProductsService {
                 { name: { contains: query, mode: 'insensitive' } },
                 { genericName: { contains: query, mode: 'insensitive' } },
                 { manufacturer: { contains: query, mode: 'insensitive' } },
-                { barcode: { contains: query, mode: 'insensitive' } },
             ];
         }
-        if (category)
-            where.category = category;
+        if (categoryId)
+            where.categoryId = categoryId;
         if (schedule)
             where.schedule = schedule;
+        const include = { batches: true, category: true };
         if (take !== undefined) {
             const [data, total] = await Promise.all([
-                this.prisma.product.findMany({ where, include: { batches: true }, skip, take, orderBy: { name: 'asc' } }),
+                this.prisma.product.findMany({ where, include, skip, take, orderBy: { name: 'asc' } }),
                 this.prisma.product.count({ where }),
             ]);
             return { data, total };
         }
-        return this.prisma.product.findMany({ where, include: { batches: true }, orderBy: { name: 'asc' } });
+        return this.prisma.product.findMany({ where, include, orderBy: { name: 'asc' } });
     }
     async findOne(id, branchId) {
         const product = await this.prisma.product.findUnique({
             where: { id },
-            include: { batches: true, alternatives: true },
+            include: { batches: true, alternatives: true, category: true },
         });
         if (!product)
             throw new common_1.NotFoundException('Product not found');
@@ -141,7 +144,7 @@ let ProductsService = class ProductsService {
         }
         return { created, skipped, errors };
     }
-    async adjustBatchStock(productId, batchId, dto, branchId) {
+    async adjustBatchStock(productId, batchId, dto, branchId, user) {
         const product = await this.prisma.product.findUnique({ where: { id: productId } });
         if (!product)
             throw new common_1.NotFoundException('Product not found');
@@ -155,10 +158,106 @@ let ProductsService = class ProductsService {
         await this.prisma.$transaction([
             this.prisma.batch.update({ where: { id: batchId }, data: { quantity: dto.adjustedQty } }),
             this.prisma.product.update({ where: { id: productId }, data: { totalStock: { increment: diff } } }),
+            ...(user ? [this.prisma.stockAdjustmentLog.create({ data: {
+                        productId,
+                        batchId,
+                        batchNumber: batch.batchNumber,
+                        userId: user.userId,
+                        userName: user.name,
+                        reason: dto.reason,
+                        previousQty: batch.quantity,
+                        adjustedQty: dto.adjustedQty,
+                        diff,
+                        notes: dto.notes ?? null,
+                        branchId: product.branchId ?? branchId ?? null,
+                    } })] : []),
         ]);
         return { success: true, batchId, previousQty: batch.quantity, newQty: dto.adjustedQty, diff, reason: dto.reason };
     }
-    async bulkAdjustStock(items, branchId) {
+    async getProductHistory(productId, branchId) {
+        const product = await this.prisma.product.findUnique({
+            where: { id: productId },
+            include: { batches: true, category: true },
+        });
+        if (!product)
+            throw new common_1.NotFoundException('Product not found');
+        if (branchId && product.branchId && product.branchId !== branchId) {
+            throw new common_1.NotFoundException('Product not found');
+        }
+        const salesItems = await this.prisma.invoiceItem.findMany({
+            where: { productId },
+            include: {
+                invoice: {
+                    select: { invoiceNumber: true, date: true, customerName: true, status: true },
+                },
+            },
+            orderBy: { invoice: { date: 'desc' } },
+            take: 100,
+        });
+        const purchaseItems = await this.prisma.gRNItem.findMany({
+            where: { productId },
+            include: {
+                grn: {
+                    select: { grnNumber: true, date: true, supplierName: true, status: true },
+                },
+            },
+            orderBy: { grn: { date: 'desc' } },
+            take: 100,
+        });
+        const totalSoldQty = salesItems.reduce((sum, i) => sum + i.quantity, 0);
+        const totalPurchasedQty = purchaseItems.reduce((sum, i) => sum + i.receivedQty, 0);
+        const totalSalesValue = salesItems.reduce((sum, i) => sum + Number(i.amount), 0);
+        const totalPurchaseValue = purchaseItems.reduce((sum, i) => sum + Number(i.purchaseRate) * i.receivedQty, 0);
+        const activeBatches = product.batches.filter((b) => b.quantity > 0).length;
+        return {
+            product: {
+                id: product.id,
+                name: product.name,
+                genericName: product.genericName,
+                manufacturer: product.manufacturer,
+                category: product.category,
+                totalStock: product.totalStock,
+                batchCount: product.batches.length,
+                activeBatches,
+            },
+            summary: {
+                salesCount: salesItems.length,
+                purchaseCount: purchaseItems.length,
+                totalSoldQty,
+                totalPurchasedQty,
+                totalSalesValue,
+                totalPurchaseValue,
+                currentStock: product.totalStock,
+            },
+            sales: salesItems.map((i) => ({
+                id: i.id,
+                invoiceNumber: i.invoice.invoiceNumber,
+                date: i.invoice.date,
+                customerName: i.invoice.customerName,
+                status: i.invoice.status,
+                batchNumber: i.batchNumber,
+                quantity: i.quantity,
+                rate: Number(i.rate),
+                amount: Number(i.amount),
+                gstPercent: Number(i.gstPercent),
+                discountPercent: Number(i.discountPercent),
+            })),
+            purchases: purchaseItems.map((i) => ({
+                id: i.id,
+                grnNumber: i.grn.grnNumber,
+                date: i.grn.date,
+                supplierName: i.grn.supplierName,
+                status: i.grn.status,
+                batchNumber: i.batchNumber,
+                receivedQty: i.receivedQty,
+                freeQty: i.freeQty,
+                purchaseRate: Number(i.purchaseRate),
+                mrp: Number(i.mrp),
+                amount: Number(i.purchaseRate) * i.receivedQty,
+            })),
+        };
+    }
+    async bulkAdjustStock(items, branchId, user) {
         const resolved = await Promise.all(items.map(async (item) => {
             const product = await this.prisma.product.findUnique({ where: { id: item.productId } });
             if (!product)
@@ -169,12 +268,26 @@ let ProductsService = class ProductsService {
             const batch = await this.prisma.batch.findFirst({ where: { id: item.batchId, productId: item.productId } });
             if (!batch)
                 throw new common_1.NotFoundException(`Batch ${item.batchId} not found`);
-            return { ...item, previousQty: batch.quantity, diff: item.adjustedQty - batch.quantity };
+            return { ...item, previousQty: batch.quantity, diff: item.adjustedQty - batch.quantity, branchId: product.branchId, batchNumber: batch.batchNumber };
         }));
-        await this.prisma.$transaction(resolved.flatMap((item) => [
-            this.prisma.batch.update({ where: { id: item.batchId }, data: { quantity: item.adjustedQty } }),
-            this.prisma.product.update({ where: { id: item.productId }, data: { totalStock: { increment: item.diff } } }),
-        ]));
+        await this.prisma.$transaction([
+            ...resolved.flatMap((item) => [
+                this.prisma.batch.update({ where: { id: item.batchId }, data: { quantity: item.adjustedQty } }),
+                this.prisma.product.update({ where: { id: item.productId }, data: { totalStock: { increment: item.diff } } }),
+            ]),
+            ...(user ? resolved.map((item) => this.prisma.stockAdjustmentLog.create({ data: {
+                    productId: item.productId,
+                    batchId: item.batchId,
+                    batchNumber: item.batchNumber,
+                    userId: user.userId,
+                    userName: user.name,
+                    reason: item.reason,
+                    previousQty: item.previousQty,
+                    adjustedQty: item.adjustedQty,
+                    diff: item.diff,
+                    branchId: item.branchId ?? branchId ?? null,
+                } })) : []),
+        ]);
         return { success: true, adjusted: resolved.length, items: resolved.map(({ productId, batchId, previousQty, adjustedQty, diff, reason }) => ({ productId, batchId, previousQty, newQty: adjustedQty, diff, reason })) };
     }
 };

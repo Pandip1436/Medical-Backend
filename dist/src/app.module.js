@@ -33,6 +33,8 @@ const branches_module_1 = require("./branches/branches.module");
 const salespersons_module_1 = require("./salespersons/salespersons.module");
 const settings_module_1 = require("./settings/settings.module");
 const quotations_module_1 = require("./quotations/quotations.module");
+const categories_module_1 = require("./categories/categories.module");
+const notifications_module_1 = require("./notifications/notifications.module");
 const serve_static_1 = require("@nestjs/serve-static");
 const path_1 = require("path");
 let AppModule = class AppModule {
@@ -66,6 +68,8 @@ exports.AppModule = AppModule = __decorate([
             salespersons_module_1.SalespersonsModule,
             settings_module_1.SettingsModule,
             quotations_module_1.QuotationsModule,
+            categories_module_1.CategoriesModule,
+            notifications_module_1.NotificationsModule,
         ],
         controllers: [app_controller_1.AppController],
         providers: [

@@ -222,19 +222,17 @@ async function main() {
 
   // HQ Customers
   console.log('👥 Seeding customers (per branch)...');
-  const [cust1, cust3, cust4, walkIn] = await Promise.all([
+  const [cust1, cust3, cust4] = await Promise.all([
     prisma.customer.create({ data: { id: 'CUS-001', name: 'Apollo Hospital - Madurai', phone: '9944112233', email: 'pharmacy@apollomadurai.com', address: '11, KK Nagar, Madurai - 625020', type: CustomerType.WHOLESALE, creditLimit: 500000, currentOutstanding: 0, gstin: '33AABCA1234A1Z5', dlNumber: 'TN/MDU/20B/2021/1001', branchId: hq.id } }),
     prisma.customer.create({ data: { id: 'CUS-003', name: 'MedPlus - Madurai', phone: '9944445566', email: 'madurai@medplus.in', address: '45, Anna Nagar, Madurai', type: CustomerType.WHOLESALE, creditLimit: 300000, currentOutstanding: 0, gstin: '33AABCD3456D4Z3', dlNumber: 'TN/MDU/21B/2022/1205', branchId: hq.id } }),
     prisma.customer.create({ data: { id: 'CUS-004', name: 'Murugan S', phone: '9944667788', address: '12/3, Simmakkal, Madurai', type: CustomerType.RETAIL, creditLimit: 10000, currentOutstanding: 0, loyaltyPoints: 320, branchId: hq.id } }),
-    prisma.customer.create({ data: { id: 'CUS-WALKIN-HQ', name: 'Walk-in Customer (HQ)', phone: '0000000001', type: CustomerType.RETAIL, creditLimit: 0, currentOutstanding: 0, branchId: hq.id } }),
   ]);
   // Chennai Customers
-  const [cust2, cust5, walkIn2] = await Promise.all([
+  const [cust2, cust5] = await Promise.all([
     prisma.customer.create({ data: { id: 'CUS-002', name: 'MIOT Hospital - Chennai', phone: '9944223344', email: 'purchase@miothospitals.com', address: '4/112, Mount Poonamallee Road, Chennai - 600089', type: CustomerType.WHOLESALE, creditLimit: 750000, currentOutstanding: 0, gstin: '33AABCM5678B2Z1', dlNumber: 'TN/CHE/20B/2020/0852', branchId: br1.id } }),
     prisma.customer.create({ data: { id: 'CUS-005', name: 'Lakshmi K', phone: '9944778899', address: '56, Tallakulam, Madurai', type: CustomerType.RETAIL, creditLimit: 15000, currentOutstanding: 0, loyaltyPoints: 540, branchId: br1.id } }),
-    prisma.customer.create({ data: { id: 'CUS-WALKIN-BR1', name: 'Walk-in Customer (Chennai)', phone: '0000000002', type: CustomerType.RETAIL, creditLimit: 0, currentOutstanding: 0, branchId: br1.id } }),
   ]);
-  console.log('  ✅ 4 HQ customers + 3 Chennai customers\n');
+  console.log('  ✅ 3 HQ customers + 2 Chennai customers\n');
 
   // HQ Products (PRD-001 to PRD-006)
   console.log('💊 Seeding products (per branch)...');
@@ -388,9 +386,9 @@ async function main() {
     { days: 45, amount: 9800, cust: cust3, mode: PaymentMode.CASH, status: InvoiceStatus.PAID, amountPaid: 9800, product: products[0], batch: hqBatch1, qty: 30 },
     { days: 30, amount: 5600, cust: cust4, mode: PaymentMode.UPI, status: InvoiceStatus.PAID, amountPaid: 5600, product: products[4], batch: hqBatch3, qty: 25 },
     { days: 20, amount: 42000, cust: cust1, mode: PaymentMode.CREDIT, status: InvoiceStatus.PARTIAL, amountPaid: 20000, product: products[3], batch: hqBatch2, qty: 20 },
-    { days: 15, amount: 3400, cust: walkIn, mode: PaymentMode.CASH, status: InvoiceStatus.PAID, amountPaid: 3400, product: products[0], batch: hqBatch1, qty: 10 },
+    { days: 15, amount: 3400, cust: cust4, mode: PaymentMode.CASH, status: InvoiceStatus.PAID, amountPaid: 3400, product: products[0], batch: hqBatch1, qty: 10 },
     { days: 10, amount: 17000, cust: cust3, mode: PaymentMode.CARD, status: InvoiceStatus.PAID, amountPaid: 17000, product: products[4], batch: hqBatch3, qty: 80 },
-    { days: 5, amount: 2800, cust: walkIn, mode: PaymentMode.UPI, status: InvoiceStatus.PAID, amountPaid: 2800, product: products[0], batch: hqBatch1, qty: 8 },
+    { days: 5, amount: 2800, cust: cust4, mode: PaymentMode.UPI, status: InvoiceStatus.PAID, amountPaid: 2800, product: products[0], batch: hqBatch1, qty: 8 },
     { days: 2, amount: 6800, cust: cust4, mode: PaymentMode.CASH, status: InvoiceStatus.PAID, amountPaid: 6800, product: products[4], batch: hqBatch3, qty: 30 },
     { days: 1, amount: 9600, cust: cust3, mode: PaymentMode.UPI, status: InvoiceStatus.PAID, amountPaid: 9600, product: products[0], batch: hqBatch1, qty: 28 },
     { days: 0, amount: 21000, cust: cust1, mode: PaymentMode.CREDIT, status: InvoiceStatus.CREDIT, amountPaid: 0, product: products[3], batch: hqBatch2, qty: 10 },
@@ -617,7 +615,7 @@ async function main() {
     { days: 30, amount: 8500, cust: cust5, mode: PaymentMode.UPI, status: InvoiceStatus.PAID, amountPaid: 8500, product: products[6], batch: br1Batch1, qty: 20 },
     { days: 20, amount: 17000, cust: cust2, mode: PaymentMode.CREDIT, status: InvoiceStatus.CREDIT, amountPaid: 0, product: products[6], batch: br1Batch1, qty: 40 },
     { days: 14, amount: 125000, cust: cust2, mode: PaymentMode.CREDIT, status: InvoiceStatus.CREDIT, amountPaid: 0, product: products[9], batch: br1Batch3, qty: 5 },
-    { days: 10, amount: 4500, cust: walkIn2, mode: PaymentMode.CASH, status: InvoiceStatus.PAID, amountPaid: 4500, product: products[6], batch: br1Batch1, qty: 10 },
+    { days: 10, amount: 4500, cust: cust5, mode: PaymentMode.CASH, status: InvoiceStatus.PAID, amountPaid: 4500, product: products[6], batch: br1Batch1, qty: 10 },
     { days: 7, amount: 34000, cust: cust2, mode: PaymentMode.CARD, status: InvoiceStatus.PAID, amountPaid: 34000, product: products[8], batch: br1Batch2, qty: 4 },
     { days: 3, amount: 9000, cust: cust5, mode: PaymentMode.UPI, status: InvoiceStatus.PAID, amountPaid: 9000, product: products[6], batch: br1Batch1, qty: 20 },
     { days: 1, amount: 47500, cust: cust2, mode: PaymentMode.CREDIT, status: InvoiceStatus.CREDIT, amountPaid: 0, product: products[9], batch: br1Batch3, qty: 2 },

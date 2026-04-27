@@ -32,6 +32,8 @@ model Branch {
   suppliers       Supplier[]
   doctors         Doctor[]
   prescriptions   Prescription[]
+  notifications   Notification[]
+  payments        Payment[]
 }
 
 // ── Users & Auth ──────────────────────────────────────────────
@@ -85,6 +87,7 @@ model Customer {
   prescriptions      Prescription[]
   creditNotes        CreditNote[]
   quotations         Quotation[]
+  payments           Payment[]
 }
 
 enum CustomerType {
@@ -147,14 +150,33 @@ model Product {
   rackLocation     String
   barcode          String?
   totalStock       Int              @default(0)
+  isActive         Boolean          @default(true)
   branchId         String?
   branch           Branch?          @relation(fields: [branchId], references: [id])
   batches          Batch[]
   alternatives     Product[]        @relation("Alternatives")
   alternativesOf   Product[]        @relation("Alternatives")
+  adjustmentLogs   StockAdjustmentLog[]
   createdAt        DateTime         @default(now())
 
   @@unique([barcode, branchId])
+}
+
+model StockAdjustmentLog {
+  id          String   @id @default(cuid())
+  productId   String
+  product     Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  batchId     String
+  batchNumber String
+  userId      String
+  userName    String
+  reason      String
+  previousQty Int
+  adjustedQty Int
+  diff        Int
+  notes       String?
+  branchId    String?
+  createdAt   DateTime @default(now())
 }
 
 enum Schedule {
@@ -265,6 +287,7 @@ model Invoice {
   createdBy       User          @relation(fields: [createdById], references: [id], name: "UserInvoices")
   createdAt       DateTime      @default(now())
   creditNotes     CreditNote[]
+  payments        Payment[]
 }
 
 model InvoiceItem {
@@ -585,4 +608,42 @@ enum QuotationStatus {
   ACCEPTED
   REJECTED
   CONVERTED
+}
+
+// ── Payment Records ───────────────────────────────────────────
+model Payment {
+  id              String        @id @default(cuid())
+  receiptNumber   String        @unique
+  customerId      String
+  customer        Customer      @relation(fields: [customerId], references: [id])
+  invoiceId       String?       // null = customer-level lump payment (allocated below)
+  invoice         Invoice?      @relation(fields: [invoiceId], references: [id])
+  amount          Decimal
+  paymentMode     String        // CASH | CARD | UPI | CHEQUE | NEFT_UPI
+  referenceNumber String?
+  notes           String?
+  branchId        String?
+  branch          Branch?       @relation(fields: [branchId], references: [id])
+  createdAt       DateTime      @default(now())
+}
+
+// ── Notifications ─────────────────────────────────────────────
+model Notification {
+  id         String           @id @default(cuid())
+  type       NotificationType
+  title      String
+  message    String
+  isRead     Boolean          @default(false)
+  actionUrl  String?
+  branchId   String?
+  branch     Branch?          @relation(fields: [branchId], references: [id])
+  createdAt  DateTime         @default(now())
+}
+
+enum NotificationType {
+  LOW_STOCK
+  EXPIRY
+  PAYMENT_DUE
+  SYSTEM
+  APPROVAL
 }

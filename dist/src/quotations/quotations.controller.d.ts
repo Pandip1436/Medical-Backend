@@ -27,11 +27,11 @@ export declare class QuotationsController {
         sgst: import("@prisma/client/runtime/library").Decimal;
         status: import(".prisma/client").$Enums.QuotationStatus;
         notes: string | null;
+        updatedAt: Date;
         customerName: string;
         customerId: string | null;
-        total: import("@prisma/client/runtime/library").Decimal;
         validUntil: Date | null;
-        updatedAt: Date;
+        total: import("@prisma/client/runtime/library").Decimal;
         quotationNumber: string;
     }>;
     findAll(q?: string, fromDate?: string, toDate?: string, status?: string, amountMin?: number, amountMax?: number): Promise<({
@@ -58,11 +58,11 @@ export declare class QuotationsController {
         sgst: import("@prisma/client/runtime/library").Decimal;
         status: import(".prisma/client").$Enums.QuotationStatus;
         notes: string | null;
+        updatedAt: Date;
         customerName: string;
         customerId: string | null;
-        total: import("@prisma/client/runtime/library").Decimal;
         validUntil: Date | null;
-        updatedAt: Date;
+        total: import("@prisma/client/runtime/library").Decimal;
         quotationNumber: string;
     })[]>;
     getStats(): Promise<{
@@ -117,11 +117,11 @@ export declare class QuotationsController {
         sgst: import("@prisma/client/runtime/library").Decimal;
         status: import(".prisma/client").$Enums.QuotationStatus;
         notes: string | null;
+        updatedAt: Date;
         customerName: string;
         customerId: string | null;
-        total: import("@prisma/client/runtime/library").Decimal;
         validUntil: Date | null;
-        updatedAt: Date;
+        total: import("@prisma/client/runtime/library").Decimal;
         quotationNumber: string;
     }>;
     update(id: string, data: any): Promise<{
@@ -148,11 +148,11 @@ export declare class QuotationsController {
         sgst: import("@prisma/client/runtime/library").Decimal;
         status: import(".prisma/client").$Enums.QuotationStatus;
         notes: string | null;
+        updatedAt: Date;
         customerName: string;
         customerId: string | null;
-        total: import("@prisma/client/runtime/library").Decimal;
         validUntil: Date | null;
-        updatedAt: Date;
+        total: import("@prisma/client/runtime/library").Decimal;
         quotationNumber: string;
     }>;
     updateStatus(id: string, status: string): Promise<{
@@ -179,11 +179,11 @@ export declare class QuotationsController {
         sgst: import("@prisma/client/runtime/library").Decimal;
         status: import(".prisma/client").$Enums.QuotationStatus;
         notes: string | null;
+        updatedAt: Date;
         customerName: string;
         customerId: string | null;
-        total: import("@prisma/client/runtime/library").Decimal;
         validUntil: Date | null;
-        updatedAt: Date;
+        total: import("@prisma/client/runtime/library").Decimal;
         quotationNumber: string;
     }>;
     remove(id: string): Promise<{
@@ -195,11 +195,11 @@ export declare class QuotationsController {
         sgst: import("@prisma/client/runtime/library").Decimal;
         status: import(".prisma/client").$Enums.QuotationStatus;
         notes: string | null;
+        updatedAt: Date;
         customerName: string;
         customerId: string | null;
-        total: import("@prisma/client/runtime/library").Decimal;
         validUntil: Date | null;
-        updatedAt: Date;
+        total: import("@prisma/client/runtime/library").Decimal;
         quotationNumber: string;
     }>;
 }

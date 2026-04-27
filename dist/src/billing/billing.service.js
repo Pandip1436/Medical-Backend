@@ -19,6 +19,19 @@ let BillingService = class BillingService {
     }
     async create(createInvoiceDto, userId, branchId) {
         return this.prisma.$transaction(async (tx) => {
+            if (createInvoiceDto.type === 'INVOICE' &&
+                createInvoiceDto.paymentMode === 'CREDIT' &&
+                createInvoiceDto.customerId) {
+                const pendingCount = await tx.invoice.count({
+                    where: {
+                        customerId: createInvoiceDto.customerId,
+                        status: { in: ['CREDIT', 'PARTIAL'] },
+                    },
+                });
+                if (pendingCount >= 3) {
+                    throw new common_1.BadRequestException(`Customer has ${pendingCount} unpaid credit invoice(s). Please collect payment before adding more credit sales.`);
+                }
+            }
             const isQuotation = createInvoiceDto.type === 'QUOTATION';
             const prefix = isQuotation ? 'QT' : 'INV';
             const invoiceNumber = `${prefix}-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
@@ -37,10 +50,36 @@ let BillingService = class BillingService {
                         where: { id: batch.id },
                         data: { quantity: batch.quantity - item.quantity }
                     });
-                    await tx.product.update({
+                    const updatedProduct = await tx.product.update({
                         where: { id: item.productId },
-                        data: { totalStock: { decrement: item.quantity } }
+                        data: { totalStock: { decrement: item.quantity } },
+                        select: { id: true, name: true, totalStock: true, minStock: true, branchId: true },
                     });
+                    const isLow = updatedProduct.totalStock <= 0 ||
+                        (updatedProduct.minStock > 0 && updatedProduct.totalStock <= updatedProduct.minStock);
+                    if (isLow) {
+                        const alreadyNotified = await tx.notification.findFirst({
+                            where: {
+                                type: 'LOW_STOCK',
+                                isRead: false,
+                                message: { contains: `[productId:${updatedProduct.id}]` },
+                            },
+                        });
+                        if (!alreadyNotified) {
+                            const stockLabel = updatedProduct.totalStock <= 0
+                                ? 'is out of stock'
+                                : `has only ${updatedProduct.totalStock} units left (min: ${updatedProduct.minStock})`;
+                            await tx.notification.create({
+                                data: {
+                                    type: 'LOW_STOCK',
+                                    title: 'Low Stock Alert',
+                                    message: `${updatedProduct.name} ${stockLabel}. [productId:${updatedProduct.id}]`,
+                                    actionUrl: '/inventory/products',
+                                    branchId: updatedProduct.branchId ?? branchId ?? null,
+                                },
+                            });
+                        }
+                    }
                 }
             }
             const invoice = await tx.invoice.create({
@@ -105,6 +144,18 @@ let BillingService = class BillingService {
                         data: { loyaltyPoints: { increment: pointsEarned } },
                     });
                 }
+            }
+            if (!isQuotation && createInvoiceDto.paymentMode === 'CREDIT') {
+                const outstanding = Number(createInvoiceDto.grandTotal) - Number(createInvoiceDto.amountPaid);
+                await tx.notification.create({
+                    data: {
+                        type: 'PAYMENT_DUE',
+                        title: 'Payment Due',
+                        message: `Invoice ${invoiceNumber} for ${createInvoiceDto.customerName} has ₹${outstanding.toFixed(2)} outstanding. [invoiceId:${invoice.id}]`,
+                        actionUrl: `/customers/invoices`,
+                        branchId: branchId ?? null,
+                    },
+                });
             }
             return invoice;
         });
@@ -190,6 +241,17 @@ let BillingService = class BillingService {
                 await tx.customer.update({
                     where: { id: invoice.customerId },
                     data: { currentOutstanding: { decrement: amountReceived } },
+                });
+                const receiptNumber = `RCT-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+                await tx.payment.create({
+                    data: {
+                        receiptNumber,
+                        customerId: invoice.customerId,
+                        invoiceId: id,
+                        amount: amountReceived,
+                        paymentMode,
+                        branchId: invoice.branchId ?? null,
+                    },
                 });
             }
             return updated;
