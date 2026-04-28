@@ -30,8 +30,8 @@ export declare class QuotationsController {
         updatedAt: Date;
         customerName: string;
         customerId: string | null;
-        validUntil: Date | null;
         total: import("@prisma/client/runtime/library").Decimal;
+        validUntil: Date | null;
         quotationNumber: string;
     }>;
     findAll(q?: string, fromDate?: string, toDate?: string, status?: string, amountMin?: number, amountMax?: number): Promise<({
@@ -61,8 +61,8 @@ export declare class QuotationsController {
         updatedAt: Date;
         customerName: string;
         customerId: string | null;
-        validUntil: Date | null;
         total: import("@prisma/client/runtime/library").Decimal;
+        validUntil: Date | null;
         quotationNumber: string;
     })[]>;
     getStats(): Promise<{
@@ -120,8 +120,8 @@ export declare class QuotationsController {
         updatedAt: Date;
         customerName: string;
         customerId: string | null;
-        validUntil: Date | null;
         total: import("@prisma/client/runtime/library").Decimal;
+        validUntil: Date | null;
         quotationNumber: string;
     }>;
     update(id: string, data: any): Promise<{
@@ -151,8 +151,8 @@ export declare class QuotationsController {
         updatedAt: Date;
         customerName: string;
         customerId: string | null;
-        validUntil: Date | null;
         total: import("@prisma/client/runtime/library").Decimal;
+        validUntil: Date | null;
         quotationNumber: string;
     }>;
     updateStatus(id: string, status: string): Promise<{
@@ -182,8 +182,8 @@ export declare class QuotationsController {
         updatedAt: Date;
         customerName: string;
         customerId: string | null;
-        validUntil: Date | null;
         total: import("@prisma/client/runtime/library").Decimal;
+        validUntil: Date | null;
         quotationNumber: string;
     }>;
     remove(id: string): Promise<{
@@ -198,8 +198,8 @@ export declare class QuotationsController {
         updatedAt: Date;
         customerName: string;
         customerId: string | null;
-        validUntil: Date | null;
         total: import("@prisma/client/runtime/library").Decimal;
+        validUntil: Date | null;
         quotationNumber: string;
     }>;
 }

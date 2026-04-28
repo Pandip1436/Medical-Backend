@@ -1,0 +1,20 @@
+import { IsString, IsInt, IsOptional, Min, Max, IsEnum } from 'class-validator'
+
+export class CreateReminderDto {
+  @IsString() customerId: string
+  @IsInt() @Min(1) @Max(31) dayOfMonth: number
+  @IsString() title: string
+  @IsOptional() @IsString() notes?: string
+  @IsOptional() @IsString() branchId?: string
+}
+
+export class UpdateReminderDto {
+  @IsOptional() @IsInt() @Min(1) @Max(31) dayOfMonth?: number
+  @IsOptional() @IsString() title?: string
+  @IsOptional() @IsString() notes?: string
+}
+
+export class CreateContactLogDto {
+  @IsEnum(['TALKED', 'NOT_RESPONDED', 'DENIED', 'NEED_TO_TALK', 'SCHEDULED']) status: string
+  @IsOptional() @IsString() notes?: string
+}

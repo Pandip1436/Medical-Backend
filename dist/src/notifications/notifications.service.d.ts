@@ -51,6 +51,9 @@ export declare class NotificationsService {
     generateExpiryAlerts(branchId?: string, daysAhead?: number): Promise<{
         created: number;
     }>;
+    generateReminderAlerts(): Promise<{
+        created: number;
+    }>;
     generatePaymentDueAlerts(branchId?: string): Promise<{
         created: number;
     }>;

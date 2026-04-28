@@ -142,6 +142,39 @@ let NotificationsService = class NotificationsService {
         }
         return { created };
     }
+    async generateReminderAlerts() {
+        const today = new Date();
+        const todayDay = today.getDate();
+        const month = today.getMonth() + 1;
+        const year = today.getFullYear();
+        const reminders = await this.prisma.customerReminder.findMany({
+            where: { dayOfMonth: todayDay },
+            include: { customer: { select: { name: true } } },
+        });
+        let created = 0;
+        for (const r of reminders) {
+            const dedupKey = `[reminderId:${r.id}][month:${month}][year:${year}]`;
+            const existing = await this.prisma.notification.findFirst({
+                where: {
+                    type: create_notification_dto_1.NotificationType.SYSTEM,
+                    message: { contains: dedupKey },
+                },
+            });
+            if (!existing) {
+                await this.prisma.notification.create({
+                    data: {
+                        type: create_notification_dto_1.NotificationType.SYSTEM,
+                        title: '📅 Customer Reminder',
+                        message: `${r.title} — Follow up with ${r.customer.name} today. ${dedupKey}`,
+                        actionUrl: `/reminders`,
+                        branchId: r.branchId ?? null,
+                    },
+                });
+                created++;
+            }
+        }
+        return { created };
+    }
     async generatePaymentDueAlerts(branchId) {
         const invoices = await this.prisma.invoice.findMany({
             where: {

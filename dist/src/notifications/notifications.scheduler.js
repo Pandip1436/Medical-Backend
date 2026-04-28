@@ -31,12 +31,13 @@ let NotificationsScheduler = NotificationsScheduler_1 = class NotificationsSched
     }
     async runAll(trigger) {
         try {
-            const [lowStock, expiry, paymentDue] = await Promise.all([
+            const [lowStock, expiry, paymentDue, reminders] = await Promise.all([
                 this.service.generateLowStockAlerts(undefined),
                 this.service.generateExpiryAlerts(undefined, 90),
                 this.service.generatePaymentDueAlerts(undefined),
+                this.service.generateReminderAlerts(),
             ]);
-            this.logger.log(`[${trigger}] Alerts generated — lowStock: ${lowStock.created}, expiry: ${expiry.created}, paymentDue: ${paymentDue.created}`);
+            this.logger.log(`[${trigger}] Alerts generated — lowStock: ${lowStock.created}, expiry: ${expiry.created}, paymentDue: ${paymentDue.created}, reminders: ${reminders.created}`);
         }
         catch (err) {
             this.logger.error(`[${trigger}] Failed to generate alerts`, err);

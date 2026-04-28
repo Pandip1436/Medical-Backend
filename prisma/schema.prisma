@@ -34,6 +34,7 @@ model Branch {
   prescriptions   Prescription[]
   notifications   Notification[]
   payments        Payment[]
+  reminders       CustomerReminder[]
 }
 
 // ── Users & Auth ──────────────────────────────────────────────
@@ -88,6 +89,7 @@ model Customer {
   creditNotes        CreditNote[]
   quotations         Quotation[]
   payments           Payment[]
+  reminders          CustomerReminder[]
 }
 
 enum CustomerType {
@@ -646,4 +648,36 @@ enum NotificationType {
   PAYMENT_DUE
   SYSTEM
   APPROVAL
+}
+
+// ── Customer Reminders ────────────────────────────────────────
+model CustomerReminder {
+  id           String           @id @default(cuid())
+  customerId   String
+  customer     Customer         @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  dayOfMonth   Int              // 1-31: repeat on this day each month
+  title        String
+  notes        String?
+  branchId     String?
+  branch       Branch?          @relation(fields: [branchId], references: [id])
+  createdAt    DateTime         @default(now())
+  updatedAt    DateTime         @updatedAt
+  contacts     ReminderContact[]
+}
+
+model ReminderContact {
+  id           String              @id @default(cuid())
+  reminderId   String
+  reminder     CustomerReminder    @relation(fields: [reminderId], references: [id], onDelete: Cascade)
+  contactedAt  DateTime            @default(now())
+  status       ReminderContactStatus
+  notes        String?
+}
+
+enum ReminderContactStatus {
+  TALKED
+  NOT_RESPONDED
+  DENIED
+  NEED_TO_TALK
+  SCHEDULED
 }
