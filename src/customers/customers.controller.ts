@@ -23,11 +23,14 @@ export class CustomersController {
     @Query('branchId') branchId?: string,
   ) {
     const effectiveBranchId = req.user.branchId ?? branchId;
-    return this.customersService.create({ ...createCustomerDto, branchId: effectiveBranchId });
+    return this.customersService.create(
+      { ...createCustomerDto, branchId: effectiveBranchId },
+      { userId: req.user.userId, role: req.user.role },
+    );
   }
 
   @Get()
-  @Roles('ADMIN', 'PHARMACIST', 'ACCOUNTANT', 'SALESPERSON')
+  @Roles('ADMIN', 'PHARMACIST', 'ACCOUNTANT', 'SALESPERSON', 'INVENTORY_MANAGER')
   @ApiOperation({ summary: 'Get all customers for a branch or search by name/phone' })
   @ApiQuery({ name: 'q', required: false })
   @ApiQuery({ name: 'branchId', required: false })
@@ -49,7 +52,7 @@ export class CustomersController {
   }
 
   @Get(':id')
-  @Roles('ADMIN', 'PHARMACIST', 'ACCOUNTANT', 'SALESPERSON')
+  @Roles('ADMIN', 'PHARMACIST', 'ACCOUNTANT', 'SALESPERSON', 'INVENTORY_MANAGER')
   @ApiOperation({ summary: 'Get customer details including prescriptions and recent invoices' })
   findOne(@Param('id') id: string, @Request() req: any) {
     return this.customersService.findOne(id, req.user.branchId);

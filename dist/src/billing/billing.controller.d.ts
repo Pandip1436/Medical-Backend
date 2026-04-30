@@ -4,7 +4,7 @@ import { CreateInvoiceDto } from './dto/create-invoice.dto';
 export declare class BillingController {
     private readonly billingService;
     constructor(billingService: BillingService);
-    create(createInvoiceDto: CreateInvoiceDto, req: any, branchId?: string): Promise<{
+    create(createInvoiceDto: CreateInvoiceDto, req: any, branchId?: string): Promise<({
         items: {
             id: string;
             mrp: import("@prisma/client/runtime/library").Decimal;
@@ -48,6 +48,12 @@ export declare class BillingController {
         customerId: string | null;
         doctorId: string | null;
         salespersonId: string | null;
+    }) | {
+        approvalRequested: boolean;
+        approvalRequestId: string;
+        invoiceId: string;
+        invoiceNumber: string;
+        status: string;
     }>;
     findAll(req: any, q?: string, customerId?: string, branchId?: string, type?: string): import(".prisma/client").Prisma.PrismaPromise<({
         items: {

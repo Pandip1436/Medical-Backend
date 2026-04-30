@@ -4,7 +4,7 @@ import { UpdateCustomerDto } from './dto/update-customer.dto';
 export declare class CustomersController {
     private readonly customersService;
     constructor(customersService: CustomersService);
-    create(createCustomerDto: CreateCustomerDto, req: any, branchId?: string): import(".prisma/client").Prisma.Prisma__CustomerClient<{
+    create(createCustomerDto: CreateCustomerDto, req: any, branchId?: string): Promise<{
         id: string;
         email: string | null;
         name: string;
@@ -14,15 +14,18 @@ export declare class CustomersController {
         notes: string | null;
         address: string | null;
         gstin: string | null;
+        currentOutstanding: import("@prisma/client/runtime/library").Decimal;
         alternatePhone: string | null;
         type: import(".prisma/client").$Enums.CustomerType;
         doctorRef: string | null;
         referredBy: string | null;
         creditLimit: import("@prisma/client/runtime/library").Decimal;
-        currentOutstanding: import("@prisma/client/runtime/library").Decimal;
         loyaltyPoints: number;
         dlNumber: string | null;
-    }, never, import("@prisma/client/runtime/library").DefaultArgs>;
+    } | {
+        approvalRequested: boolean;
+        approvalRequestId: string;
+    }>;
     findAll(req: any, q?: string, branchId?: string): Promise<{
         pendingCreditCount: number;
         id: string;
@@ -34,12 +37,12 @@ export declare class CustomersController {
         notes: string | null;
         address: string | null;
         gstin: string | null;
+        currentOutstanding: import("@prisma/client/runtime/library").Decimal;
         alternatePhone: string | null;
         type: import(".prisma/client").$Enums.CustomerType;
         doctorRef: string | null;
         referredBy: string | null;
         creditLimit: import("@prisma/client/runtime/library").Decimal;
-        currentOutstanding: import("@prisma/client/runtime/library").Decimal;
         loyaltyPoints: number;
         dlNumber: string | null;
     }[]>;
@@ -108,12 +111,12 @@ export declare class CustomersController {
         notes: string | null;
         address: string | null;
         gstin: string | null;
+        currentOutstanding: import("@prisma/client/runtime/library").Decimal;
         alternatePhone: string | null;
         type: import(".prisma/client").$Enums.CustomerType;
         doctorRef: string | null;
         referredBy: string | null;
         creditLimit: import("@prisma/client/runtime/library").Decimal;
-        currentOutstanding: import("@prisma/client/runtime/library").Decimal;
         loyaltyPoints: number;
         dlNumber: string | null;
     }>;
@@ -127,12 +130,12 @@ export declare class CustomersController {
         notes: string | null;
         address: string | null;
         gstin: string | null;
+        currentOutstanding: import("@prisma/client/runtime/library").Decimal;
         alternatePhone: string | null;
         type: import(".prisma/client").$Enums.CustomerType;
         doctorRef: string | null;
         referredBy: string | null;
         creditLimit: import("@prisma/client/runtime/library").Decimal;
-        currentOutstanding: import("@prisma/client/runtime/library").Decimal;
         loyaltyPoints: number;
         dlNumber: string | null;
     }>;
@@ -173,12 +176,12 @@ export declare class CustomersController {
         notes: string | null;
         address: string | null;
         gstin: string | null;
+        currentOutstanding: import("@prisma/client/runtime/library").Decimal;
         alternatePhone: string | null;
         type: import(".prisma/client").$Enums.CustomerType;
         doctorRef: string | null;
         referredBy: string | null;
         creditLimit: import("@prisma/client/runtime/library").Decimal;
-        currentOutstanding: import("@prisma/client/runtime/library").Decimal;
         loyaltyPoints: number;
         dlNumber: string | null;
     }>;

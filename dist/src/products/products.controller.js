@@ -41,19 +41,23 @@ let ProductsController = class ProductsController {
         const effectiveBranchId = req.user.branchId ?? branchId;
         return this.productsService.create({ ...createProductDto, branchId: effectiveBranchId });
     }
-    findAll(req, q, categoryId, schedule, skip, take, branchId) {
+    findAll(req, q, categoryId, schedule, skip, take, branchId, status) {
         const effectiveBranchId = req.user.branchId ?? branchId;
         return this.productsService.findAll({
             query: q,
             categoryId,
             schedule,
+            status,
             skip: skip !== undefined ? Number(skip) : undefined,
             take: take !== undefined ? Number(take) : undefined,
             branchId: effectiveBranchId,
         });
     }
-    getHistory(id, req) {
-        return this.productsService.getProductHistory(id, req.user.branchId);
+    getHistory(id, req, skip, take) {
+        return this.productsService.getProductHistory(id, req.user.branchId, {
+            skip: skip !== undefined ? Number(skip) : undefined,
+            take: take !== undefined ? Number(take) : undefined,
+        });
     }
     findOne(id, req) {
         return this.productsService.findOne(id, req.user.branchId);
@@ -118,6 +122,7 @@ __decorate([
     (0, swagger_1.ApiQuery)({ name: 'skip', required: false }),
     (0, swagger_1.ApiQuery)({ name: 'take', required: false }),
     (0, swagger_1.ApiQuery)({ name: 'branchId', required: false }),
+    (0, swagger_1.ApiQuery)({ name: 'status', required: false }),
     __param(0, (0, common_1.Request)()),
     __param(1, (0, common_1.Query)('q')),
     __param(2, (0, common_1.Query)('categoryId')),
@@ -125,18 +130,23 @@ __decorate([
     __param(4, (0, common_1.Query)('skip')),
     __param(5, (0, common_1.Query)('take')),
     __param(6, (0, common_1.Query)('branchId')),
+    __param(7, (0, common_1.Query)('status')),
     __metadata("design:type", Function),
-    __metadata("design:paramtypes", [Object, String, String, String, String, String, String]),
+    __metadata("design:paramtypes", [Object, String, String, String, String, String, String, String]),
     __metadata("design:returntype", void 0)
 ], ProductsController.prototype, "findAll", null);
 __decorate([
     (0, common_1.Get)(':id/history'),
     (0, roles_decorator_1.Roles)('ADMIN', 'PHARMACIST', 'INVENTORY_MANAGER', 'ACCOUNTANT', 'SALESPERSON'),
     (0, swagger_1.ApiOperation)({ summary: 'Get full sales and purchase history for a product' }),
+    (0, swagger_1.ApiQuery)({ name: 'skip', required: false }),
+    (0, swagger_1.ApiQuery)({ name: 'take', required: false }),
     __param(0, (0, common_1.Param)('id')),
     __param(1, (0, common_1.Request)()),
+    __param(2, (0, common_1.Query)('skip')),
+    __param(3, (0, common_1.Query)('take')),
     __metadata("design:type", Function),
-    __metadata("design:paramtypes", [String, Object]),
+    __metadata("design:paramtypes", [String, Object, String, String]),
     __metadata("design:returntype", void 0)
 ], ProductsController.prototype, "getHistory", null);
 __decorate([

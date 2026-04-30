@@ -73,6 +73,7 @@ export declare class ProductsService {
         take?: number;
         branchId?: string;
         includeInactive?: boolean;
+        status?: string;
     }): Promise<({
         batches: {
             id: string;
@@ -335,7 +336,10 @@ export declare class ProductsService {
         diff: number;
         reason: string;
     }>;
-    getProductHistory(productId: string, branchId?: string): Promise<{
+    getProductHistory(productId: string, branchId?: string, opts?: {
+        skip?: number;
+        take?: number;
+    }): Promise<{
         product: {
             id: string;
             name: string;
@@ -357,38 +361,48 @@ export declare class ProductsService {
         summary: {
             salesCount: number;
             purchaseCount: number;
-            totalSoldQty: number;
-            totalPurchasedQty: number;
+            salesReturnCount: any;
+            purchaseReturnCount: any;
+            totalSalesCount: number;
+            totalPurchaseCount: number;
+            totalSalesReturnCount: any;
+            totalPurchaseReturnCount: any;
+            totalSoldQty: any;
+            totalPurchasedQty: any;
+            totalSalesReturnQty: any;
+            totalPurchaseReturnQty: any;
             totalSalesValue: number;
             totalPurchaseValue: number;
             currentStock: number;
         };
         sales: {
-            id: string;
-            invoiceNumber: string;
-            date: Date;
-            customerName: string;
-            status: import(".prisma/client").$Enums.InvoiceStatus;
-            batchNumber: string;
-            quantity: number;
+            id: any;
+            invoiceNumber: any;
+            date: any;
+            customerName: any;
+            status: any;
+            batchNumber: any;
+            quantity: any;
             rate: number;
             amount: number;
             gstPercent: number;
             discountPercent: number;
         }[];
         purchases: {
-            id: string;
-            grnNumber: string;
-            date: Date;
-            supplierName: string;
-            status: import(".prisma/client").$Enums.GRNStatus;
-            batchNumber: string;
-            receivedQty: number;
-            freeQty: number;
+            id: any;
+            grnNumber: any;
+            date: any;
+            supplierName: any;
+            status: any;
+            batchNumber: any;
+            receivedQty: any;
+            freeQty: any;
             purchaseRate: number;
             mrp: number;
             amount: number;
         }[];
+        salesReturns: any;
+        purchaseReturns: any;
     }>;
     bulkAdjustStock(items: {
         productId: string;

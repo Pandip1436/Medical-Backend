@@ -10,11 +10,13 @@ exports.CreditNotesModule = void 0;
 const common_1 = require("@nestjs/common");
 const credit_notes_service_1 = require("./credit-notes.service");
 const credit_notes_controller_1 = require("./credit-notes.controller");
+const approvals_module_1 = require("../approvals/approvals.module");
 let CreditNotesModule = class CreditNotesModule {
 };
 exports.CreditNotesModule = CreditNotesModule;
 exports.CreditNotesModule = CreditNotesModule = __decorate([
     (0, common_1.Module)({
+        imports: [approvals_module_1.ApprovalsModule],
         providers: [credit_notes_service_1.CreditNotesService],
         controllers: [credit_notes_controller_1.CreditNotesController],
     })

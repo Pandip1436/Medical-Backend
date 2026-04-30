@@ -14,10 +14,10 @@ export class PurchaseReturnsController {
   constructor(private readonly purchaseReturnsService: PurchaseReturnsService) {}
 
   @Post()
-  @Roles('ADMIN', 'INVENTORY_MANAGER')
+  @Roles('ADMIN', 'PHARMACIST', 'INVENTORY_MANAGER')
   @ApiOperation({ summary: 'Create a purchase return / debit note to supplier' })
   create(@Body() dto: CreatePurchaseReturnDto, @Request() req: any) {
-    return this.purchaseReturnsService.create(dto, req.user.userId, req.user.branchId);
+    return this.purchaseReturnsService.create(dto, req.user.userId, req.user.branchId, req.user.role);
   }
 
   @Get()
@@ -42,5 +42,16 @@ export class PurchaseReturnsController {
   @ApiOperation({ summary: 'Update purchase return status' })
   updateStatus(@Param('id') id: string, @Body('status') status: any, @Request() req: any) {
     return this.purchaseReturnsService.updateStatus(id, status, req.user.branchId);
+  }
+
+  @Patch(':id/link-replacement')
+  @Roles('ADMIN', 'INVENTORY_MANAGER')
+  @ApiOperation({ summary: 'Link a replacement GRN to a REPLACEMENT settlement debit note and mark as SETTLED' })
+  linkReplacement(
+    @Param('id') id: string,
+    @Body('replacementGrnId') replacementGrnId: string,
+    @Request() req: any,
+  ) {
+    return this.purchaseReturnsService.linkReplacementGrn(id, replacementGrnId, req.user.branchId);
   }
 }

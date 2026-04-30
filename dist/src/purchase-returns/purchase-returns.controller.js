@@ -26,7 +26,7 @@ let PurchaseReturnsController = class PurchaseReturnsController {
         this.purchaseReturnsService = purchaseReturnsService;
     }
     create(dto, req) {
-        return this.purchaseReturnsService.create(dto, req.user.userId, req.user.branchId);
+        return this.purchaseReturnsService.create(dto, req.user.userId, req.user.branchId, req.user.role);
     }
     findAll(req, q, branchId) {
         const effectiveBranchId = req.user.branchId ?? branchId;
@@ -38,11 +38,14 @@ let PurchaseReturnsController = class PurchaseReturnsController {
     updateStatus(id, status, req) {
         return this.purchaseReturnsService.updateStatus(id, status, req.user.branchId);
     }
+    linkReplacement(id, replacementGrnId, req) {
+        return this.purchaseReturnsService.linkReplacementGrn(id, replacementGrnId, req.user.branchId);
+    }
 };
 exports.PurchaseReturnsController = PurchaseReturnsController;
 __decorate([
     (0, common_1.Post)(),
-    (0, roles_decorator_1.Roles)('ADMIN', 'INVENTORY_MANAGER'),
+    (0, roles_decorator_1.Roles)('ADMIN', 'PHARMACIST', 'INVENTORY_MANAGER'),
     (0, swagger_1.ApiOperation)({ summary: 'Create a purchase return / debit note to supplier' }),
     __param(0, (0, common_1.Body)()),
     __param(1, (0, common_1.Request)()),
@@ -84,6 +87,17 @@ __decorate([
     __metadata("design:paramtypes", [String, Object, Object]),
     __metadata("design:returntype", void 0)
 ], PurchaseReturnsController.prototype, "updateStatus", null);
+__decorate([
+    (0, common_1.Patch)(':id/link-replacement'),
+    (0, roles_decorator_1.Roles)('ADMIN', 'INVENTORY_MANAGER'),
+    (0, swagger_1.ApiOperation)({ summary: 'Link a replacement GRN to a REPLACEMENT settlement debit note and mark as SETTLED' }),
+    __param(0, (0, common_1.Param)('id')),
+    __param(1, (0, common_1.Body)('replacementGrnId')),
+    __param(2, (0, common_1.Request)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [String, String, Object]),
+    __metadata("design:returntype", void 0)
+], PurchaseReturnsController.prototype, "linkReplacement", null);
 exports.PurchaseReturnsController = PurchaseReturnsController = __decorate([
     (0, swagger_1.ApiTags)('purchase-returns'),
     (0, swagger_1.ApiBearerAuth)(),

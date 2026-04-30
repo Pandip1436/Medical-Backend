@@ -1,12 +1,35 @@
 import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { ApprovalsService } from '../approvals/approvals.service';
 import { CreateCreditNoteDto } from './dto/create-credit-note.dto';
 
 @Injectable()
 export class CreditNotesService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly approvalsService: ApprovalsService,
+  ) {}
 
-  async create(dto: CreateCreditNoteDto, userId: string, branchId?: string) {
+  async create(dto: CreateCreditNoteDto, userId: string, branchId?: string, userRole?: string) {
+    // PHARMACIST must request approval; action executes only after admin approves
+    if (userRole === 'PHARMACIST') {
+      const invoice = await this.prisma.invoice.findUnique({ where: { id: dto.invoiceId } });
+      if (!invoice) throw new NotFoundException('Invoice not found');
+      const req = await this.approvalsService.createRequest({
+        type: 'SALES_RETURN',
+        payload: {
+          ...dto,
+          invoiceNumber: invoice.invoiceNumber,
+          customerId: invoice.customerId,
+          customerName: invoice.customerName,
+          createdById: userId,
+        },
+        requestedById: userId,
+        branchId: branchId ?? invoice.branchId ?? undefined,
+      });
+      return { approvalRequested: true, approvalRequestId: req.id };
+    }
+
     return this.prisma.$transaction(async (tx) => {
       const invoice = await tx.invoice.findUnique({
         where: { id: dto.invoiceId },

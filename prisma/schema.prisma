@@ -51,9 +51,11 @@ model User {
   branch         Branch?   @relation(fields: [branchId], references: [id])
   commissionRate Decimal   @default(0) // % commission for SALESPERSON role
   createdAt      DateTime  @default(now())
-  invoices             Invoice[]  @relation("UserInvoices")
-  salespersonInvoices  Invoice[]  @relation("SalespersonInvoices")
+  invoices             Invoice[]          @relation("UserInvoices")
+  salespersonInvoices  Invoice[]          @relation("SalespersonInvoices")
   auditLogs            AuditLog[]
+  approvalRequests     ApprovalRequest[]  @relation("ApprovalRequests")
+  approvalReviews      ApprovalRequest[]  @relation("ApprovalReviews")
 }
 
 enum Role {
@@ -212,23 +214,25 @@ model Batch {
 
 // ── Suppliers ─────────────────────────────────────────────────
 model Supplier {
-  id              String           @id @default(cuid())
-  name            String
-  contactPerson   String
-  phone           String
-  email           String
-  gstin           String
-  drugLicense     String
-  address         String
-  paymentTerms    PaymentTerms
-  bankDetails     String?
-  isActive        Boolean          @default(true)
-  branchId        String?
-  branch          Branch?          @relation(fields: [branchId], references: [id])
-  batches         Batch[]
-  purchaseOrders  PurchaseOrder[]
-  grns            GRN[]
-  purchaseReturns PurchaseReturn[]
+  id                  String           @id @default(cuid())
+  name                String
+  contactPerson       String
+  phone               String
+  email               String
+  gstin               String
+  drugLicense         String
+  address             String
+  paymentTerms        PaymentTerms
+  bankDetails         String?
+  isActive            Boolean          @default(true)
+  // Money WE OWE this supplier — increases on GRN (received goods on credit), decreases on payment or ADJUST debit note
+  currentOutstanding  Decimal          @default(0)
+  branchId            String?
+  branch              Branch?          @relation(fields: [branchId], references: [id])
+  batches             Batch[]
+  purchaseOrders      PurchaseOrder[]
+  grns                GRN[]
+  purchaseReturns     PurchaseReturn[]
 }
 
 enum PaymentTerms {
@@ -392,6 +396,8 @@ model GRN {
   items                 GRNItem[]
   totalAmount           Decimal
   status                GRNStatus
+  // True if this GRN was created to receive replacement goods (does NOT add to supplier outstanding)
+  isReplacement         Boolean   @default(false)
   purchaseReturns       PurchaseReturn[]
 }
 
@@ -480,27 +486,35 @@ enum SettlementMode {
 
 // ── Debit Notes / Purchase Returns (to Suppliers) ─────────────
 model PurchaseReturn {
-  id              String               @id @default(cuid())
-  debitNoteNo     String               @unique
-  date            DateTime             @default(now())
-  branchId        String?
-  branch          Branch?              @relation(fields: [branchId], references: [id])
-  grnId           String?
-  grn             GRN?                 @relation(fields: [grnId], references: [id])
-  supplierId      String
-  supplier        Supplier             @relation(fields: [supplierId], references: [id])
-  supplierName    String
-  reason          String
-  items           PurchaseReturnItem[]
-  subtotal        Decimal
-  cgst            Decimal              @default(0)
-  sgst            Decimal              @default(0)
-  igst            Decimal              @default(0)
-  totalAmount     Decimal
-  status          PurchaseReturnStatus @default(DRAFT)
-  notes           String?
-  createdById     String
-  createdAt       DateTime             @default(now())
+  id                String                     @id @default(cuid())
+  debitNoteNo       String                     @unique
+  date              DateTime                   @default(now())
+  branchId          String?
+  branch            Branch?                    @relation(fields: [branchId], references: [id])
+  grnId             String?
+  grn               GRN?                       @relation(fields: [grnId], references: [id])
+  supplierId        String
+  supplier          Supplier                   @relation(fields: [supplierId], references: [id])
+  supplierName      String
+  reason            String
+  items             PurchaseReturnItem[]
+  subtotal          Decimal
+  cgst              Decimal                    @default(0)
+  sgst              Decimal                    @default(0)
+  igst              Decimal                    @default(0)
+  totalAmount       Decimal
+  status            PurchaseReturnStatus       @default(DRAFT)
+  settlementMode    PurchaseReturnSettlement   @default(REFUND)
+  replacementGrnId  String?
+  notes             String?
+  createdById       String
+  createdAt         DateTime                   @default(now())
+}
+
+enum PurchaseReturnSettlement {
+  REFUND
+  REPLACEMENT
+  ADJUST
 }
 
 model PurchaseReturnItem {
@@ -680,4 +694,36 @@ enum ReminderContactStatus {
   DENIED
   NEED_TO_TALK
   SCHEDULED
+}
+
+// ── Approval Requests ─────────────────────────────────────────
+model ApprovalRequest {
+  id            String              @id @default(cuid())
+  type          ApprovalType
+  status        ApprovalStatus      @default(PENDING)
+  requestedById String
+  requestedBy   User                @relation("ApprovalRequests", fields: [requestedById], references: [id])
+  requestedAt   DateTime            @default(now())
+  reviewedById  String?
+  reviewedBy    User?               @relation("ApprovalReviews", fields: [reviewedById], references: [id])
+  reviewedAt    DateTime?
+  reviewNote    String?
+  payload       Json
+  refId         String?             // id of the draft invoice / customer / return after creation
+  branchId      String?
+  createdAt     DateTime            @default(now())
+  updatedAt     DateTime            @updatedAt
+}
+
+enum ApprovalType {
+  NEW_CUSTOMER
+  CREDIT_BILL
+  SALES_RETURN
+  PURCHASE_RETURN
+}
+
+enum ApprovalStatus {
+  PENDING
+  APPROVED
+  REJECTED
 }

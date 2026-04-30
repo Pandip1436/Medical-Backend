@@ -19,7 +19,7 @@ export class BillingController {
   @ApiOperation({ summary: 'Create a new invoice transaction' })
   create(@Body() createInvoiceDto: CreateInvoiceDto, @Request() req: any, @Query('branchId') branchId?: string) {
     const effectiveBranchId = req.user.branchId ?? branchId;
-    return this.billingService.create(createInvoiceDto, req.user.userId, effectiveBranchId);
+    return this.billingService.create(createInvoiceDto, req.user.userId, effectiveBranchId, req.user.role);
   }
 
   @Get()

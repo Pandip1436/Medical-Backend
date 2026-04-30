@@ -1,9 +1,11 @@
 import { PrismaService } from '../prisma/prisma.service';
+import { ApprovalsService } from '../approvals/approvals.service';
 import { CreateInvoiceDto } from './dto/create-invoice.dto';
 export declare class BillingService {
     private readonly prisma;
-    constructor(prisma: PrismaService);
-    create(createInvoiceDto: CreateInvoiceDto, userId: string, branchId?: string): Promise<{
+    private readonly approvalsService;
+    constructor(prisma: PrismaService, approvalsService: ApprovalsService);
+    create(createInvoiceDto: CreateInvoiceDto, userId: string, branchId?: string, userRole?: string): Promise<({
         items: {
             id: string;
             mrp: import("@prisma/client/runtime/library").Decimal;
@@ -47,6 +49,12 @@ export declare class BillingService {
         customerId: string | null;
         doctorId: string | null;
         salespersonId: string | null;
+    }) | {
+        approvalRequested: boolean;
+        approvalRequestId: string;
+        invoiceId: string;
+        invoiceNumber: string;
+        status: string;
     }>;
     findAll(query?: string, customerId?: string, branchId?: string, type?: string): import(".prisma/client").Prisma.PrismaPromise<({
         items: {

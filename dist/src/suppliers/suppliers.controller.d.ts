@@ -17,6 +17,7 @@ export declare class SuppliersController {
         contactPerson: string;
         paymentTerms: import(".prisma/client").$Enums.PaymentTerms;
         bankDetails: string | null;
+        currentOutstanding: import("@prisma/client/runtime/library").Decimal;
     }, never, import("@prisma/client/runtime/library").DefaultArgs>;
     findAll(req: any, q?: string, branchId?: string): import(".prisma/client").Prisma.PrismaPromise<{
         id: string;
@@ -31,6 +32,7 @@ export declare class SuppliersController {
         contactPerson: string;
         paymentTerms: import(".prisma/client").$Enums.PaymentTerms;
         bankDetails: string | null;
+        currentOutstanding: import("@prisma/client/runtime/library").Decimal;
     }[]>;
     findOne(id: string, req: any): Promise<{
         purchaseOrders: {
@@ -70,6 +72,7 @@ export declare class SuppliersController {
         contactPerson: string;
         paymentTerms: import(".prisma/client").$Enums.PaymentTerms;
         bankDetails: string | null;
+        currentOutstanding: import("@prisma/client/runtime/library").Decimal;
     }>;
     update(id: string, updateSupplierDto: UpdateSupplierDto, req: any): Promise<{
         id: string;
@@ -84,6 +87,7 @@ export declare class SuppliersController {
         contactPerson: string;
         paymentTerms: import(".prisma/client").$Enums.PaymentTerms;
         bankDetails: string | null;
+        currentOutstanding: import("@prisma/client/runtime/library").Decimal;
     }>;
     remove(id: string, req: any): Promise<{
         id: string;
@@ -98,5 +102,6 @@ export declare class SuppliersController {
         contactPerson: string;
         paymentTerms: import(".prisma/client").$Enums.PaymentTerms;
         bankDetails: string | null;
+        currentOutstanding: import("@prisma/client/runtime/library").Decimal;
     }>;
 }

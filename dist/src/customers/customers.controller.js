@@ -28,7 +28,7 @@ let CustomersController = class CustomersController {
     }
     create(createCustomerDto, req, branchId) {
         const effectiveBranchId = req.user.branchId ?? branchId;
-        return this.customersService.create({ ...createCustomerDto, branchId: effectiveBranchId });
+        return this.customersService.create({ ...createCustomerDto, branchId: effectiveBranchId }, { userId: req.user.userId, role: req.user.role });
     }
     findAll(req, q, branchId) {
         const effectiveBranchId = req.user.branchId ?? branchId;
@@ -68,7 +68,7 @@ __decorate([
 ], CustomersController.prototype, "create", null);
 __decorate([
     (0, common_1.Get)(),
-    (0, roles_decorator_1.Roles)('ADMIN', 'PHARMACIST', 'ACCOUNTANT', 'SALESPERSON'),
+    (0, roles_decorator_1.Roles)('ADMIN', 'PHARMACIST', 'ACCOUNTANT', 'SALESPERSON', 'INVENTORY_MANAGER'),
     (0, swagger_1.ApiOperation)({ summary: 'Get all customers for a branch or search by name/phone' }),
     (0, swagger_1.ApiQuery)({ name: 'q', required: false }),
     (0, swagger_1.ApiQuery)({ name: 'branchId', required: false }),
@@ -91,7 +91,7 @@ __decorate([
 ], CustomersController.prototype, "getOutstanding", null);
 __decorate([
     (0, common_1.Get)(':id'),
-    (0, roles_decorator_1.Roles)('ADMIN', 'PHARMACIST', 'ACCOUNTANT', 'SALESPERSON'),
+    (0, roles_decorator_1.Roles)('ADMIN', 'PHARMACIST', 'ACCOUNTANT', 'SALESPERSON', 'INVENTORY_MANAGER'),
     (0, swagger_1.ApiOperation)({ summary: 'Get customer details including prescriptions and recent invoices' }),
     __param(0, (0, common_1.Param)('id')),
     __param(1, (0, common_1.Request)()),

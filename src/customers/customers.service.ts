@@ -1,13 +1,31 @@
 import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { ApprovalsService } from '../approvals/approvals.service';
 import { CreateCustomerDto } from './dto/create-customer.dto';
 import { UpdateCustomerDto } from './dto/update-customer.dto';
 
 @Injectable()
 export class CustomersService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly approvalsService: ApprovalsService,
+  ) {}
 
-  create(createCustomerDto: CreateCustomerDto & { branchId?: string }) {
+  async create(
+    createCustomerDto: CreateCustomerDto & { branchId?: string },
+    user?: { userId: string; role: string },
+  ) {
+    // PHARMACISTs must request approval; ADMINs and others create directly
+    if (user?.role === 'PHARMACIST') {
+      const { branchId, ...payload } = createCustomerDto;
+      const req = await this.approvalsService.createRequest({
+        type: 'NEW_CUSTOMER',
+        payload: payload as Record<string, any>,
+        requestedById: user.userId,
+        branchId,
+      });
+      return { approvalRequested: true, approvalRequestId: req.id };
+    }
     return this.prisma.customer.create({ data: createCustomerDto });
   }
 

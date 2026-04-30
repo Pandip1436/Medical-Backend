@@ -10,11 +10,13 @@ exports.PurchaseReturnsModule = void 0;
 const common_1 = require("@nestjs/common");
 const purchase_returns_service_1 = require("./purchase-returns.service");
 const purchase_returns_controller_1 = require("./purchase-returns.controller");
+const approvals_module_1 = require("../approvals/approvals.module");
 let PurchaseReturnsModule = class PurchaseReturnsModule {
 };
 exports.PurchaseReturnsModule = PurchaseReturnsModule;
 exports.PurchaseReturnsModule = PurchaseReturnsModule = __decorate([
     (0, common_1.Module)({
+        imports: [approvals_module_1.ApprovalsModule],
         providers: [purchase_returns_service_1.PurchaseReturnsService],
         controllers: [purchase_returns_controller_1.PurchaseReturnsController],
     })

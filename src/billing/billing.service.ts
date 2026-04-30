@@ -1,15 +1,24 @@
 import { Injectable, BadRequestException, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { ApprovalsService } from '../approvals/approvals.service';
 import { CreateInvoiceDto } from './dto/create-invoice.dto';
 import { PaymentMode } from '@prisma/client';
 
 @Injectable()
 export class BillingService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly approvalsService: ApprovalsService,
+  ) {}
 
-  async create(createInvoiceDto: CreateInvoiceDto, userId: string, branchId?: string) {
+  async create(
+    createInvoiceDto: CreateInvoiceDto,
+    userId: string,
+    branchId?: string,
+    userRole?: string,
+  ) {
     return this.prisma.$transaction(async (tx) => {
-      // 1. Enforce max 3 pending credit invoices per customer
+      // 1. Credit limit check — behaviour differs by role
       if (
         createInvoiceDto.type === 'INVOICE' &&
         createInvoiceDto.paymentMode === 'CREDIT' &&
@@ -22,6 +31,63 @@ export class BillingService {
           },
         });
         if (pendingCount >= 3) {
+          if (userRole === 'PHARMACIST') {
+            // Save as DRAFT, then queue approval — stock NOT deducted yet
+            const invoiceNumber = `INV-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+            const draftInvoice = await tx.invoice.create({
+              data: {
+                invoiceNumber,
+                type: createInvoiceDto.type,
+                billingType: createInvoiceDto.billingType,
+                branchId,
+                customerId: createInvoiceDto.customerId ?? null,
+                customerName: createInvoiceDto.customerName,
+                doctorName: createInvoiceDto.doctorName ?? null,
+                salespersonId: createInvoiceDto.salespersonId ?? null,
+                salespersonName: createInvoiceDto.salespersonName ?? null,
+                subtotal: createInvoiceDto.subtotal,
+                productDiscount: createInvoiceDto.productDiscount ?? 0,
+                taxableAmount: createInvoiceDto.taxableAmount ?? createInvoiceDto.subtotal,
+                cgst: createInvoiceDto.cgst ?? 0,
+                sgst: createInvoiceDto.sgst ?? 0,
+                igst: createInvoiceDto.igst ?? 0,
+                roundOff: createInvoiceDto.roundOff ?? 0,
+                grandTotal: createInvoiceDto.grandTotal,
+                paymentMode: 'CREDIT',
+                status: 'DRAFT',
+                amountPaid: 0,
+                changeReturned: 0,
+                createdById: userId,
+                items: {
+                  create: createInvoiceDto.items.map(item => ({
+                    productId: item.productId,
+                    productName: item.productName,
+                    batchId: item.batchId,
+                    batchNumber: item.batchNumber,
+                    expiryDate: new Date(item.expiryDate),
+                    quantity: item.quantity,
+                    rate: item.rate,
+                    mrp: item.mrp,
+                    amount: item.amount,
+                    gstPercent: item.gstPercent ?? 0,
+                    discountPercent: item.discountPercent ?? 0,
+                  })),
+                },
+              } as any,
+            });
+
+            await this.approvalsService.createRequest({
+              type: 'CREDIT_BILL',
+              payload: { invoiceId: draftInvoice.id, invoiceNumber, pendingCount, customerId: createInvoiceDto.customerId, customerName: createInvoiceDto.customerName, grandTotal: createInvoiceDto.grandTotal },
+              requestedById: userId,
+              branchId,
+              refId: draftInvoice.id,
+            });
+
+            return { approvalRequested: true, approvalRequestId: draftInvoice.id, invoiceId: draftInvoice.id, invoiceNumber, status: 'DRAFT' };
+          }
+
+          // ADMIN: hard block (should not happen since admin bypasses, but safety net)
           throw new BadRequestException(
             `Customer has ${pendingCount} unpaid credit invoice(s). Please collect payment before adding more credit sales.`,
           );

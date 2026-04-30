@@ -6,6 +6,7 @@ export declare class RemindersController {
     findAll(branchId?: string): Promise<({
         customer: {
             id: string;
+            email: string | null;
             name: string;
             phone: string;
             type: import(".prisma/client").$Enums.CustomerType;
@@ -30,6 +31,7 @@ export declare class RemindersController {
     findDueToday(branchId?: string): Promise<({
         customer: {
             id: string;
+            email: string | null;
             name: string;
             phone: string;
             type: import(".prisma/client").$Enums.CustomerType;
@@ -54,6 +56,7 @@ export declare class RemindersController {
     create(dto: CreateReminderDto): Promise<{
         customer: {
             id: string;
+            email: string | null;
             name: string;
             phone: string;
             type: import(".prisma/client").$Enums.CustomerType;
@@ -78,6 +81,7 @@ export declare class RemindersController {
     update(id: string, dto: UpdateReminderDto): Promise<{
         customer: {
             id: string;
+            email: string | null;
             name: string;
             phone: string;
             type: import(".prisma/client").$Enums.CustomerType;

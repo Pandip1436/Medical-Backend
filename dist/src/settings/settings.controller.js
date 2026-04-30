@@ -51,7 +51,7 @@ let SettingsController = class SettingsController {
 exports.SettingsController = SettingsController;
 __decorate([
     (0, common_1.Get)('business'),
-    (0, roles_decorator_1.Roles)('ADMIN', 'PHARMACIST', 'ACCOUNTANT'),
+    (0, roles_decorator_1.Roles)('ADMIN', 'PHARMACIST', 'ACCOUNTANT', 'INVENTORY_MANAGER', 'SALESPERSON'),
     __param(0, (0, common_1.Query)('branchId')),
     __metadata("design:type", Function),
     __metadata("design:paramtypes", [String]),
@@ -68,7 +68,7 @@ __decorate([
 ], SettingsController.prototype, "updateBusinessProfile", null);
 __decorate([
     (0, common_1.Get)('discounts'),
-    (0, roles_decorator_1.Roles)('ADMIN', 'PHARMACIST', 'ACCOUNTANT'),
+    (0, roles_decorator_1.Roles)('ADMIN', 'PHARMACIST', 'ACCOUNTANT', 'INVENTORY_MANAGER'),
     __param(0, (0, common_1.Query)('branchId')),
     __metadata("design:type", Function),
     __metadata("design:paramtypes", [String]),
@@ -102,7 +102,7 @@ __decorate([
 ], SettingsController.prototype, "deleteDiscountRule", null);
 __decorate([
     (0, common_1.Get)(':key'),
-    (0, roles_decorator_1.Roles)('ADMIN', 'PHARMACIST', 'ACCOUNTANT'),
+    (0, roles_decorator_1.Roles)('ADMIN', 'PHARMACIST', 'ACCOUNTANT', 'INVENTORY_MANAGER', 'SALESPERSON'),
     __param(0, (0, common_1.Param)('key')),
     __metadata("design:type", Function),
     __metadata("design:paramtypes", [String]),

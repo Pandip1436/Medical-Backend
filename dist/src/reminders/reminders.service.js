@@ -21,7 +21,7 @@ let RemindersService = class RemindersService {
         return this.prisma.customerReminder.findMany({
             where: branchId ? { branchId } : undefined,
             include: {
-                customer: { select: { id: true, name: true, phone: true, type: true } },
+                customer: { select: { id: true, name: true, phone: true, type: true, email: true } },
                 contacts: { orderBy: { contactedAt: 'desc' }, take: 1 },
             },
             orderBy: { dayOfMonth: 'asc' },
@@ -32,7 +32,7 @@ let RemindersService = class RemindersService {
         return this.prisma.customerReminder.findMany({
             where: { dayOfMonth: today, ...(branchId ? { branchId } : {}) },
             include: {
-                customer: { select: { id: true, name: true, phone: true, type: true } },
+                customer: { select: { id: true, name: true, phone: true, type: true, email: true } },
                 contacts: { orderBy: { contactedAt: 'desc' }, take: 1 },
             },
         });
@@ -47,7 +47,7 @@ let RemindersService = class RemindersService {
                 branchId: dto.branchId,
             },
             include: {
-                customer: { select: { id: true, name: true, phone: true, type: true } },
+                customer: { select: { id: true, name: true, phone: true, type: true, email: true } },
                 contacts: true,
             },
         });
@@ -57,7 +57,7 @@ let RemindersService = class RemindersService {
             where: { id },
             data: dto,
             include: {
-                customer: { select: { id: true, name: true, phone: true, type: true } },
+                customer: { select: { id: true, name: true, phone: true, type: true, email: true } },
                 contacts: { orderBy: { contactedAt: 'desc' }, take: 1 },
             },
         });

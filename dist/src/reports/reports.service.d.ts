@@ -331,12 +331,12 @@ export declare class ReportsService {
             notes: string | null;
             address: string | null;
             gstin: string | null;
+            currentOutstanding: import("@prisma/client/runtime/library").Decimal;
             alternatePhone: string | null;
             type: import(".prisma/client").$Enums.CustomerType;
             doctorRef: string | null;
             referredBy: string | null;
             creditLimit: import("@prisma/client/runtime/library").Decimal;
-            currentOutstanding: import("@prisma/client/runtime/library").Decimal;
             loyaltyPoints: number;
             dlNumber: string | null;
         };
@@ -371,6 +371,7 @@ export declare class ReportsService {
             contactPerson: string;
             paymentTerms: import(".prisma/client").$Enums.PaymentTerms;
             bankDetails: string | null;
+            currentOutstanding: import("@prisma/client/runtime/library").Decimal;
         };
         tableData: {
             date: string;

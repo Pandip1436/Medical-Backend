@@ -55,6 +55,7 @@ export class ProductsController {
   @ApiQuery({ name: 'skip', required: false })
   @ApiQuery({ name: 'take', required: false })
   @ApiQuery({ name: 'branchId', required: false })
+  @ApiQuery({ name: 'status', required: false })
   findAll(
     @Request() req: any,
     @Query('q') q?: string,
@@ -63,12 +64,14 @@ export class ProductsController {
     @Query('skip') skip?: string,
     @Query('take') take?: string,
     @Query('branchId') branchId?: string,
+    @Query('status') status?: string,
   ) {
     const effectiveBranchId = req.user.branchId ?? branchId;
     return this.productsService.findAll({
       query: q,
       categoryId,
       schedule,
+      status,
       skip: skip !== undefined ? Number(skip) : undefined,
       take: take !== undefined ? Number(take) : undefined,
       branchId: effectiveBranchId,
@@ -78,8 +81,18 @@ export class ProductsController {
   @Get(':id/history')
   @Roles('ADMIN', 'PHARMACIST', 'INVENTORY_MANAGER', 'ACCOUNTANT', 'SALESPERSON')
   @ApiOperation({ summary: 'Get full sales and purchase history for a product' })
-  getHistory(@Param('id') id: string, @Request() req: any) {
-    return this.productsService.getProductHistory(id, req.user.branchId);
+  @ApiQuery({ name: 'skip', required: false })
+  @ApiQuery({ name: 'take', required: false })
+  getHistory(
+    @Param('id') id: string,
+    @Request() req: any,
+    @Query('skip') skip?: string,
+    @Query('take') take?: string,
+  ) {
+    return this.productsService.getProductHistory(id, req.user.branchId, {
+      skip: skip !== undefined ? Number(skip) : undefined,
+      take: take !== undefined ? Number(take) : undefined,
+    });
   }
 
   @Get(':id')

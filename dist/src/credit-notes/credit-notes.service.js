@@ -12,12 +12,33 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.CreditNotesService = void 0;
 const common_1 = require("@nestjs/common");
 const prisma_service_1 = require("../prisma/prisma.service");
+const approvals_service_1 = require("../approvals/approvals.service");
 let CreditNotesService = class CreditNotesService {
     prisma;
-    constructor(prisma) {
+    approvalsService;
+    constructor(prisma, approvalsService) {
         this.prisma = prisma;
+        this.approvalsService = approvalsService;
     }
-    async create(dto, userId, branchId) {
+    async create(dto, userId, branchId, userRole) {
+        if (userRole === 'PHARMACIST') {
+            const invoice = await this.prisma.invoice.findUnique({ where: { id: dto.invoiceId } });
+            if (!invoice)
+                throw new common_1.NotFoundException('Invoice not found');
+            const req = await this.approvalsService.createRequest({
+                type: 'SALES_RETURN',
+                payload: {
+                    ...dto,
+                    invoiceNumber: invoice.invoiceNumber,
+                    customerId: invoice.customerId,
+                    customerName: invoice.customerName,
+                    createdById: userId,
+                },
+                requestedById: userId,
+                branchId: branchId ?? invoice.branchId ?? undefined,
+            });
+            return { approvalRequested: true, approvalRequestId: req.id };
+        }
         return this.prisma.$transaction(async (tx) => {
             const invoice = await tx.invoice.findUnique({
                 where: { id: dto.invoiceId },
@@ -135,6 +156,7 @@ let CreditNotesService = class CreditNotesService {
 exports.CreditNotesService = CreditNotesService;
 exports.CreditNotesService = CreditNotesService = __decorate([
     (0, common_1.Injectable)(),
-    __metadata("design:paramtypes", [prisma_service_1.PrismaService])
+    __metadata("design:paramtypes", [prisma_service_1.PrismaService,
+        approvals_service_1.ApprovalsService])
 ], CreditNotesService);
 //# sourceMappingURL=credit-notes.service.js.map

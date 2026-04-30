@@ -12,12 +12,15 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.BillingService = void 0;
 const common_1 = require("@nestjs/common");
 const prisma_service_1 = require("../prisma/prisma.service");
+const approvals_service_1 = require("../approvals/approvals.service");
 let BillingService = class BillingService {
     prisma;
-    constructor(prisma) {
+    approvalsService;
+    constructor(prisma, approvalsService) {
         this.prisma = prisma;
+        this.approvalsService = approvalsService;
     }
-    async create(createInvoiceDto, userId, branchId) {
+    async create(createInvoiceDto, userId, branchId, userRole) {
         return this.prisma.$transaction(async (tx) => {
             if (createInvoiceDto.type === 'INVOICE' &&
                 createInvoiceDto.paymentMode === 'CREDIT' &&
@@ -29,6 +32,58 @@ let BillingService = class BillingService {
                     },
                 });
                 if (pendingCount >= 3) {
+                    if (userRole === 'PHARMACIST') {
+                        const invoiceNumber = `INV-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+                        const draftInvoice = await tx.invoice.create({
+                            data: {
+                                invoiceNumber,
+                                type: createInvoiceDto.type,
+                                billingType: createInvoiceDto.billingType,
+                                branchId,
+                                customerId: createInvoiceDto.customerId ?? null,
+                                customerName: createInvoiceDto.customerName,
+                                doctorName: createInvoiceDto.doctorName ?? null,
+                                salespersonId: createInvoiceDto.salespersonId ?? null,
+                                salespersonName: createInvoiceDto.salespersonName ?? null,
+                                subtotal: createInvoiceDto.subtotal,
+                                productDiscount: createInvoiceDto.productDiscount ?? 0,
+                                taxableAmount: createInvoiceDto.taxableAmount ?? createInvoiceDto.subtotal,
+                                cgst: createInvoiceDto.cgst ?? 0,
+                                sgst: createInvoiceDto.sgst ?? 0,
+                                igst: createInvoiceDto.igst ?? 0,
+                                roundOff: createInvoiceDto.roundOff ?? 0,
+                                grandTotal: createInvoiceDto.grandTotal,
+                                paymentMode: 'CREDIT',
+                                status: 'DRAFT',
+                                amountPaid: 0,
+                                changeReturned: 0,
+                                createdById: userId,
+                                items: {
+                                    create: createInvoiceDto.items.map(item => ({
+                                        productId: item.productId,
+                                        productName: item.productName,
+                                        batchId: item.batchId,
+                                        batchNumber: item.batchNumber,
+                                        expiryDate: new Date(item.expiryDate),
+                                        quantity: item.quantity,
+                                        rate: item.rate,
+                                        mrp: item.mrp,
+                                        amount: item.amount,
+                                        gstPercent: item.gstPercent ?? 0,
+                                        discountPercent: item.discountPercent ?? 0,
+                                    })),
+                                },
+                            },
+                        });
+                        await this.approvalsService.createRequest({
+                            type: 'CREDIT_BILL',
+                            payload: { invoiceId: draftInvoice.id, invoiceNumber, pendingCount, customerId: createInvoiceDto.customerId, customerName: createInvoiceDto.customerName, grandTotal: createInvoiceDto.grandTotal },
+                            requestedById: userId,
+                            branchId,
+                            refId: draftInvoice.id,
+                        });
+                        return { approvalRequested: true, approvalRequestId: draftInvoice.id, invoiceId: draftInvoice.id, invoiceNumber, status: 'DRAFT' };
+                    }
                     throw new common_1.BadRequestException(`Customer has ${pendingCount} unpaid credit invoice(s). Please collect payment before adding more credit sales.`);
                 }
             }
@@ -381,6 +436,7 @@ let BillingService = class BillingService {
 exports.BillingService = BillingService;
 exports.BillingService = BillingService = __decorate([
     (0, common_1.Injectable)(),
-    __metadata("design:paramtypes", [prisma_service_1.PrismaService])
+    __metadata("design:paramtypes", [prisma_service_1.PrismaService,
+        approvals_service_1.ApprovalsService])
 ], BillingService);
 //# sourceMappingURL=billing.service.js.map

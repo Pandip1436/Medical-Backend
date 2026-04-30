@@ -1,12 +1,17 @@
 import { PrismaService } from '../prisma/prisma.service';
+import { ApprovalsService } from '../approvals/approvals.service';
 import { CreateCustomerDto } from './dto/create-customer.dto';
 import { UpdateCustomerDto } from './dto/update-customer.dto';
 export declare class CustomersService {
     private readonly prisma;
-    constructor(prisma: PrismaService);
+    private readonly approvalsService;
+    constructor(prisma: PrismaService, approvalsService: ApprovalsService);
     create(createCustomerDto: CreateCustomerDto & {
         branchId?: string;
-    }): import(".prisma/client").Prisma.Prisma__CustomerClient<{
+    }, user?: {
+        userId: string;
+        role: string;
+    }): Promise<{
         id: string;
         email: string | null;
         name: string;
@@ -16,15 +21,18 @@ export declare class CustomersService {
         notes: string | null;
         address: string | null;
         gstin: string | null;
+        currentOutstanding: import("@prisma/client/runtime/library").Decimal;
         alternatePhone: string | null;
         type: import(".prisma/client").$Enums.CustomerType;
         doctorRef: string | null;
         referredBy: string | null;
         creditLimit: import("@prisma/client/runtime/library").Decimal;
-        currentOutstanding: import("@prisma/client/runtime/library").Decimal;
         loyaltyPoints: number;
         dlNumber: string | null;
-    }, never, import("@prisma/client/runtime/library").DefaultArgs>;
+    } | {
+        approvalRequested: boolean;
+        approvalRequestId: string;
+    }>;
     findAll(query?: string, branchId?: string): Promise<{
         pendingCreditCount: number;
         id: string;
@@ -36,12 +44,12 @@ export declare class CustomersService {
         notes: string | null;
         address: string | null;
         gstin: string | null;
+        currentOutstanding: import("@prisma/client/runtime/library").Decimal;
         alternatePhone: string | null;
         type: import(".prisma/client").$Enums.CustomerType;
         doctorRef: string | null;
         referredBy: string | null;
         creditLimit: import("@prisma/client/runtime/library").Decimal;
-        currentOutstanding: import("@prisma/client/runtime/library").Decimal;
         loyaltyPoints: number;
         dlNumber: string | null;
     }[]>;
@@ -96,12 +104,12 @@ export declare class CustomersService {
         notes: string | null;
         address: string | null;
         gstin: string | null;
+        currentOutstanding: import("@prisma/client/runtime/library").Decimal;
         alternatePhone: string | null;
         type: import(".prisma/client").$Enums.CustomerType;
         doctorRef: string | null;
         referredBy: string | null;
         creditLimit: import("@prisma/client/runtime/library").Decimal;
-        currentOutstanding: import("@prisma/client/runtime/library").Decimal;
         loyaltyPoints: number;
         dlNumber: string | null;
     }>;
@@ -115,12 +123,12 @@ export declare class CustomersService {
         notes: string | null;
         address: string | null;
         gstin: string | null;
+        currentOutstanding: import("@prisma/client/runtime/library").Decimal;
         alternatePhone: string | null;
         type: import(".prisma/client").$Enums.CustomerType;
         doctorRef: string | null;
         referredBy: string | null;
         creditLimit: import("@prisma/client/runtime/library").Decimal;
-        currentOutstanding: import("@prisma/client/runtime/library").Decimal;
         loyaltyPoints: number;
         dlNumber: string | null;
     }>;
@@ -134,12 +142,12 @@ export declare class CustomersService {
         notes: string | null;
         address: string | null;
         gstin: string | null;
+        currentOutstanding: import("@prisma/client/runtime/library").Decimal;
         alternatePhone: string | null;
         type: import(".prisma/client").$Enums.CustomerType;
         doctorRef: string | null;
         referredBy: string | null;
         creditLimit: import("@prisma/client/runtime/library").Decimal;
-        currentOutstanding: import("@prisma/client/runtime/library").Decimal;
         loyaltyPoints: number;
         dlNumber: string | null;
     }>;

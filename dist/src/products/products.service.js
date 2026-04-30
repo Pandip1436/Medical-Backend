@@ -31,9 +31,13 @@ let ProductsService = class ProductsService {
         });
     }
     async findAll(opts = {}) {
-        const { query, categoryId, schedule, skip = 0, take, branchId, includeInactive } = opts;
+        const { query, categoryId, schedule, skip = 0, take, branchId, includeInactive, status } = opts;
         const where = {};
-        if (!includeInactive)
+        if (status === 'active')
+            where.isActive = true;
+        else if (status === 'inactive')
+            where.isActive = false;
+        else if (!includeInactive)
             where.isActive = true;
         if (branchId)
             where.branchId = branchId;
@@ -90,6 +94,8 @@ let ProductsService = class ProductsService {
         const missing = required.filter((r) => !headers.includes(r));
         if (missing.length)
             throw new common_1.BadRequestException(`Missing columns: ${missing.join(', ')}`);
+        const allCategories = await this.prisma.category.findMany({ select: { id: true, name: true } });
+        const categoryByName = new Map(allCategories.map((c) => [c.name.toLowerCase().trim(), c.id]));
         let created = 0;
         let skipped = 0;
         const errors = [];
@@ -109,13 +115,16 @@ let ProductsService = class ProductsService {
                         continue;
                     }
                 }
+                const categoryId = row['category']
+                    ? categoryByName.get(row['category'].toLowerCase().trim()) ?? undefined
+                    : undefined;
                 await this.prisma.product.create({
                     data: {
                         name: row['name'],
                         genericName: row['genericname'],
                         saltComposition: row['saltcomposition'] || undefined,
                         manufacturer: row['manufacturer'],
-                        category: row['category'],
+                        categoryId,
                         subCategory: row['subcategory'] || undefined,
                         packSize: row['packsize'],
                         unitOfMeasure: row['unitofmeasure'],
@@ -174,7 +183,8 @@ let ProductsService = class ProductsService {
         ]);
         return { success: true, batchId, previousQty: batch.quantity, newQty: dto.adjustedQty, diff, reason: dto.reason };
     }
-    async getProductHistory(productId, branchId) {
+    async getProductHistory(productId, branchId, opts = {}) {
+        const { skip = 0, take = 100 } = opts;
         const product = await this.prisma.product.findUnique({
             where: { id: productId },
             include: { batches: true, category: true },
@@ -184,30 +194,56 @@ let ProductsService = class ProductsService {
         if (branchId && product.branchId && product.branchId !== branchId) {
             throw new common_1.NotFoundException('Product not found');
         }
-        const salesItems = await this.prisma.invoiceItem.findMany({
-            where: { productId },
-            include: {
-                invoice: {
-                    select: { invoiceNumber: true, date: true, customerName: true, status: true },
+        const [totalSalesCount, totalPurchaseCount, totalSalesReturnCount, totalPurchaseReturnCount] = await Promise.all([
+            this.prisma.invoiceItem.count({ where: { productId } }),
+            this.prisma.gRNItem.count({ where: { productId } }),
+            this.prisma.creditNoteItem.count({ where: { productId } }),
+            this.prisma.purchaseReturnItem.count({ where: { productId } }),
+        ]);
+        const [salesItems, purchaseItems, salesReturnItems, purchaseReturnItems] = await Promise.all([
+            this.prisma.invoiceItem.findMany({
+                where: { productId },
+                include: {
+                    invoice: { select: { invoiceNumber: true, date: true, customerName: true, status: true } },
                 },
-            },
-            orderBy: { invoice: { date: 'desc' } },
-            take: 100,
-        });
-        const purchaseItems = await this.prisma.gRNItem.findMany({
-            where: { productId },
-            include: {
-                grn: {
-                    select: { grnNumber: true, date: true, supplierName: true, status: true },
+                orderBy: { invoice: { date: 'desc' } },
+                skip,
+                take,
+            }),
+            this.prisma.gRNItem.findMany({
+                where: { productId },
+                include: {
+                    grn: { select: { grnNumber: true, date: true, supplierName: true, status: true } },
                 },
-            },
-            orderBy: { grn: { date: 'desc' } },
-            take: 100,
-        });
+                orderBy: { grn: { date: 'desc' } },
+                skip,
+                take,
+            }),
+            this.prisma.creditNoteItem.findMany({
+                where: { productId },
+                include: {
+                    creditNote: { select: { creditNoteNo: true, date: true, customerName: true, settlementMode: true, reason: true } },
+                },
+                orderBy: { creditNote: { date: 'desc' } },
+                skip,
+                take,
+            }),
+            this.prisma.purchaseReturnItem.findMany({
+                where: { productId },
+                include: {
+                    purchaseReturn: { select: { debitNoteNo: true, date: true, supplierName: true, status: true, reason: true } },
+                },
+                orderBy: { purchaseReturn: { date: 'desc' } },
+                skip,
+                take,
+            }),
+        ]);
         const totalSoldQty = salesItems.reduce((sum, i) => sum + i.quantity, 0);
         const totalPurchasedQty = purchaseItems.reduce((sum, i) => sum + i.receivedQty, 0);
         const totalSalesValue = salesItems.reduce((sum, i) => sum + Number(i.amount), 0);
         const totalPurchaseValue = purchaseItems.reduce((sum, i) => sum + Number(i.purchaseRate) * i.receivedQty, 0);
+        const totalSalesReturnQty = salesReturnItems.reduce((sum, i) => sum + i.returnedQty, 0);
+        const totalPurchaseReturnQty = purchaseReturnItems.reduce((sum, i) => sum + i.returnedQty, 0);
         const activeBatches = product.batches.filter((b) => b.quantity > 0).length;
         return {
             product: {
@@ -223,8 +259,16 @@ let ProductsService = class ProductsService {
             summary: {
                 salesCount: salesItems.length,
                 purchaseCount: purchaseItems.length,
+                salesReturnCount: salesReturnItems.length,
+                purchaseReturnCount: purchaseReturnItems.length,
+                totalSalesCount,
+                totalPurchaseCount,
+                totalSalesReturnCount,
+                totalPurchaseReturnCount,
                 totalSoldQty,
                 totalPurchasedQty,
+                totalSalesReturnQty,
+                totalPurchaseReturnQty,
                 totalSalesValue,
                 totalPurchaseValue,
                 currentStock: product.totalStock,
@@ -254,6 +298,32 @@ let ProductsService = class ProductsService {
                 purchaseRate: Number(i.purchaseRate),
                 mrp: Number(i.mrp),
                 amount: Number(i.purchaseRate) * i.receivedQty,
+            })),
+            salesReturns: salesReturnItems.map((i) => ({
+                id: i.id,
+                creditNoteNo: i.creditNote.creditNoteNo,
+                date: i.creditNote.date,
+                customerName: i.creditNote.customerName,
+                settlementMode: i.creditNote.settlementMode,
+                reason: i.creditNote.reason,
+                batchNumber: i.batchNumber,
+                returnedQty: i.returnedQty,
+                rate: Number(i.rate),
+                amount: Number(i.amount),
+                gstPercent: Number(i.gstPercent),
+            })),
+            purchaseReturns: purchaseReturnItems.map((i) => ({
+                id: i.id,
+                debitNoteNo: i.purchaseReturn.debitNoteNo,
+                date: i.purchaseReturn.date,
+                supplierName: i.purchaseReturn.supplierName,
+                status: i.purchaseReturn.status,
+                reason: i.purchaseReturn.reason,
+                batchNumber: i.batchNumber,
+                returnedQty: i.returnedQty,
+                purchaseRate: Number(i.purchaseRate),
+                amount: Number(i.amount),
+                gstPercent: Number(i.gstPercent),
             })),
         };
     }

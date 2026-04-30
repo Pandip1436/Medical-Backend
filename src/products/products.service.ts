@@ -31,11 +31,14 @@ export class ProductsService {
     take?: number;
     branchId?: string;
     includeInactive?: boolean;
+    status?: string;
   } = {}) {
-    const { query, categoryId, schedule, skip = 0, take, branchId, includeInactive } = opts;
+    const { query, categoryId, schedule, skip = 0, take, branchId, includeInactive, status } = opts;
 
     const where: any = {};
-    if (!includeInactive) where.isActive = true;
+    if (status === 'active') where.isActive = true;
+    else if (status === 'inactive') where.isActive = false;
+    else if (!includeInactive) where.isActive = true;
     if (branchId) where.branchId = branchId;
     if (query) {
       where.OR = [
@@ -94,6 +97,10 @@ export class ProductsService {
     const missing = required.filter((r) => !headers.includes(r));
     if (missing.length) throw new BadRequestException(`Missing columns: ${missing.join(', ')}`);
 
+    // Pre-load all categories for name→id lookup
+    const allCategories = await this.prisma.category.findMany({ select: { id: true, name: true } });
+    const categoryByName = new Map(allCategories.map((c) => [c.name.toLowerCase().trim(), c.id]));
+
     let created = 0;
     let skipped = 0;
     const errors: string[] = [];
@@ -113,13 +120,17 @@ export class ProductsService {
           if (existing) { skipped++; continue; }
         }
 
+        const categoryId = row['category']
+          ? categoryByName.get(row['category'].toLowerCase().trim()) ?? undefined
+          : undefined;
+
         await this.prisma.product.create({
           data: {
             name: row['name'],
             genericName: row['genericname'],
             saltComposition: row['saltcomposition'] || undefined,
             manufacturer: row['manufacturer'],
-            category: row['category'] as any,
+            categoryId,
             subCategory: row['subcategory'] || undefined,
             packSize: row['packsize'],
             unitOfMeasure: row['unitofmeasure'],
@@ -138,7 +149,7 @@ export class ProductsService {
             rackLocation: row['racklocation'],
             barcode,
             branchId: branchId || undefined,
-          },
+          } as any,
         });
         created++;
       } catch (err: any) {
@@ -187,7 +198,9 @@ export class ProductsService {
     return { success: true, batchId, previousQty: batch.quantity, newQty: dto.adjustedQty, diff, reason: dto.reason };
   }
 
-  async getProductHistory(productId: string, branchId?: string) {
+  async getProductHistory(productId: string, branchId?: string, opts: { skip?: number; take?: number } = {}) {
+    const { skip = 0, take = 100 } = opts;
+
     const product = await this.prisma.product.findUnique({
       where: { id: productId },
       include: { batches: true, category: true },
@@ -197,32 +210,60 @@ export class ProductsService {
       throw new NotFoundException('Product not found');
     }
 
-    const salesItems = await this.prisma.invoiceItem.findMany({
-      where: { productId },
-      include: {
-        invoice: {
-          select: { invoiceNumber: true, date: true, customerName: true, status: true },
-        },
-      },
-      orderBy: { invoice: { date: 'desc' } },
-      take: 100,
-    });
+    const [totalSalesCount, totalPurchaseCount, totalSalesReturnCount, totalPurchaseReturnCount] = await Promise.all([
+      this.prisma.invoiceItem.count({ where: { productId } }),
+      this.prisma.gRNItem.count({ where: { productId } }),
+      (this.prisma as any).creditNoteItem.count({ where: { productId } }),
+      (this.prisma as any).purchaseReturnItem.count({ where: { productId } }),
+    ]);
 
-    const purchaseItems = await this.prisma.gRNItem.findMany({
-      where: { productId },
-      include: {
-        grn: {
-          select: { grnNumber: true, date: true, supplierName: true, status: true },
+    const [salesItems, purchaseItems, salesReturnItems, purchaseReturnItems] = await Promise.all([
+      this.prisma.invoiceItem.findMany({
+        where: { productId },
+        include: {
+          invoice: { select: { invoiceNumber: true, date: true, customerName: true, status: true } },
         },
-      },
-      orderBy: { grn: { date: 'desc' } },
-      take: 100,
-    });
+        orderBy: { invoice: { date: 'desc' } },
+        skip,
+        take,
+      }),
+      this.prisma.gRNItem.findMany({
+        where: { productId },
+        include: {
+          grn: { select: { grnNumber: true, date: true, supplierName: true, status: true } },
+        },
+        orderBy: { grn: { date: 'desc' } },
+        skip,
+        take,
+      }),
+      // Sales returns — stock came BACK IN from customer
+      (this.prisma as any).creditNoteItem.findMany({
+        where: { productId },
+        include: {
+          creditNote: { select: { creditNoteNo: true, date: true, customerName: true, settlementMode: true, reason: true } },
+        },
+        orderBy: { creditNote: { date: 'desc' } },
+        skip,
+        take,
+      }),
+      // Purchase returns — stock went BACK OUT to supplier
+      (this.prisma as any).purchaseReturnItem.findMany({
+        where: { productId },
+        include: {
+          purchaseReturn: { select: { debitNoteNo: true, date: true, supplierName: true, status: true, reason: true } },
+        },
+        orderBy: { purchaseReturn: { date: 'desc' } },
+        skip,
+        take,
+      }),
+    ]);
 
-    const totalSoldQty = salesItems.reduce((sum, i) => sum + i.quantity, 0);
-    const totalPurchasedQty = purchaseItems.reduce((sum, i) => sum + i.receivedQty, 0);
-    const totalSalesValue = salesItems.reduce((sum, i) => sum + Number(i.amount), 0);
-    const totalPurchaseValue = purchaseItems.reduce((sum, i) => sum + Number(i.purchaseRate) * i.receivedQty, 0);
+    const totalSoldQty = salesItems.reduce((sum: number, i: any) => sum + i.quantity, 0);
+    const totalPurchasedQty = purchaseItems.reduce((sum: number, i: any) => sum + i.receivedQty, 0);
+    const totalSalesValue = salesItems.reduce((sum: number, i: any) => sum + Number(i.amount), 0);
+    const totalPurchaseValue = purchaseItems.reduce((sum: number, i: any) => sum + Number(i.purchaseRate) * i.receivedQty, 0);
+    const totalSalesReturnQty = salesReturnItems.reduce((sum: number, i: any) => sum + i.returnedQty, 0);
+    const totalPurchaseReturnQty = purchaseReturnItems.reduce((sum: number, i: any) => sum + i.returnedQty, 0);
     const activeBatches = product.batches.filter((b) => b.quantity > 0).length;
 
     return {
@@ -239,13 +280,21 @@ export class ProductsService {
       summary: {
         salesCount: salesItems.length,
         purchaseCount: purchaseItems.length,
+        salesReturnCount: salesReturnItems.length,
+        purchaseReturnCount: purchaseReturnItems.length,
+        totalSalesCount,
+        totalPurchaseCount,
+        totalSalesReturnCount,
+        totalPurchaseReturnCount,
         totalSoldQty,
         totalPurchasedQty,
+        totalSalesReturnQty,
+        totalPurchaseReturnQty,
         totalSalesValue,
         totalPurchaseValue,
         currentStock: product.totalStock,
       },
-      sales: salesItems.map((i) => ({
+      sales: salesItems.map((i: any) => ({
         id: i.id,
         invoiceNumber: i.invoice.invoiceNumber,
         date: i.invoice.date,
@@ -258,7 +307,7 @@ export class ProductsService {
         gstPercent: Number(i.gstPercent),
         discountPercent: Number(i.discountPercent),
       })),
-      purchases: purchaseItems.map((i) => ({
+      purchases: purchaseItems.map((i: any) => ({
         id: i.id,
         grnNumber: i.grn.grnNumber,
         date: i.grn.date,
@@ -270,6 +319,34 @@ export class ProductsService {
         purchaseRate: Number(i.purchaseRate),
         mrp: Number(i.mrp),
         amount: Number(i.purchaseRate) * i.receivedQty,
+      })),
+      // Stock came back IN — customer returned goods
+      salesReturns: salesReturnItems.map((i: any) => ({
+        id: i.id,
+        creditNoteNo: i.creditNote.creditNoteNo,
+        date: i.creditNote.date,
+        customerName: i.creditNote.customerName,
+        settlementMode: i.creditNote.settlementMode,
+        reason: i.creditNote.reason,
+        batchNumber: i.batchNumber,
+        returnedQty: i.returnedQty,
+        rate: Number(i.rate),
+        amount: Number(i.amount),
+        gstPercent: Number(i.gstPercent),
+      })),
+      // Stock went back OUT — returned to supplier
+      purchaseReturns: purchaseReturnItems.map((i: any) => ({
+        id: i.id,
+        debitNoteNo: i.purchaseReturn.debitNoteNo,
+        date: i.purchaseReturn.date,
+        supplierName: i.purchaseReturn.supplierName,
+        status: i.purchaseReturn.status,
+        reason: i.purchaseReturn.reason,
+        batchNumber: i.batchNumber,
+        returnedQty: i.returnedQty,
+        purchaseRate: Number(i.purchaseRate),
+        amount: Number(i.amount),
+        gstPercent: Number(i.gstPercent),
       })),
     };
   }

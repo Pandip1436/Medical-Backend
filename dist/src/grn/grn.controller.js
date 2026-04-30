@@ -33,6 +33,21 @@ let GrnController = class GrnController {
         const effectiveBranchId = req.user.branchId ?? branchId;
         return this.grnService.findAll(q, effectiveBranchId);
     }
+    backfill() {
+        return this.grnService.backfillPoReceivedQty();
+    }
+    backfillGrnOrdered() {
+        return this.grnService.backfillGrnOrderedQty();
+    }
+    backfillSupplierOutstanding() {
+        return this.grnService.backfillSupplierOutstanding();
+    }
+    backfillPoStatusDN() {
+        return this.grnService.backfillPoStatusWithDebitNotes();
+    }
+    reverseShortDeliveryStock() {
+        return this.grnService.reverseShortDeliveryStockDeduction();
+    }
     findOne(id, req) {
         return this.grnService.findOne(id, req.user.branchId);
     }
@@ -62,6 +77,46 @@ __decorate([
     __metadata("design:paramtypes", [Object, String, String]),
     __metadata("design:returntype", void 0)
 ], GrnController.prototype, "findAll", null);
+__decorate([
+    (0, common_1.Get)('admin/backfill-po-qty'),
+    (0, roles_decorator_1.Roles)('ADMIN'),
+    (0, swagger_1.ApiOperation)({ summary: 'Backfill PO receivedQty from existing GRNs (run once after migration)' }),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", []),
+    __metadata("design:returntype", void 0)
+], GrnController.prototype, "backfill", null);
+__decorate([
+    (0, common_1.Get)('admin/backfill-grn-ordered-qty'),
+    (0, roles_decorator_1.Roles)('ADMIN'),
+    (0, swagger_1.ApiOperation)({ summary: 'Backfill GRN orderedQty so supplementary GRNs reflect remaining qty at that delivery' }),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", []),
+    __metadata("design:returntype", void 0)
+], GrnController.prototype, "backfillGrnOrdered", null);
+__decorate([
+    (0, common_1.Get)('admin/backfill-supplier-outstanding'),
+    (0, roles_decorator_1.Roles)('ADMIN'),
+    (0, swagger_1.ApiOperation)({ summary: 'Backfill supplier currentOutstanding from existing GRNs and ADJUST debit notes' }),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", []),
+    __metadata("design:returntype", void 0)
+], GrnController.prototype, "backfillSupplierOutstanding", null);
+__decorate([
+    (0, common_1.Get)('admin/backfill-po-status-with-debit-notes'),
+    (0, roles_decorator_1.Roles)('ADMIN'),
+    (0, swagger_1.ApiOperation)({ summary: 'Recompute PO status including short-delivery debit notes' }),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", []),
+    __metadata("design:returntype", void 0)
+], GrnController.prototype, "backfillPoStatusDN", null);
+__decorate([
+    (0, common_1.Get)('admin/reverse-short-delivery-stock'),
+    (0, roles_decorator_1.Roles)('ADMIN'),
+    (0, swagger_1.ApiOperation)({ summary: 'Reverse wrongly-deducted stock for short-delivery debit notes' }),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", []),
+    __metadata("design:returntype", void 0)
+], GrnController.prototype, "reverseShortDeliveryStock", null);
 __decorate([
     (0, common_1.Get)(':id'),
     (0, roles_decorator_1.Roles)('ADMIN', 'INVENTORY_MANAGER', 'PHARMACIST', 'ACCOUNTANT'),

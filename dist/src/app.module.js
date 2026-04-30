@@ -36,6 +36,7 @@ const quotations_module_1 = require("./quotations/quotations.module");
 const categories_module_1 = require("./categories/categories.module");
 const notifications_module_1 = require("./notifications/notifications.module");
 const reminders_module_1 = require("./reminders/reminders.module");
+const approvals_module_1 = require("./approvals/approvals.module");
 const serve_static_1 = require("@nestjs/serve-static");
 const path_1 = require("path");
 let AppModule = class AppModule {
@@ -72,6 +73,7 @@ exports.AppModule = AppModule = __decorate([
             categories_module_1.CategoriesModule,
             notifications_module_1.NotificationsModule,
             reminders_module_1.RemindersModule,
+            approvals_module_1.ApprovalsModule,
         ],
         controllers: [app_controller_1.AppController],
         providers: [

@@ -10,7 +10,7 @@ export class SettingsController {
   constructor(private readonly settingsService: SettingsService) {}
 
   @Get('business')
-  @Roles('ADMIN', 'PHARMACIST', 'ACCOUNTANT')
+  @Roles('ADMIN', 'PHARMACIST', 'ACCOUNTANT', 'INVENTORY_MANAGER', 'SALESPERSON')
   async getBusinessProfile(@Query('branchId') branchId: string) {
     return this.settingsService.getBusinessProfile(branchId);
   }
@@ -22,7 +22,7 @@ export class SettingsController {
   }
 
   @Get('discounts')
-  @Roles('ADMIN', 'PHARMACIST', 'ACCOUNTANT')
+  @Roles('ADMIN', 'PHARMACIST', 'ACCOUNTANT', 'INVENTORY_MANAGER')
   async getDiscountRules(@Query('branchId') branchId: string) {
     return this.settingsService.getDiscountRules(branchId);
   }
@@ -46,7 +46,7 @@ export class SettingsController {
   }
 
   @Get(':key')
-  @Roles('ADMIN', 'PHARMACIST', 'ACCOUNTANT')
+  @Roles('ADMIN', 'PHARMACIST', 'ACCOUNTANT', 'INVENTORY_MANAGER', 'SALESPERSON')
   async getSetting(@Param('key') key: string) {
     return this.settingsService.getSetting(key);
   }

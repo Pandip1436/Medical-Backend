@@ -31,6 +31,41 @@ export class GrnController {
     return this.grnService.findAll(q, effectiveBranchId);
   }
 
+  @Get('admin/backfill-po-qty')
+  @Roles('ADMIN')
+  @ApiOperation({ summary: 'Backfill PO receivedQty from existing GRNs (run once after migration)' })
+  backfill() {
+    return this.grnService.backfillPoReceivedQty();
+  }
+
+  @Get('admin/backfill-grn-ordered-qty')
+  @Roles('ADMIN')
+  @ApiOperation({ summary: 'Backfill GRN orderedQty so supplementary GRNs reflect remaining qty at that delivery' })
+  backfillGrnOrdered() {
+    return this.grnService.backfillGrnOrderedQty();
+  }
+
+  @Get('admin/backfill-supplier-outstanding')
+  @Roles('ADMIN')
+  @ApiOperation({ summary: 'Backfill supplier currentOutstanding from existing GRNs and ADJUST debit notes' })
+  backfillSupplierOutstanding() {
+    return this.grnService.backfillSupplierOutstanding();
+  }
+
+  @Get('admin/backfill-po-status-with-debit-notes')
+  @Roles('ADMIN')
+  @ApiOperation({ summary: 'Recompute PO status including short-delivery debit notes' })
+  backfillPoStatusDN() {
+    return this.grnService.backfillPoStatusWithDebitNotes();
+  }
+
+  @Get('admin/reverse-short-delivery-stock')
+  @Roles('ADMIN')
+  @ApiOperation({ summary: 'Reverse wrongly-deducted stock for short-delivery debit notes' })
+  reverseShortDeliveryStock() {
+    return this.grnService.reverseShortDeliveryStockDeduction();
+  }
+
   @Get(':id')
   @Roles('ADMIN', 'INVENTORY_MANAGER', 'PHARMACIST', 'ACCOUNTANT')
   @ApiOperation({ summary: 'Get specific GRN details' })

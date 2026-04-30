@@ -17,7 +17,7 @@ export class CreditNotesController {
   @Roles('ADMIN', 'PHARMACIST')
   @ApiOperation({ summary: 'Create a credit note (sales return) for an invoice' })
   create(@Body() dto: CreateCreditNoteDto, @Request() req: any) {
-    return this.creditNotesService.create(dto, req.user.userId, req.user.branchId);
+    return this.creditNotesService.create(dto, req.user.userId, req.user.branchId, req.user.role);
   }
 
   @Get()

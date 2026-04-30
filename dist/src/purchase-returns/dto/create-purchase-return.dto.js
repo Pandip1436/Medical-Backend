@@ -26,6 +26,7 @@ class CreatePurchaseReturnDto {
     igst;
     totalAmount;
     status;
+    settlementMode;
     notes;
 }
 exports.CreatePurchaseReturnDto = CreatePurchaseReturnDto;
@@ -88,6 +89,11 @@ __decorate([
     (0, class_validator_1.IsOptional)(),
     __metadata("design:type", String)
 ], CreatePurchaseReturnDto.prototype, "status", void 0);
+__decorate([
+    (0, class_validator_1.IsEnum)(client_1.PurchaseReturnSettlement),
+    (0, class_validator_1.IsOptional)(),
+    __metadata("design:type", String)
+], CreatePurchaseReturnDto.prototype, "settlementMode", void 0);
 __decorate([
     (0, class_validator_1.IsString)(),
     (0, class_validator_1.IsOptional)(),

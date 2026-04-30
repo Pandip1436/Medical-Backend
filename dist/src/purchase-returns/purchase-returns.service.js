@@ -12,12 +12,24 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.PurchaseReturnsService = void 0;
 const common_1 = require("@nestjs/common");
 const prisma_service_1 = require("../prisma/prisma.service");
+const approvals_service_1 = require("../approvals/approvals.service");
 let PurchaseReturnsService = class PurchaseReturnsService {
     prisma;
-    constructor(prisma) {
+    approvalsService;
+    constructor(prisma, approvalsService) {
         this.prisma = prisma;
+        this.approvalsService = approvalsService;
     }
-    async create(dto, userId, userBranchId) {
+    async create(dto, userId, userBranchId, userRole) {
+        if (userRole === 'PHARMACIST' || userRole === 'INVENTORY_MANAGER') {
+            const req = await this.approvalsService.createRequest({
+                type: 'PURCHASE_RETURN',
+                payload: { ...dto, createdById: userId },
+                requestedById: userId,
+                branchId: userBranchId,
+            });
+            return { approvalRequested: true, approvalRequestId: req.id };
+        }
         return this.prisma.$transaction(async (tx) => {
             let branchId = userBranchId ?? null;
             if (dto.grnId) {
@@ -29,7 +41,10 @@ let PurchaseReturnsService = class PurchaseReturnsService {
                     branchId = grn.branchId ?? userBranchId ?? null;
                 }
             }
+            const isShortDelivery = /short.*delivery|short.*supply/i.test(dto.reason ?? '');
             for (const item of dto.items) {
+                if (isShortDelivery)
+                    continue;
                 const batch = await tx.batch.findUnique({ where: { id: item.batchId } });
                 if (!batch) {
                     throw new common_1.NotFoundException(`Batch ${item.batchNumber} for ${item.productName} not found`);
@@ -47,6 +62,7 @@ let PurchaseReturnsService = class PurchaseReturnsService {
                 });
             }
             const debitNoteNo = `DN-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+            const settlementMode = dto.settlementMode ?? 'REFUND';
             const purchaseReturn = await tx.purchaseReturn.create({
                 data: {
                     debitNoteNo,
@@ -61,6 +77,7 @@ let PurchaseReturnsService = class PurchaseReturnsService {
                     igst: dto.igst ?? 0,
                     totalAmount: dto.totalAmount,
                     status: dto.status ?? 'DRAFT',
+                    settlementMode,
                     notes: dto.notes,
                     createdById: userId,
                     items: {
@@ -79,7 +96,57 @@ let PurchaseReturnsService = class PurchaseReturnsService {
                 },
                 include: { items: true },
             });
+            if (settlementMode === 'ADJUST') {
+                await tx.supplier.update({
+                    where: { id: dto.supplierId },
+                    data: { currentOutstanding: { decrement: dto.totalAmount } },
+                });
+                await tx.purchaseReturn.update({
+                    where: { id: purchaseReturn.id },
+                    data: { status: 'SETTLED' },
+                });
+            }
+            if (/short|excess/i.test(dto.reason ?? '') && dto.grnId) {
+                const grn = await tx.gRN.findUnique({
+                    where: { id: dto.grnId },
+                    select: { poId: true },
+                });
+                if (grn?.poId) {
+                    await this.recomputePoStatus(tx, grn.poId);
+                }
+            }
             return purchaseReturn;
+        });
+    }
+    async recomputePoStatus(tx, poId) {
+        const po = await tx.purchaseOrder.findUnique({
+            where: { id: poId },
+            include: { items: true },
+        });
+        if (!po)
+            return;
+        const allGrns = await tx.gRN.findMany({
+            where: { poId },
+            include: { items: true, purchaseReturns: { include: { items: true } } },
+        });
+        const receivedByProduct = {};
+        const debitedByProduct = {};
+        for (const g of allGrns) {
+            for (const gi of g.items) {
+                receivedByProduct[gi.productId] = (receivedByProduct[gi.productId] ?? 0) + gi.receivedQty + gi.freeQty;
+            }
+            for (const pr of g.purchaseReturns ?? []) {
+                if (/short|excess/i.test(pr.reason ?? '')) {
+                    for (const pi of pr.items) {
+                        debitedByProduct[pi.productId] = (debitedByProduct[pi.productId] ?? 0) + pi.returnedQty;
+                    }
+                }
+            }
+        }
+        const allFulfilled = po.items.every((pi) => ((receivedByProduct[pi.productId] ?? 0) + (debitedByProduct[pi.productId] ?? 0)) >= pi.requiredQty);
+        await tx.purchaseOrder.update({
+            where: { id: poId },
+            data: { status: allFulfilled ? 'FULLY_RECEIVED' : 'PARTIALLY_RECEIVED' },
         });
     }
     findAll(query, branchId) {
@@ -123,10 +190,33 @@ let PurchaseReturnsService = class PurchaseReturnsService {
             data: { status },
         });
     }
+    async linkReplacementGrn(id, replacementGrnId, branchId) {
+        const pr = await this.prisma.purchaseReturn.findUnique({
+            where: { id },
+            include: { items: true },
+        });
+        if (!pr)
+            throw new common_1.NotFoundException('Purchase return not found');
+        if (branchId && pr.branchId && pr.branchId !== branchId) {
+            throw new common_1.NotFoundException('Purchase return not found');
+        }
+        if (pr.settlementMode !== 'REPLACEMENT') {
+            throw new common_1.BadRequestException('This debit note does not use Replacement settlement');
+        }
+        return this.prisma.purchaseReturn.update({
+            where: { id },
+            data: {
+                replacementGrnId,
+                status: 'SETTLED',
+            },
+            include: { items: true },
+        });
+    }
 };
 exports.PurchaseReturnsService = PurchaseReturnsService;
 exports.PurchaseReturnsService = PurchaseReturnsService = __decorate([
     (0, common_1.Injectable)(),
-    __metadata("design:paramtypes", [prisma_service_1.PrismaService])
+    __metadata("design:paramtypes", [prisma_service_1.PrismaService,
+        approvals_service_1.ApprovalsService])
 ], PurchaseReturnsService);
 //# sourceMappingURL=purchase-returns.service.js.map

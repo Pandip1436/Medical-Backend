@@ -12,12 +12,25 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.CustomersService = void 0;
 const common_1 = require("@nestjs/common");
 const prisma_service_1 = require("../prisma/prisma.service");
+const approvals_service_1 = require("../approvals/approvals.service");
 let CustomersService = class CustomersService {
     prisma;
-    constructor(prisma) {
+    approvalsService;
+    constructor(prisma, approvalsService) {
         this.prisma = prisma;
+        this.approvalsService = approvalsService;
     }
-    create(createCustomerDto) {
+    async create(createCustomerDto, user) {
+        if (user?.role === 'PHARMACIST') {
+            const { branchId, ...payload } = createCustomerDto;
+            const req = await this.approvalsService.createRequest({
+                type: 'NEW_CUSTOMER',
+                payload: payload,
+                requestedById: user.userId,
+                branchId,
+            });
+            return { approvalRequested: true, approvalRequestId: req.id };
+        }
         return this.prisma.customer.create({ data: createCustomerDto });
     }
     async findAll(query, branchId) {
@@ -210,6 +223,7 @@ let CustomersService = class CustomersService {
 exports.CustomersService = CustomersService;
 exports.CustomersService = CustomersService = __decorate([
     (0, common_1.Injectable)(),
-    __metadata("design:paramtypes", [prisma_service_1.PrismaService])
+    __metadata("design:paramtypes", [prisma_service_1.PrismaService,
+        approvals_service_1.ApprovalsService])
 ], CustomersService);
 //# sourceMappingURL=customers.service.js.map

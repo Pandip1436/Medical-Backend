@@ -32,6 +32,7 @@ export declare class GrnController {
         supplierInvoiceNo: string;
         supplierInvoiceDate: Date;
         supplierInvoiceAmount: import("@prisma/client/runtime/library").Decimal;
+        isReplacement: boolean;
     }>;
     findAll(req: any, q?: string, branchId?: string): import(".prisma/client").Prisma.PrismaPromise<({
         items: {
@@ -49,6 +50,41 @@ export declare class GrnController {
             expiryDate: Date;
             damageQty: number;
         }[];
+        purchaseReturns: ({
+            items: {
+                id: string;
+                purchaseRate: import("@prisma/client/runtime/library").Decimal;
+                productId: string;
+                productName: string;
+                batchNumber: string;
+                expiryDate: Date;
+                batchId: string;
+                gstPercent: import("@prisma/client/runtime/library").Decimal;
+                amount: import("@prisma/client/runtime/library").Decimal;
+                returnedQty: number;
+                purchaseReturnId: string;
+            }[];
+        } & {
+            id: string;
+            branchId: string | null;
+            createdAt: Date;
+            debitNoteNo: string;
+            date: Date;
+            grnId: string | null;
+            supplierId: string;
+            supplierName: string;
+            reason: string;
+            subtotal: import("@prisma/client/runtime/library").Decimal;
+            cgst: import("@prisma/client/runtime/library").Decimal;
+            sgst: import("@prisma/client/runtime/library").Decimal;
+            igst: import("@prisma/client/runtime/library").Decimal;
+            totalAmount: import("@prisma/client/runtime/library").Decimal;
+            status: import(".prisma/client").$Enums.PurchaseReturnStatus;
+            settlementMode: import(".prisma/client").$Enums.PurchaseReturnSettlement;
+            replacementGrnId: string | null;
+            notes: string | null;
+            createdById: string;
+        })[];
     } & {
         id: string;
         branchId: string | null;
@@ -62,7 +98,28 @@ export declare class GrnController {
         supplierInvoiceNo: string;
         supplierInvoiceDate: Date;
         supplierInvoiceAmount: import("@prisma/client/runtime/library").Decimal;
+        isReplacement: boolean;
     })[]>;
+    backfill(): Promise<{
+        message: string;
+    }>;
+    backfillGrnOrdered(): Promise<{
+        message: string;
+    }>;
+    backfillSupplierOutstanding(): Promise<{
+        message: string;
+    }>;
+    backfillPoStatusDN(): Promise<{
+        message: string;
+    }>;
+    reverseShortDeliveryStock(): Promise<{
+        message: string;
+        fixed: {
+            debitNoteNo: string;
+            reason: string;
+            items: number;
+        }[];
+    }>;
     findOne(id: string, req: any): Promise<{
         items: {
             id: string;
@@ -92,5 +149,6 @@ export declare class GrnController {
         supplierInvoiceNo: string;
         supplierInvoiceDate: Date;
         supplierInvoiceAmount: import("@prisma/client/runtime/library").Decimal;
+        isReplacement: boolean;
     }>;
 }

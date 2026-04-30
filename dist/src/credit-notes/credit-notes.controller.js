@@ -26,7 +26,7 @@ let CreditNotesController = class CreditNotesController {
         this.creditNotesService = creditNotesService;
     }
     create(dto, req) {
-        return this.creditNotesService.create(dto, req.user.userId, req.user.branchId);
+        return this.creditNotesService.create(dto, req.user.userId, req.user.branchId, req.user.role);
     }
     findAll(req, q, customerId, branchId) {
         const effectiveBranchId = req.user.branchId ?? branchId;

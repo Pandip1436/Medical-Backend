@@ -1,6 +1,6 @@
 import { IsString, IsNotEmpty, IsNumber, Min, IsOptional, ValidateNested, ArrayMinSize, IsEnum } from 'class-validator';
 import { Type } from 'class-transformer';
-import { PurchaseReturnStatus } from '@prisma/client';
+import { PurchaseReturnStatus, PurchaseReturnSettlement } from '@prisma/client';
 import { CreatePurchaseReturnItemDto } from './create-purchase-return-item.dto';
 
 export class CreatePurchaseReturnDto {
@@ -51,6 +51,10 @@ export class CreatePurchaseReturnDto {
   @IsEnum(PurchaseReturnStatus)
   @IsOptional()
   status?: PurchaseReturnStatus;
+
+  @IsEnum(PurchaseReturnSettlement)
+  @IsOptional()
+  settlementMode?: PurchaseReturnSettlement;
 
   @IsString()
   @IsOptional()

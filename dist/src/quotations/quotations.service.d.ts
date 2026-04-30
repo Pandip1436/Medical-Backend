@@ -30,8 +30,8 @@ export declare class QuotationsService {
         updatedAt: Date;
         customerName: string;
         customerId: string | null;
-        total: import("@prisma/client/runtime/library").Decimal;
         validUntil: Date | null;
+        total: import("@prisma/client/runtime/library").Decimal;
         quotationNumber: string;
     }>;
     findAll(filters: {
@@ -68,8 +68,8 @@ export declare class QuotationsService {
         updatedAt: Date;
         customerName: string;
         customerId: string | null;
-        total: import("@prisma/client/runtime/library").Decimal;
         validUntil: Date | null;
+        total: import("@prisma/client/runtime/library").Decimal;
         quotationNumber: string;
     })[]>;
     findOne(id: string): Promise<{
@@ -97,12 +97,12 @@ export declare class QuotationsService {
             notes: string | null;
             address: string | null;
             gstin: string | null;
+            currentOutstanding: import("@prisma/client/runtime/library").Decimal;
             alternatePhone: string | null;
             type: import(".prisma/client").$Enums.CustomerType;
             doctorRef: string | null;
             referredBy: string | null;
             creditLimit: import("@prisma/client/runtime/library").Decimal;
-            currentOutstanding: import("@prisma/client/runtime/library").Decimal;
             loyaltyPoints: number;
             dlNumber: string | null;
         } | null;
@@ -118,8 +118,8 @@ export declare class QuotationsService {
         updatedAt: Date;
         customerName: string;
         customerId: string | null;
-        total: import("@prisma/client/runtime/library").Decimal;
         validUntil: Date | null;
+        total: import("@prisma/client/runtime/library").Decimal;
         quotationNumber: string;
     }>;
     update(id: string, data: any): Promise<{
@@ -149,8 +149,8 @@ export declare class QuotationsService {
         updatedAt: Date;
         customerName: string;
         customerId: string | null;
-        total: import("@prisma/client/runtime/library").Decimal;
         validUntil: Date | null;
+        total: import("@prisma/client/runtime/library").Decimal;
         quotationNumber: string;
     }>;
     updateStatus(id: string, status: string): Promise<{
@@ -180,8 +180,8 @@ export declare class QuotationsService {
         updatedAt: Date;
         customerName: string;
         customerId: string | null;
-        total: import("@prisma/client/runtime/library").Decimal;
         validUntil: Date | null;
+        total: import("@prisma/client/runtime/library").Decimal;
         quotationNumber: string;
     }>;
     remove(id: string): Promise<{
@@ -196,8 +196,8 @@ export declare class QuotationsService {
         updatedAt: Date;
         customerName: string;
         customerId: string | null;
-        total: import("@prisma/client/runtime/library").Decimal;
         validUntil: Date | null;
+        total: import("@prisma/client/runtime/library").Decimal;
         quotationNumber: string;
     }>;
     getStats(): Promise<{

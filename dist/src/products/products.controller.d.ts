@@ -38,7 +38,7 @@ export declare class ProductsController {
         totalStock: number;
         categoryId: string | null;
     }>;
-    findAll(req: any, q?: string, categoryId?: string, schedule?: string, skip?: string, take?: string, branchId?: string): Promise<({
+    findAll(req: any, q?: string, categoryId?: string, schedule?: string, skip?: string, take?: string, branchId?: string, status?: string): Promise<({
         batches: {
             id: string;
             createdAt: Date;
@@ -142,7 +142,7 @@ export declare class ProductsController {
         })[];
         total: number;
     }>;
-    getHistory(id: string, req: any): Promise<{
+    getHistory(id: string, req: any, skip?: string, take?: string): Promise<{
         product: {
             id: string;
             name: string;
@@ -164,38 +164,48 @@ export declare class ProductsController {
         summary: {
             salesCount: number;
             purchaseCount: number;
-            totalSoldQty: number;
-            totalPurchasedQty: number;
+            salesReturnCount: any;
+            purchaseReturnCount: any;
+            totalSalesCount: number;
+            totalPurchaseCount: number;
+            totalSalesReturnCount: any;
+            totalPurchaseReturnCount: any;
+            totalSoldQty: any;
+            totalPurchasedQty: any;
+            totalSalesReturnQty: any;
+            totalPurchaseReturnQty: any;
             totalSalesValue: number;
             totalPurchaseValue: number;
             currentStock: number;
         };
         sales: {
-            id: string;
-            invoiceNumber: string;
-            date: Date;
-            customerName: string;
-            status: import(".prisma/client").$Enums.InvoiceStatus;
-            batchNumber: string;
-            quantity: number;
+            id: any;
+            invoiceNumber: any;
+            date: any;
+            customerName: any;
+            status: any;
+            batchNumber: any;
+            quantity: any;
             rate: number;
             amount: number;
             gstPercent: number;
             discountPercent: number;
         }[];
         purchases: {
-            id: string;
-            grnNumber: string;
-            date: Date;
-            supplierName: string;
-            status: import(".prisma/client").$Enums.GRNStatus;
-            batchNumber: string;
-            receivedQty: number;
-            freeQty: number;
+            id: any;
+            grnNumber: any;
+            date: any;
+            supplierName: any;
+            status: any;
+            batchNumber: any;
+            receivedQty: any;
+            freeQty: any;
             purchaseRate: number;
             mrp: number;
             amount: number;
         }[];
+        salesReturns: any;
+        purchaseReturns: any;
     }>;
     findOne(id: string, req: any): Promise<{
         batches: {

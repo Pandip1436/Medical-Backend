@@ -11,4 +11,5 @@ export declare class CreateGrnDto {
     totalAmount: number;
     status: GRNStatus;
     branchId?: string;
+    isReplacement?: boolean;
 }

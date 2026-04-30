@@ -1,9 +1,11 @@
 import { PrismaService } from '../prisma/prisma.service';
+import { ApprovalsService } from '../approvals/approvals.service';
 import { CreateCreditNoteDto } from './dto/create-credit-note.dto';
 export declare class CreditNotesService {
     private readonly prisma;
-    constructor(prisma: PrismaService);
-    create(dto: CreateCreditNoteDto, userId: string, branchId?: string): Promise<{
+    private readonly approvalsService;
+    constructor(prisma: PrismaService, approvalsService: ApprovalsService);
+    create(dto: CreateCreditNoteDto, userId: string, branchId?: string, userRole?: string): Promise<({
         items: {
             id: string;
             productId: string;
@@ -28,14 +30,17 @@ export declare class CreditNotesService {
         sgst: import("@prisma/client/runtime/library").Decimal;
         igst: import("@prisma/client/runtime/library").Decimal;
         totalAmount: import("@prisma/client/runtime/library").Decimal;
+        settlementMode: import(".prisma/client").$Enums.SettlementMode;
         notes: string | null;
         createdById: string;
         invoiceNumber: string;
         customerName: string;
         customerId: string | null;
         creditNoteNo: string;
-        settlementMode: import(".prisma/client").$Enums.SettlementMode;
         invoiceId: string;
+    }) | {
+        approvalRequested: boolean;
+        approvalRequestId: string;
     }>;
     findAll(query?: string, customerId?: string, branchId?: string): import(".prisma/client").Prisma.PrismaPromise<{
         id: string;
@@ -48,13 +53,13 @@ export declare class CreditNotesService {
         sgst: import("@prisma/client/runtime/library").Decimal;
         igst: import("@prisma/client/runtime/library").Decimal;
         totalAmount: import("@prisma/client/runtime/library").Decimal;
+        settlementMode: import(".prisma/client").$Enums.SettlementMode;
         notes: string | null;
         createdById: string;
         invoiceNumber: string;
         customerName: string;
         customerId: string | null;
         creditNoteNo: string;
-        settlementMode: import(".prisma/client").$Enums.SettlementMode;
         invoiceId: string;
     }[]>;
     findOne(id: string, branchId?: string): Promise<{
@@ -111,13 +116,13 @@ export declare class CreditNotesService {
         sgst: import("@prisma/client/runtime/library").Decimal;
         igst: import("@prisma/client/runtime/library").Decimal;
         totalAmount: import("@prisma/client/runtime/library").Decimal;
+        settlementMode: import(".prisma/client").$Enums.SettlementMode;
         notes: string | null;
         createdById: string;
         invoiceNumber: string;
         customerName: string;
         customerId: string | null;
         creditNoteNo: string;
-        settlementMode: import(".prisma/client").$Enums.SettlementMode;
         invoiceId: string;
     }>;
 }

@@ -27,7 +27,7 @@ let BillingController = class BillingController {
     }
     create(createInvoiceDto, req, branchId) {
         const effectiveBranchId = req.user.branchId ?? branchId;
-        return this.billingService.create(createInvoiceDto, req.user.userId, effectiveBranchId);
+        return this.billingService.create(createInvoiceDto, req.user.userId, effectiveBranchId, req.user.role);
     }
     findAll(req, q, customerId, branchId, type) {
         const effectiveBranchId = req.user.branchId ?? branchId;

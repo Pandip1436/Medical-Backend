@@ -27,6 +27,7 @@ import { QuotationsModule } from './quotations/quotations.module';
 import { CategoriesModule } from './categories/categories.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { RemindersModule } from './reminders/reminders.module';
+import { ApprovalsModule } from './approvals/approvals.module';
 import { ServeStaticModule } from '@nestjs/serve-static';
 import { join } from 'path';
 
@@ -60,6 +61,7 @@ import { join } from 'path';
     CategoriesModule,
     NotificationsModule,
     RemindersModule,
+    ApprovalsModule,
   ],
   controllers: [AppController],
   providers: [
