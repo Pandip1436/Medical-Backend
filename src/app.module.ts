@@ -28,6 +28,7 @@ import { CategoriesModule } from './categories/categories.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { RemindersModule } from './reminders/reminders.module';
 import { ApprovalsModule } from './approvals/approvals.module';
+import { CommonServicesModule } from './common/services/common-services.module';
 import { ServeStaticModule } from '@nestjs/serve-static';
 import { join } from 'path';
 
@@ -40,6 +41,7 @@ import { join } from 'path';
     }),
     AuthModule,
     PrismaModule,
+    CommonServicesModule,
     UsersModule,
     CustomersModule,
     SuppliersModule,

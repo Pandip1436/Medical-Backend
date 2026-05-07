@@ -509,6 +509,11 @@ model PurchaseReturn {
   notes             String?
   createdById       String
   createdAt         DateTime                   @default(now())
+
+  // Set when an admin reversal has put back the wrongly-deducted stock for
+  // this short-delivery debit note. Prevents the reverse endpoint from
+  // adding the same qty twice on repeated calls.
+  stockReversedAt   DateTime?
 }
 
 enum PurchaseReturnSettlement {
@@ -560,6 +565,22 @@ model GlobalSetting {
   key       String   @unique
   value     Json
   updatedAt DateTime @updatedAt
+}
+
+// ── Document Numbering ────────────────────────────────────────
+// Atomic counter per (docType, branchScope, financialYear). Concurrent
+// creators serialize on the same row via INSERT...ON CONFLICT DO UPDATE,
+// which guarantees no duplicate numbers under load.
+model DocumentSequence {
+  id            String   @id @default(cuid())
+  key           String   @unique // "PO:<branchId|GLOBAL>:<FY>"
+  docType       String   // PO | GRN | DN
+  branchId      String?
+  financialYear String   // e.g. "26-27"
+  counter       Int      @default(0)
+  updatedAt     DateTime @updatedAt
+
+  @@index([docType, branchId, financialYear])
 }
 
 // ── Discount Rules ────────────────────────────────────────────

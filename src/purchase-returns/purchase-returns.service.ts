@@ -1,6 +1,12 @@
-import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
+import {
+  Injectable,
+  NotFoundException,
+  BadRequestException,
+} from '@nestjs/common';
+import { Prisma, PurchaseReturnStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { ApprovalsService } from '../approvals/approvals.service';
+import { DocumentNumberingService } from '../common/services/document-numbering.service';
 import { CreatePurchaseReturnDto } from './dto/create-purchase-return.dto';
 
 @Injectable()
@@ -8,9 +14,15 @@ export class PurchaseReturnsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly approvalsService: ApprovalsService,
+    private readonly numbering: DocumentNumberingService,
   ) {}
 
-  async create(dto: CreatePurchaseReturnDto, userId: string, userBranchId?: string, userRole?: string) {
+  async create(
+    dto: CreatePurchaseReturnDto,
+    userId: string,
+    userBranchId?: string,
+    userRole?: string,
+  ) {
     // PHARMACIST and INVENTORY_MANAGER must request approval
     if (userRole === 'PHARMACIST' || userRole === 'INVENTORY_MANAGER') {
       const req = await this.approvalsService.createRequest({
@@ -26,7 +38,10 @@ export class PurchaseReturnsService {
       // Inherit branchId from the linked GRN if available, fall back to user branch
       let branchId: string | null = userBranchId ?? null;
       if (dto.grnId) {
-        const grn = await tx.gRN.findUnique({ where: { id: dto.grnId }, select: { branchId: true } });
+        const grn = await tx.gRN.findUnique({
+          where: { id: dto.grnId },
+          select: { branchId: true },
+        });
         if (grn) {
           if (userBranchId && grn.branchId && grn.branchId !== userBranchId) {
             throw new NotFoundException('GRN not found');
@@ -38,13 +53,19 @@ export class PurchaseReturnsService {
       // Short delivery = goods never arrived → no physical stock to deduct.
       // All other reasons (damaged, expiry, wrong, quality, excess, recall) involve
       // physical goods being returned, so stock IS deducted.
-      const isShortDelivery = /short.*delivery|short.*supply/i.test(dto.reason ?? '');
+      const isShortDelivery = /short.*delivery|short.*supply/i.test(
+        dto.reason ?? '',
+      );
 
       for (const item of dto.items) {
         if (isShortDelivery) continue; // skip stock movement for short delivery
-        const batch = await tx.batch.findUnique({ where: { id: item.batchId } });
+        const batch = await tx.batch.findUnique({
+          where: { id: item.batchId },
+        });
         if (!batch) {
-          throw new NotFoundException(`Batch ${item.batchNumber} for ${item.productName} not found`);
+          throw new NotFoundException(
+            `Batch ${item.batchNumber} for ${item.productName} not found`,
+          );
         }
         if (batch.quantity < item.returnedQty) {
           throw new BadRequestException(
@@ -61,8 +82,16 @@ export class PurchaseReturnsService {
         });
       }
 
-      const debitNoteNo = `DN-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+      const debitNoteNo = await this.numbering.nextNumber(tx, 'DN', branchId);
       const settlementMode = dto.settlementMode ?? 'REFUND';
+
+      // Strip a "Settlement Preference: ..." prefix the FE used to splice into
+      // the notes string — the structured `settlementMode` field is the source
+      // of truth now. (Defensive: harmless if the FE has already stopped doing it.)
+      const cleanedNotes =
+        (dto.notes ?? '')
+          .replace(/^\s*Settlement(?: Preference)?:\s*[^\n;|]*[\s|;]*/i, '')
+          .trim() || undefined;
 
       const purchaseReturn = await tx.purchaseReturn.create({
         data: {
@@ -79,8 +108,12 @@ export class PurchaseReturnsService {
           totalAmount: dto.totalAmount,
           status: dto.status ?? 'DRAFT',
           settlementMode,
-          notes: dto.notes,
+          notes: cleanedNotes,
           createdById: userId,
+          // Short-delivery DNs created with the new code never deducted stock,
+          // so mark them as already-reversed. Prevents the admin sweep from
+          // ever incrementing stock for these (would be a phantom +qty).
+          stockReversedAt: isShortDelivery ? new Date() : null,
           items: {
             create: dto.items.map((it) => ({
               productId: it.productId,
@@ -102,7 +135,7 @@ export class PurchaseReturnsService {
       if (settlementMode === 'ADJUST') {
         await tx.supplier.update({
           where: { id: dto.supplierId },
-          data: { currentOutstanding: { decrement: dto.totalAmount } as any },
+          data: { currentOutstanding: { decrement: dto.totalAmount } },
         });
         await tx.purchaseReturn.update({
           where: { id: purchaseReturn.id },
@@ -127,7 +160,7 @@ export class PurchaseReturnsService {
   }
 
   // Recompute PO status considering both GRN deliveries AND short-delivery debit notes
-  private async recomputePoStatus(tx: any, poId: string) {
+  private async recomputePoStatus(tx: Prisma.TransactionClient, poId: string) {
     const po = await tx.purchaseOrder.findUnique({
       where: { id: poId },
       include: { items: true },
@@ -144,20 +177,24 @@ export class PurchaseReturnsService {
     const debitedByProduct: Record<string, number> = {};
     for (const g of allGrns) {
       for (const gi of g.items) {
-        receivedByProduct[gi.productId] = (receivedByProduct[gi.productId] ?? 0) + gi.receivedQty + gi.freeQty;
+        receivedByProduct[gi.productId] =
+          (receivedByProduct[gi.productId] ?? 0) + gi.receivedQty + gi.freeQty;
       }
       for (const pr of g.purchaseReturns ?? []) {
         if (/short|excess/i.test(pr.reason ?? '')) {
           for (const pi of pr.items) {
-            debitedByProduct[pi.productId] = (debitedByProduct[pi.productId] ?? 0) + pi.returnedQty;
+            debitedByProduct[pi.productId] =
+              (debitedByProduct[pi.productId] ?? 0) + pi.returnedQty;
           }
         }
       }
     }
 
     const allFulfilled = po.items.every(
-      (pi: any) =>
-        ((receivedByProduct[pi.productId] ?? 0) + (debitedByProduct[pi.productId] ?? 0)) >= pi.requiredQty
+      (pi) =>
+        (receivedByProduct[pi.productId] ?? 0) +
+          (debitedByProduct[pi.productId] ?? 0) >=
+        pi.requiredQty,
     );
 
     await tx.purchaseOrder.update({
@@ -167,7 +204,7 @@ export class PurchaseReturnsService {
   }
 
   findAll(query?: string, branchId?: string) {
-    const where: any = {};
+    const where: Prisma.PurchaseReturnWhereInput = {};
     if (branchId) where.branchId = branchId;
     if (query) {
       where.OR = [
@@ -175,11 +212,11 @@ export class PurchaseReturnsService {
         { supplierName: { contains: query, mode: 'insensitive' } },
       ];
     }
-    return this.prisma.purchaseReturn.findMany({ 
-      where, 
-      orderBy: { date: 'desc' }, 
+    return this.prisma.purchaseReturn.findMany({
+      where,
+      orderBy: { date: 'desc' },
       take: 50,
-      include: { items: true, grn: true }
+      include: { items: true, grn: true },
     });
   }
 
@@ -195,7 +232,11 @@ export class PurchaseReturnsService {
     return pr;
   }
 
-  async updateStatus(id: string, status: any, branchId?: string) {
+  async updateStatus(
+    id: string,
+    status: PurchaseReturnStatus,
+    branchId?: string,
+  ) {
     const pr = await this.prisma.purchaseReturn.findUnique({ where: { id } });
     if (!pr) throw new NotFoundException('Purchase return not found');
     if (branchId && pr.branchId && pr.branchId !== branchId) {
@@ -210,7 +251,11 @@ export class PurchaseReturnsService {
   }
 
   // Called after a replacement GRN is confirmed — links the GRN and marks return SETTLED
-  async linkReplacementGrn(id: string, replacementGrnId: string, branchId?: string) {
+  async linkReplacementGrn(
+    id: string,
+    replacementGrnId: string,
+    branchId?: string,
+  ) {
     const pr = await this.prisma.purchaseReturn.findUnique({
       where: { id },
       include: { items: true },
@@ -219,8 +264,36 @@ export class PurchaseReturnsService {
     if (branchId && pr.branchId && pr.branchId !== branchId) {
       throw new NotFoundException('Purchase return not found');
     }
-    if ((pr as any).settlementMode !== 'REPLACEMENT') {
-      throw new BadRequestException('This debit note does not use Replacement settlement');
+    if (pr.settlementMode !== 'REPLACEMENT') {
+      throw new BadRequestException(
+        'This debit note does not use Replacement settlement',
+      );
+    }
+
+    // Validate the replacement GRN: must exist, must be in the caller's branch
+    // scope, must belong to the same supplier, and must be flagged isReplacement.
+    const replacementGrn = await this.prisma.gRN.findUnique({
+      where: { id: replacementGrnId },
+    });
+    if (!replacementGrn) {
+      throw new BadRequestException('Replacement GRN not found');
+    }
+    if (
+      branchId &&
+      replacementGrn.branchId &&
+      replacementGrn.branchId !== branchId
+    ) {
+      throw new BadRequestException('Replacement GRN is not in this branch');
+    }
+    if (replacementGrn.supplierId !== pr.supplierId) {
+      throw new BadRequestException(
+        'Replacement GRN supplier does not match the debit note supplier',
+      );
+    }
+    if (!replacementGrn.isReplacement) {
+      throw new BadRequestException(
+        'Linked GRN is not flagged as a replacement receipt',
+      );
     }
 
     return this.prisma.purchaseReturn.update({
@@ -228,7 +301,7 @@ export class PurchaseReturnsService {
       data: {
         replacementGrnId,
         status: 'SETTLED',
-      } as any,
+      },
       include: { items: true },
     });
   }

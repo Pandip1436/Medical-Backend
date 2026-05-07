@@ -263,7 +263,17 @@ export class ProductsService {
     const totalSalesValue = salesItems.reduce((sum: number, i: any) => sum + Number(i.amount), 0);
     const totalPurchaseValue = purchaseItems.reduce((sum: number, i: any) => sum + Number(i.purchaseRate) * i.receivedQty, 0);
     const totalSalesReturnQty = salesReturnItems.reduce((sum: number, i: any) => sum + i.returnedQty, 0);
-    const totalPurchaseReturnQty = purchaseReturnItems.reduce((sum: number, i: any) => sum + i.returnedQty, 0);
+    // Short-delivery debit notes are financial-only (goods never arrived), so
+    // they don't represent a return of physical stock. Exclude them from this
+    // count so the "returned to supplier" stat reflects real movements.
+    const SHORT_DELIVERY_RE = /short.*delivery|short.*supply/i;
+    const totalPurchaseReturnQty = purchaseReturnItems.reduce(
+      (sum: number, i: any) =>
+        SHORT_DELIVERY_RE.test(i.purchaseReturn?.reason ?? '')
+          ? sum
+          : sum + i.returnedQty,
+      0,
+    );
     const activeBatches = product.batches.filter((b) => b.quantity > 0).length;
 
     return {

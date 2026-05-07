@@ -1,4 +1,11 @@
-import { IsString, IsNotEmpty, IsEnum, IsEmail, IsOptional, IsBoolean } from 'class-validator';
+import {
+  IsString,
+  IsNotEmpty,
+  IsEnum,
+  IsEmail,
+  IsOptional,
+  IsBoolean,
+} from 'class-validator';
 import { PaymentTerms } from '@prisma/client';
 
 export class CreateSupplierDto {

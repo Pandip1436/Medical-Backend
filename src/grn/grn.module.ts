@@ -4,6 +4,6 @@ import { GrnController } from './grn.controller';
 
 @Module({
   providers: [GrnService],
-  controllers: [GrnController]
+  controllers: [GrnController],
 })
 export class GrnModule {}

@@ -1,22 +1,74 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import {
+  Injectable,
+  NotFoundException,
+  BadRequestException,
+} from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { DocumentNumberingService } from '../common/services/document-numbering.service';
 import { CreateGrnDto } from './dto/create-grn.dto';
 
 @Injectable()
 export class GrnService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly numbering: DocumentNumberingService,
+  ) {}
 
   async create(createGrnDto: CreateGrnDto, branchId?: string) {
     const effectiveBranchId = branchId ?? createGrnDto.branchId;
     return this.prisma.$transaction(async (tx) => {
-      // 1. Generate unique GRN number
-      const grnNumber = `GRN-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+      // 1. Generate unique GRN number (atomic per branch+FY)
+      const grnNumber = await this.numbering.nextNumber(
+        tx,
+        'GRN',
+        effectiveBranchId ?? null,
+      );
+
+      // 1b. If linked to a PO, validate that no item over-receives the
+      // remaining ordered qty across all GRNs for that PO.
+      if (createGrnDto.poId) {
+        const po = await tx.purchaseOrder.findUnique({
+          where: { id: createGrnDto.poId },
+          include: { items: true },
+        });
+        if (!po)
+          throw new BadRequestException('Linked Purchase Order not found');
+
+        const priorGrns = await tx.gRN.findMany({
+          where: { poId: createGrnDto.poId },
+          include: { items: true },
+        });
+        const priorByProduct: Record<string, number> = {};
+        for (const g of priorGrns) {
+          for (const gi of g.items) {
+            priorByProduct[gi.productId] =
+              (priorByProduct[gi.productId] ?? 0) + gi.receivedQty + gi.freeQty;
+          }
+        }
+        const requiredByProduct: Record<string, number> = {};
+        for (const pi of po.items)
+          requiredByProduct[pi.productId] = pi.requiredQty;
+
+        for (const item of createGrnDto.items) {
+          const required = requiredByProduct[item.productId];
+          if (required === undefined) continue; // direct-add line not on PO — allowed
+          const alreadyReceived = priorByProduct[item.productId] ?? 0;
+          const remaining = Math.max(0, required - alreadyReceived);
+          const incoming = item.receivedQty + item.freeQty;
+          if (incoming > remaining) {
+            throw new BadRequestException(
+              `Cannot receive ${incoming} of ${item.productName}: only ${remaining} remaining on PO (ordered ${required}, already received ${alreadyReceived})`,
+            );
+          }
+        }
+      }
 
       // 2. Loop through GRN items and process Stock and Batches
       for (const item of createGrnDto.items) {
         // Calculate the valid stock addition (We do NOT subtract damageQty here, because damaged goods must formally pass through Purchase Returns to generate a Debit Note)
         const addedStock = item.receivedQty + item.freeQty;
-        
+
         if (addedStock > 0) {
           // A. Create a new Batch mapped to this GRN and Product
           await tx.batch.create({
@@ -29,23 +81,23 @@ export class GrnService {
               mrp: item.mrp,
               purchaseRate: item.purchaseRate,
               supplierId: createGrnDto.supplierId,
-            }
+            },
           });
 
           // B. Update master Product totalStock, and maybe update lastPurchaseRate
           await tx.product.update({
             where: { id: item.productId },
-            data: { 
+            data: {
               totalStock: { increment: addedStock },
               purchaseRate: item.purchaseRate, // Update to latest purchase rate
-              mrp: item.mrp // Update to latest MRP
-            }
+              mrp: item.mrp, // Update to latest MRP
+            },
           });
         }
       }
 
       // 3. Create the GRN Header record
-      const isReplacement = (createGrnDto as any).isReplacement === true;
+      const isReplacement = createGrnDto.isReplacement === true;
       const grn = await tx.gRN.create({
         data: {
           grnNumber,
@@ -60,7 +112,7 @@ export class GrnService {
           branchId: effectiveBranchId,
           isReplacement,
           items: {
-            create: createGrnDto.items.map(item => ({
+            create: createGrnDto.items.map((item) => ({
               productId: item.productId,
               productName: item.productName,
               orderedQty: item.orderedQty,
@@ -71,11 +123,11 @@ export class GrnService {
               expiryDate: new Date(item.expiryDate),
               purchaseRate: item.purchaseRate,
               mrp: item.mrp,
-              damageQty: item.damageQty
-            }))
-          }
-        } as any,
-        include: { items: true }
+              damageQty: item.damageQty,
+            })),
+          },
+        },
+        include: { items: true },
       });
 
       // 3.5 Increment supplier outstanding (we owe them for received goods on credit)
@@ -83,10 +135,14 @@ export class GrnService {
       if (!isReplacement && createGrnDto.supplierInvoiceAmount > 0) {
         await tx.supplier.update({
           where: { id: createGrnDto.supplierId },
-          data: { currentOutstanding: { increment: createGrnDto.supplierInvoiceAmount } as any },
+          data: {
+            currentOutstanding: {
+              increment: createGrnDto.supplierInvoiceAmount,
+            },
+          },
         });
       }
-      
+
       // 4. Update PO status and PurchaseOrderItem.receivedQty
       if (createGrnDto.poId) {
         const po = await tx.purchaseOrder.findUnique({
@@ -102,7 +158,10 @@ export class GrnService {
           const receivedByProduct: Record<string, number> = {};
           for (const g of allGrns) {
             for (const gi of g.items) {
-              receivedByProduct[gi.productId] = (receivedByProduct[gi.productId] ?? 0) + gi.receivedQty + gi.freeQty;
+              receivedByProduct[gi.productId] =
+                (receivedByProduct[gi.productId] ?? 0) +
+                gi.receivedQty +
+                gi.freeQty;
             }
           }
           // Update each PO item's receivedQty
@@ -116,11 +175,13 @@ export class GrnService {
             }
           }
           const allFulfilled = po.items.every(
-            (pi) => (receivedByProduct[pi.productId] ?? 0) >= pi.requiredQty
+            (pi) => (receivedByProduct[pi.productId] ?? 0) >= pi.requiredQty,
           );
           await tx.purchaseOrder.update({
             where: { id: createGrnDto.poId },
-            data: { status: allFulfilled ? 'FULLY_RECEIVED' : 'PARTIALLY_RECEIVED' },
+            data: {
+              status: allFulfilled ? 'FULLY_RECEIVED' : 'PARTIALLY_RECEIVED',
+            },
           });
         }
       }
@@ -129,8 +190,13 @@ export class GrnService {
     });
   }
 
-  findAll(query?: string, branchId?: string) {
-    const where: any = {};
+  async findAll(
+    query?: string,
+    branchId?: string,
+    page?: number,
+    pageSize?: number,
+  ) {
+    const where: Prisma.GRNWhereInput = {};
     if (branchId) where.branchId = branchId;
     if (query) {
       where.OR = [
@@ -139,31 +205,62 @@ export class GrnService {
         { supplierInvoiceNo: { contains: query, mode: 'insensitive' } },
       ];
     }
-    return this.prisma.gRN.findMany({
-      where,
-      include: { items: true, purchaseReturns: { include: { items: true } } },
-      orderBy: { date: 'desc' },
-    });
+    const include = {
+      items: true,
+      purchaseReturns: { include: { items: true } },
+    } satisfies Prisma.GRNInclude;
+    const orderBy = {
+      date: 'desc' as const,
+    } satisfies Prisma.GRNOrderByWithRelationInput;
+
+    // Backwards-compatible: if no page is requested, return the full array as
+    // before so existing FE callers keep working.
+    if (!page || page < 1) {
+      return this.prisma.gRN.findMany({ where, include, orderBy });
+    }
+    const safeSize = Math.min(Math.max(pageSize ?? 20, 1), 200);
+    const [items, total] = await Promise.all([
+      this.prisma.gRN.findMany({
+        where,
+        include,
+        orderBy,
+        skip: (page - 1) * safeSize,
+        take: safeSize,
+      }),
+      this.prisma.gRN.count({ where }),
+    ]);
+    return { items, total, page, pageSize: safeSize };
   }
 
   async reverseShortDeliveryStockDeduction() {
-    // Find all PurchaseReturns where reason indicates short delivery (no physical goods).
-    // Add the wrongly-deducted qty back to batch.quantity and product.totalStock.
+    // Find PurchaseReturns whose reason indicates short delivery (no physical
+    // goods) AND that haven't already been reversed. The stockReversedAt flag
+    // makes this idempotent — re-running won't double-add stock.
     const allReturns = await this.prisma.purchaseReturn.findMany({
       include: { items: true },
     });
-    const shortReturns = allReturns.filter((pr) =>
-      /short.*delivery|short.*supply/i.test(pr.reason ?? ''),
+    const shortReturns = allReturns.filter(
+      (pr) =>
+        /short.*delivery|short.*supply/i.test(pr.reason ?? '') &&
+        !pr.stockReversedAt,
     );
 
     let batchesFixed = 0;
     let productsFixed = 0;
-    const fixed: Array<{ debitNoteNo: string; reason: string; items: number }> = [];
+    const fixed: Array<{ debitNoteNo: string; reason: string; items: number }> =
+      [];
+    const skipped = allReturns.filter(
+      (pr) =>
+        /short.*delivery|short.*supply/i.test(pr.reason ?? '') &&
+        pr.stockReversedAt,
+    ).length;
 
     for (const pr of shortReturns) {
       for (const item of pr.items) {
         // Re-add to batch
-        const batch = await this.prisma.batch.findUnique({ where: { id: item.batchId } });
+        const batch = await this.prisma.batch.findUnique({
+          where: { id: item.batchId },
+        });
         if (batch) {
           await this.prisma.batch.update({
             where: { id: item.batchId },
@@ -172,24 +269,42 @@ export class GrnService {
           batchesFixed++;
         }
         // Re-add to product totalStock
-        await this.prisma.product.update({
-          where: { id: item.productId },
-          data: { totalStock: { increment: item.returnedQty } },
-        }).catch(() => {});
+        await this.prisma.product
+          .update({
+            where: { id: item.productId },
+            data: { totalStock: { increment: item.returnedQty } },
+          })
+          .catch(() => {});
         productsFixed++;
       }
-      fixed.push({ debitNoteNo: pr.debitNoteNo, reason: pr.reason, items: pr.items.length });
+      // Mark this DN as reversed so a re-run won't add the qty again.
+      await this.prisma.purchaseReturn.update({
+        where: { id: pr.id },
+        data: { stockReversedAt: new Date() },
+      });
+      fixed.push({
+        debitNoteNo: pr.debitNoteNo,
+        reason: pr.reason,
+        items: pr.items.length,
+      });
     }
 
+    const skipNote =
+      skipped > 0 ? ` Skipped ${skipped} already-reversed debit note(s).` : '';
     return {
-      message: `Reversed stock deduction for ${shortReturns.length} short-delivery debit note(s). ${batchesFixed} batch updates, ${productsFixed} product stock updates.`,
+      message:
+        `Reversed stock deduction for ${shortReturns.length} short-delivery debit note(s). ` +
+        `${batchesFixed} batch updates, ${productsFixed} product stock updates.${skipNote}`,
       fixed,
+      skipped,
     };
   }
 
   async backfillPoStatusWithDebitNotes() {
     // Recompute every PO's status considering both GRN deliveries AND short-delivery debit notes
-    const pos = await this.prisma.purchaseOrder.findMany({ include: { items: true } });
+    const pos = await this.prisma.purchaseOrder.findMany({
+      include: { items: true },
+    });
     let updated = 0;
     for (const po of pos) {
       const allGrns = await this.prisma.gRN.findMany({
@@ -202,21 +317,32 @@ export class GrnService {
       const debitedByProduct: Record<string, number> = {};
       for (const g of allGrns) {
         for (const gi of g.items) {
-          receivedByProduct[gi.productId] = (receivedByProduct[gi.productId] ?? 0) + gi.receivedQty + gi.freeQty;
+          receivedByProduct[gi.productId] =
+            (receivedByProduct[gi.productId] ?? 0) +
+            gi.receivedQty +
+            gi.freeQty;
         }
         for (const pr of g.purchaseReturns ?? []) {
           if (/short|excess/i.test(pr.reason ?? '')) {
             for (const pi of pr.items) {
-              debitedByProduct[pi.productId] = (debitedByProduct[pi.productId] ?? 0) + pi.returnedQty;
+              debitedByProduct[pi.productId] =
+                (debitedByProduct[pi.productId] ?? 0) + pi.returnedQty;
             }
           }
         }
       }
       const allFulfilled = po.items.every(
-        (pi) => ((receivedByProduct[pi.productId] ?? 0) + (debitedByProduct[pi.productId] ?? 0)) >= pi.requiredQty
+        (pi) =>
+          (receivedByProduct[pi.productId] ?? 0) +
+            (debitedByProduct[pi.productId] ?? 0) >=
+          pi.requiredQty,
       );
       const expected = allFulfilled ? 'FULLY_RECEIVED' : 'PARTIALLY_RECEIVED';
-      if (po.status !== expected && po.status !== 'CLOSED' && po.status !== 'DRAFT') {
+      if (
+        po.status !== expected &&
+        po.status !== 'CLOSED' &&
+        po.status !== 'DRAFT'
+      ) {
         await this.prisma.purchaseOrder.update({
           where: { id: po.id },
           data: { status: expected },
@@ -224,7 +350,9 @@ export class GrnService {
         updated++;
       }
     }
-    return { message: `PO status backfill (with debit notes) complete. ${updated} POs updated.` };
+    return {
+      message: `PO status backfill (with debit notes) complete. ${updated} POs updated.`,
+    };
   }
 
   async backfillSupplierOutstanding() {
@@ -236,21 +364,30 @@ export class GrnService {
       const grns = await this.prisma.gRN.findMany({
         where: { supplierId: s.id },
       });
-      const grnSum = grns.reduce((acc, g) => acc + ((g as any).isReplacement ? 0 : Number(g.supplierInvoiceAmount)), 0);
+      const grnSum = grns.reduce(
+        (acc, g) =>
+          acc + (g.isReplacement ? 0 : Number(g.supplierInvoiceAmount)),
+        0,
+      );
       const adjustReturns = await this.prisma.purchaseReturn.findMany({
-        where: { supplierId: s.id, settlementMode: 'ADJUST' as any },
+        where: { supplierId: s.id, settlementMode: 'ADJUST' },
       });
-      const adjustSum = adjustReturns.reduce((acc, r) => acc + Number(r.totalAmount), 0);
+      const adjustSum = adjustReturns.reduce(
+        (acc, r) => acc + Number(r.totalAmount),
+        0,
+      );
       const expected = Math.max(0, grnSum - adjustSum);
       if (Number(s.currentOutstanding) !== expected) {
         await this.prisma.supplier.update({
           where: { id: s.id },
-          data: { currentOutstanding: expected as any },
+          data: { currentOutstanding: expected },
         });
         updated++;
       }
     }
-    return { message: `Supplier outstanding backfill complete. ${updated} suppliers updated.` };
+    return {
+      message: `Supplier outstanding backfill complete. ${updated} suppliers updated.`,
+    };
   }
 
   async backfillGrnOrderedQty() {
@@ -287,7 +424,8 @@ export class GrnService {
             });
             updated++;
           }
-          cumulativeReceived[gi.productId] = alreadyReceived + gi.receivedQty + gi.freeQty;
+          cumulativeReceived[gi.productId] =
+            alreadyReceived + gi.receivedQty + gi.freeQty;
         }
       }
     }
@@ -309,7 +447,10 @@ export class GrnService {
       const receivedByProduct: Record<string, number> = {};
       for (const g of allGrns) {
         for (const gi of g.items) {
-          receivedByProduct[gi.productId] = (receivedByProduct[gi.productId] ?? 0) + gi.receivedQty + gi.freeQty;
+          receivedByProduct[gi.productId] =
+            (receivedByProduct[gi.productId] ?? 0) +
+            gi.receivedQty +
+            gi.freeQty;
         }
       }
       for (const pi of po.items) {
@@ -323,10 +464,16 @@ export class GrnService {
         }
       }
       const allFulfilled = po.items.every(
-        (pi) => (receivedByProduct[pi.productId] ?? 0) >= pi.requiredQty
+        (pi) => (receivedByProduct[pi.productId] ?? 0) >= pi.requiredQty,
       );
-      const expectedStatus = allFulfilled ? 'FULLY_RECEIVED' : 'PARTIALLY_RECEIVED';
-      if (po.status !== expectedStatus && po.status !== 'CLOSED' && po.status !== 'DRAFT') {
+      const expectedStatus = allFulfilled
+        ? 'FULLY_RECEIVED'
+        : 'PARTIALLY_RECEIVED';
+      if (
+        po.status !== expectedStatus &&
+        po.status !== 'CLOSED' &&
+        po.status !== 'DRAFT'
+      ) {
         await this.prisma.purchaseOrder.update({
           where: { id: po.id },
           data: { status: expectedStatus },
@@ -339,7 +486,7 @@ export class GrnService {
   async findOne(id: string, branchId?: string) {
     const grn = await this.prisma.gRN.findUnique({
       where: { id },
-      include: { items: true }
+      include: { items: true },
     });
     if (!grn) throw new NotFoundException('GRN not found');
     if (branchId && grn.branchId && grn.branchId !== branchId) {
