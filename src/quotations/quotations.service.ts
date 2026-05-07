@@ -1,44 +1,57 @@
-import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
+import {
+  Injectable,
+  NotFoundException,
+  BadRequestException,
+} from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { DocumentNumberingService } from '../common/services/document-numbering.service';
 import { CreateQuotationDto } from './dto/create-quotation.dto';
 
 @Injectable()
 export class QuotationsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly numbering: DocumentNumberingService,
+  ) {}
 
-  async create(dto: CreateQuotationDto) {
-    const count = await this.prisma.quotation.count();
-    const seq = count + 1;
-    const quotationNumber = `HS/25-26/QTN/${String(seq).padStart(5, '0')}`;
-
-    return this.prisma.quotation.create({
-      data: {
-        quotationNumber,
-        customerId: dto.customerId || null,
-        customerName: dto.customerName,
-        subtotal: dto.subtotal,
-        cgst: dto.cgst,
-        sgst: dto.sgst,
-        total: dto.total,
-        validUntil: dto.validUntil ? new Date(dto.validUntil) : null,
-        notes: dto.notes,
-        status: 'DRAFT',
-        items: {
-          create: dto.items.map(item => ({
-            productId: item.productId || null,
-            productName: item.productName,
-            batchId: item.batchId || null,
-            batchNumber: item.batchNumber || null,
-            quantity: item.quantity,
-            mrp: item.mrp || 0,
-            rate: item.rate,
-            discountPercent: item.discountPercent || 0,
-            gstPercent: item.gstPercent || 0,
-            amount: item.amount,
-          })),
+  async create(dto: CreateQuotationDto, branchId?: string) {
+    return this.prisma.$transaction(async (tx) => {
+      const quotationNumber = await this.numbering.nextNumber(
+        tx,
+        'QTN',
+        branchId ?? null,
+      );
+      return tx.quotation.create({
+        data: {
+          quotationNumber,
+          branchId,
+          customerId: dto.customerId || null,
+          customerName: dto.customerName,
+          subtotal: dto.subtotal,
+          cgst: dto.cgst,
+          sgst: dto.sgst,
+          total: dto.total,
+          validUntil: dto.validUntil ? new Date(dto.validUntil) : null,
+          notes: dto.notes,
+          status: 'DRAFT',
+          items: {
+            create: dto.items.map((item) => ({
+              productId: item.productId || null,
+              productName: item.productName,
+              batchId: item.batchId || null,
+              batchNumber: item.batchNumber || null,
+              quantity: item.quantity,
+              mrp: item.mrp || 0,
+              rate: item.rate,
+              discountPercent: item.discountPercent || 0,
+              gstPercent: item.gstPercent || 0,
+              amount: item.amount,
+            })),
+          },
         },
-      },
-      include: { items: true },
+        include: { items: true },
+      });
     });
   }
 
@@ -49,8 +62,11 @@ export class QuotationsService {
     status?: string;
     amountMin?: number;
     amountMax?: number;
+    branchId?: string;
   }) {
-    const where: any = {};
+    const where: Prisma.QuotationWhereInput = {};
+
+    if (filters.branchId) where.branchId = filters.branchId;
 
     if (filters.q) {
       where.OR = [
@@ -60,21 +76,23 @@ export class QuotationsService {
     }
 
     if (filters.fromDate || filters.toDate) {
-      where.date = {};
-      if (filters.fromDate) where.date.gte = new Date(filters.fromDate);
+      const dateFilter: Prisma.DateTimeFilter = {};
+      if (filters.fromDate) dateFilter.gte = new Date(filters.fromDate);
       if (filters.toDate) {
         const toDate = new Date(filters.toDate);
         toDate.setHours(23, 59, 59, 999);
-        where.date.lte = toDate;
+        dateFilter.lte = toDate;
       }
+      where.date = dateFilter;
     }
 
-    if (filters.status) where.status = filters.status;
+    if (filters.status) where.status = filters.status as Prisma.QuotationWhereInput['status'];
 
     if (filters.amountMin !== undefined || filters.amountMax !== undefined) {
-      where.total = {};
-      if (filters.amountMin !== undefined) where.total.gte = filters.amountMin;
-      if (filters.amountMax !== undefined) where.total.lte = filters.amountMax;
+      const totalFilter: Prisma.DecimalFilter = {};
+      if (filters.amountMin !== undefined) totalFilter.gte = filters.amountMin;
+      if (filters.amountMax !== undefined) totalFilter.lte = filters.amountMax;
+      where.total = totalFilter;
     }
 
     return this.prisma.quotation.findMany({
@@ -84,18 +102,24 @@ export class QuotationsService {
     });
   }
 
-  async findOne(id: string) {
+  async findOne(id: string, branchId?: string) {
     const quotation = await this.prisma.quotation.findUnique({
       where: { id },
       include: { items: true, customer: true },
     });
     if (!quotation) throw new NotFoundException('Quotation not found');
+    if (branchId && quotation.branchId && quotation.branchId !== branchId) {
+      throw new NotFoundException('Quotation not found');
+    }
     return quotation;
   }
 
-  async update(id: string, data: any) {
+  async update(id: string, data: Prisma.QuotationUpdateInput, branchId?: string) {
     const existing = await this.prisma.quotation.findUnique({ where: { id } });
     if (!existing) throw new NotFoundException('Quotation not found');
+    if (branchId && existing.branchId && existing.branchId !== branchId) {
+      throw new NotFoundException('Quotation not found');
+    }
     return this.prisma.quotation.update({
       where: { id },
       data,
@@ -103,9 +127,12 @@ export class QuotationsService {
     });
   }
 
-  async updateStatus(id: string, status: string) {
+  async updateStatus(id: string, status: string, branchId?: string) {
     const quotation = await this.prisma.quotation.findUnique({ where: { id } });
     if (!quotation) throw new NotFoundException('Quotation not found');
+    if (branchId && quotation.branchId && quotation.branchId !== branchId) {
+      throw new NotFoundException('Quotation not found');
+    }
 
     const validTransitions: Record<string, string[]> = {
       DRAFT: ['SENT', 'ACCEPTED', 'REJECTED'],
@@ -117,39 +144,51 @@ export class QuotationsService {
 
     const allowed = validTransitions[quotation.status] || [];
     if (!allowed.includes(status)) {
-      throw new BadRequestException(`Cannot transition from ${quotation.status} to ${status}`);
+      throw new BadRequestException(
+        `Cannot transition from ${quotation.status} to ${status}`,
+      );
     }
 
     return this.prisma.quotation.update({
       where: { id },
-      data: { status: status as any },
+      data: { status: status as Prisma.QuotationUpdateInput['status'] },
       include: { items: true },
     });
   }
 
-  async remove(id: string) {
+  async remove(id: string, branchId?: string) {
     const quotation = await this.prisma.quotation.findUnique({ where: { id } });
     if (!quotation) throw new NotFoundException('Quotation not found');
+    if (branchId && quotation.branchId && quotation.branchId !== branchId) {
+      throw new NotFoundException('Quotation not found');
+    }
     if (quotation.status === 'CONVERTED') {
       throw new BadRequestException('Cannot delete a converted quotation');
     }
     return this.prisma.quotation.delete({ where: { id } });
   }
 
-  async getStats() {
+  async getStats(branchId?: string) {
+    const branchWhere: Prisma.QuotationWhereInput = branchId ? { branchId } : {};
     const [all, accepted, pending, rejected] = await Promise.all([
-      this.prisma.quotation.aggregate({ _sum: { total: true }, _count: { _all: true } }),
       this.prisma.quotation.aggregate({
-        where: { status: { in: ['ACCEPTED', 'CONVERTED'] } },
+        where: branchWhere,
         _sum: { total: true },
         _count: { _all: true },
       }),
       this.prisma.quotation.aggregate({
-        where: { status: { in: ['DRAFT', 'SENT'] } },
+        where: { ...branchWhere, status: { in: ['ACCEPTED', 'CONVERTED'] } },
         _sum: { total: true },
         _count: { _all: true },
       }),
-      this.prisma.quotation.count({ where: { status: 'REJECTED' } }),
+      this.prisma.quotation.aggregate({
+        where: { ...branchWhere, status: { in: ['DRAFT', 'SENT'] } },
+        _sum: { total: true },
+        _count: { _all: true },
+      }),
+      this.prisma.quotation.count({
+        where: { ...branchWhere, status: 'REJECTED' },
+      }),
     ]);
 
     return {

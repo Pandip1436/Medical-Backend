@@ -1,4 +1,9 @@
-import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
+import {
+  Injectable,
+  NotFoundException,
+  BadRequestException,
+  ConflictException,
+} from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { ApprovalsService } from '../approvals/approvals.service';
 import { CreateCustomerDto } from './dto/create-customer.dto';
@@ -11,10 +16,47 @@ export class CustomersService {
     private readonly approvalsService: ApprovalsService,
   ) {}
 
+  // Reject creating a customer that duplicates an existing one's phone within
+  // the same branch scope. Phone is the natural key pharmacies use to look
+  // people up — duplicates split a customer's history across two records.
+  private async assertUniquePhone(
+    phone: string,
+    branchId?: string | null,
+    excludeId?: string,
+  ) {
+    if (!phone) return;
+    const branchScope = branchId
+      ? [{ branchId }, { branchId: null }]
+      : [{ branchId: null }];
+    const existing = await this.prisma.customer.findFirst({
+      where: {
+        AND: [
+          { phone },
+          { OR: branchScope },
+          ...(excludeId ? [{ id: { not: excludeId } }] : []),
+        ],
+      },
+      select: { id: true, name: true, phone: true },
+    });
+    if (existing) {
+      throw new ConflictException(
+        `Phone ${phone} is already used by customer "${existing.name}". Search and edit that record instead of creating a duplicate.`,
+      );
+    }
+  }
+
   async create(
     createCustomerDto: CreateCustomerDto & { branchId?: string },
     user?: { userId: string; role: string },
   ) {
+    // Block phone-duplicate before either path (direct create or approval).
+    // For the approval path we want the pharmacist to see the conflict
+    // immediately rather than having admin discover it later.
+    await this.assertUniquePhone(
+      createCustomerDto.phone,
+      createCustomerDto.branchId ?? null,
+    );
+
     // PHARMACISTs must request approval; ADMINs and others create directly
     if (user?.role === 'PHARMACIST') {
       const { branchId, ...payload } = createCustomerDto;
@@ -71,7 +113,14 @@ export class CustomersService {
   }
 
   async update(id: string, updateCustomerDto: UpdateCustomerDto, branchId?: string) {
-    await this.findOne(id, branchId);
+    const existing = await this.findOne(id, branchId);
+    if (updateCustomerDto.phone && updateCustomerDto.phone !== existing.phone) {
+      await this.assertUniquePhone(
+        updateCustomerDto.phone,
+        existing.branchId ?? null,
+        id,
+      );
+    }
     return this.prisma.customer.update({ where: { id }, data: updateCustomerDto });
   }
 

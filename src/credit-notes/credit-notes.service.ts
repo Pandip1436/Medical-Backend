@@ -1,6 +1,11 @@
-import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
+import {
+  Injectable,
+  NotFoundException,
+  BadRequestException,
+} from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { ApprovalsService } from '../approvals/approvals.service';
+import { DocumentNumberingService } from '../common/services/document-numbering.service';
 import { CreateCreditNoteDto } from './dto/create-credit-note.dto';
 
 @Injectable()
@@ -8,6 +13,7 @@ export class CreditNotesService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly approvalsService: ApprovalsService,
+    private readonly numbering: DocumentNumberingService,
   ) {}
 
   async create(dto: CreateCreditNoteDto, userId: string, branchId?: string, userRole?: string) {
@@ -40,6 +46,20 @@ export class CreditNotesService {
         throw new NotFoundException('Invoice not found');
       }
 
+      // Sum returned qty from prior credit notes against this invoice so we
+      // can cap each line at (sold - alreadyReturned). Without this, two
+      // sequential credit notes can over-restore stock and over-credit
+      // the customer.
+      const priorReturns = await tx.creditNoteItem.findMany({
+        where: { creditNote: { invoiceId: invoice.id } },
+        select: { productId: true, batchId: true, returnedQty: true },
+      });
+      const priorByKey = new Map<string, number>();
+      for (const r of priorReturns) {
+        const k = `${r.productId}::${r.batchId}`;
+        priorByKey.set(k, (priorByKey.get(k) ?? 0) + r.returnedQty);
+      }
+
       for (const item of dto.items) {
         const invoiceItem = invoice.items.find(
           (i) => i.productId === item.productId && i.batchId === item.batchId,
@@ -49,9 +69,12 @@ export class CreditNotesService {
             `Item ${item.productName} (batch ${item.batchNumber}) not found on invoice`,
           );
         }
-        if (item.returnedQty > invoiceItem.quantity) {
+        const alreadyReturned =
+          priorByKey.get(`${item.productId}::${item.batchId}`) ?? 0;
+        const remaining = invoiceItem.quantity - alreadyReturned;
+        if (item.returnedQty > remaining) {
           throw new BadRequestException(
-            `Cannot return ${item.returnedQty} of ${item.productName}; only ${invoiceItem.quantity} were sold`,
+            `Cannot return ${item.returnedQty} of ${item.productName}: only ${remaining} unreturned (sold ${invoiceItem.quantity}, already returned ${alreadyReturned})`,
           );
         }
 
@@ -65,7 +88,11 @@ export class CreditNotesService {
         });
       }
 
-      const creditNoteNo = `CN-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+      const creditNoteNo = await this.numbering.nextNumber(
+        tx,
+        'CN',
+        invoice.branchId ?? branchId ?? null,
+      );
       const settlementMode = dto.settlementMode ?? 'REFUND';
 
       const creditNote = await tx.creditNote.create({
@@ -83,6 +110,11 @@ export class CreditNotesService {
           igst: dto.igst ?? 0,
           totalAmount: dto.totalAmount,
           settlementMode,
+          // CREDIT mode auto-decrements outstanding immediately, so the note
+          // is settled at create time. REFUND/REPLACEMENT remain pending
+          // (settledAt = null) until the cash refund is recorded or the
+          // replacement invoice is issued.
+          settledAt: settlementMode === 'CREDIT' ? new Date() : null,
           notes: dto.notes,
           createdById: userId,
           items: {

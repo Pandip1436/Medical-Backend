@@ -458,6 +458,11 @@ model CreditNote {
   igst            Decimal          @default(0)
   totalAmount     Decimal
   settlementMode  SettlementMode   @default(REFUND)
+  // Set when the credit note is fully settled — i.e. customer has received
+  // the refund (REFUND), the credit has been applied (CREDIT — auto-set on
+  // create), or the replacement invoice has been issued (REPLACEMENT).
+  // Null = pending settlement.
+  settledAt       DateTime?
   notes           String?
   createdById     String
   createdAt       DateTime         @default(now())
@@ -608,6 +613,7 @@ model Quotation {
   id              String          @id @default(cuid())
   quotationNumber String          @unique
   date            DateTime        @default(now())
+  branchId        String?
   customerId      String?
   customer        Customer?       @relation(fields: [customerId], references: [id])
   customerName    String

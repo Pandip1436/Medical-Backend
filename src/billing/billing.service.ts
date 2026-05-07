@@ -1,15 +1,93 @@
 import { Injectable, BadRequestException, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { ApprovalsService } from '../approvals/approvals.service';
+import { DocumentNumberingService } from '../common/services/document-numbering.service';
 import { CreateInvoiceDto } from './dto/create-invoice.dto';
-import { PaymentMode } from '@prisma/client';
+import { PaymentMode, Prisma } from '@prisma/client';
 
 @Injectable()
 export class BillingService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly approvalsService: ApprovalsService,
+    private readonly numbering: DocumentNumberingService,
   ) {}
+
+  // Validate batch + decrement stock for one invoice line. Blocks expired batches
+  // and insufficient stock. Also fires LOW_STOCK alerts. Reused by create() and
+  // convertToInvoice().
+  private async deductStockForItem(
+    tx: Prisma.TransactionClient,
+    item: {
+      productId: string;
+      productName: string;
+      batchId: string;
+      batchNumber: string;
+      quantity: number;
+    },
+    branchId?: string,
+  ) {
+    const batch = await tx.batch.findUnique({ where: { id: item.batchId } });
+    if (!batch) {
+      throw new NotFoundException(
+        `Batch ${item.batchNumber} for product ${item.productName} not found`,
+      );
+    }
+    // Refuse expired stock — pharmacies cannot legally dispense it.
+    if (new Date(batch.expiryDate) < new Date()) {
+      throw new BadRequestException(
+        `Cannot sell ${item.productName} from batch ${item.batchNumber}: expired on ${new Date(batch.expiryDate).toLocaleDateString('en-IN')}`,
+      );
+    }
+    if (batch.quantity < item.quantity) {
+      throw new BadRequestException(
+        `Insufficient stock for ${item.productName} in batch ${item.batchNumber}. Available: ${batch.quantity}`,
+      );
+    }
+    await tx.batch.update({
+      where: { id: batch.id },
+      data: { quantity: batch.quantity - item.quantity },
+    });
+    const updatedProduct = await tx.product.update({
+      where: { id: item.productId },
+      data: { totalStock: { decrement: item.quantity } },
+      select: {
+        id: true,
+        name: true,
+        totalStock: true,
+        minStock: true,
+        branchId: true,
+      },
+    });
+    const isLow =
+      updatedProduct.totalStock <= 0 ||
+      (updatedProduct.minStock > 0 &&
+        updatedProduct.totalStock <= updatedProduct.minStock);
+    if (isLow) {
+      const alreadyNotified = await tx.notification.findFirst({
+        where: {
+          type: 'LOW_STOCK',
+          isRead: false,
+          message: { contains: `[productId:${updatedProduct.id}]` },
+        },
+      });
+      if (!alreadyNotified) {
+        const stockLabel =
+          updatedProduct.totalStock <= 0
+            ? 'is out of stock'
+            : `has only ${updatedProduct.totalStock} units left (min: ${updatedProduct.minStock})`;
+        await tx.notification.create({
+          data: {
+            type: 'LOW_STOCK',
+            title: 'Low Stock Alert',
+            message: `${updatedProduct.name} ${stockLabel}. [productId:${updatedProduct.id}]`,
+            actionUrl: '/inventory/products',
+            branchId: updatedProduct.branchId ?? branchId ?? null,
+          },
+        });
+      }
+    }
+  }
 
   async create(
     createInvoiceDto: CreateInvoiceDto,
@@ -17,6 +95,10 @@ export class BillingService {
     branchId?: string,
     userRole?: string,
   ) {
+    // Configurable: how many unsettled credit invoices a customer can have
+    // before a new credit sale needs admin approval. Set MAX_PENDING_CREDIT
+    // in the environment to override; default 3.
+    const maxPendingCredit = Number(process.env.MAX_PENDING_CREDIT ?? 3);
     return this.prisma.$transaction(async (tx) => {
       // 1. Credit limit check — behaviour differs by role
       if (
@@ -30,10 +112,16 @@ export class BillingService {
             status: { in: ['CREDIT', 'PARTIAL'] },
           },
         });
-        if (pendingCount >= 3) {
+        if (pendingCount >= maxPendingCredit) {
           if (userRole === 'PHARMACIST') {
-            // Save as DRAFT, then queue approval — stock NOT deducted yet
-            const invoiceNumber = `INV-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+            // Save as DRAFT, then queue approval — stock NOT deducted yet.
+            // Stock is reserved at approval-execution time after re-validating
+            // availability (see ApprovalsService.executeApprovedAction).
+            const invoiceNumber = await this.numbering.nextNumber(
+              tx,
+              'INV',
+              branchId ?? null,
+            );
             const draftInvoice = await tx.invoice.create({
               data: {
                 invoiceNumber,
@@ -94,66 +182,19 @@ export class BillingService {
         }
       }
 
-      // 2. Generate unique invoice/quotation number
+      // 2. Generate unique invoice/quotation number (atomic, FY-aware)
       const isQuotation = createInvoiceDto.type === 'QUOTATION';
-      const prefix = isQuotation ? 'QT' : 'INV';
-      const invoiceNumber = `${prefix}-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+      const invoiceNumber = await this.numbering.nextNumber(
+        tx,
+        isQuotation ? 'QTN' : 'INV',
+        branchId ?? null,
+      );
 
-      // 2. Validate and deduct stock — only for actual invoices, not quotations
+      // 3. Validate and deduct stock — only for actual invoices, not quotations.
+      // Quotations are non-binding offers; stock isn't reserved until conversion.
       if (!isQuotation) {
         for (const item of createInvoiceDto.items) {
-          const batch = await tx.batch.findUnique({
-            where: { id: item.batchId }
-          });
-
-          if (!batch) {
-            throw new NotFoundException(`Batch ${item.batchNumber} for product ${item.productName} not found`);
-          }
-
-          if (batch.quantity < item.quantity) {
-            throw new BadRequestException(`Insufficient stock for ${item.productName} in batch ${item.batchNumber}. Available: ${batch.quantity}`);
-          }
-
-          // Deduct from batch
-          await tx.batch.update({
-            where: { id: batch.id },
-            data: { quantity: batch.quantity - item.quantity }
-          });
-
-          // Deduct from product total stock and get the updated values
-          const updatedProduct = await tx.product.update({
-            where: { id: item.productId },
-            data: { totalStock: { decrement: item.quantity } },
-            select: { id: true, name: true, totalStock: true, minStock: true, branchId: true },
-          });
-
-          // Auto-create LOW_STOCK notification if stock just hit or crossed the threshold
-          const isLow = updatedProduct.totalStock <= 0 ||
-            (updatedProduct.minStock > 0 && updatedProduct.totalStock <= updatedProduct.minStock);
-
-          if (isLow) {
-            const alreadyNotified = await tx.notification.findFirst({
-              where: {
-                type: 'LOW_STOCK',
-                isRead: false,
-                message: { contains: `[productId:${updatedProduct.id}]` },
-              },
-            });
-            if (!alreadyNotified) {
-              const stockLabel = updatedProduct.totalStock <= 0
-                ? 'is out of stock'
-                : `has only ${updatedProduct.totalStock} units left (min: ${updatedProduct.minStock})`;
-              await tx.notification.create({
-                data: {
-                  type: 'LOW_STOCK',
-                  title: 'Low Stock Alert',
-                  message: `${updatedProduct.name} ${stockLabel}. [productId:${updatedProduct.id}]`,
-                  actionUrl: '/inventory/products',
-                  branchId: updatedProduct.branchId ?? branchId ?? null,
-                },
-              });
-            }
-          }
+          await this.deductStockForItem(tx, item, branchId);
         }
       }
 
@@ -277,19 +318,48 @@ export class BillingService {
   }
 
   async convertToInvoice(id: string, branchId?: string) {
-    const quotation = await this.prisma.invoice.findUnique({ where: { id } });
-    if (!quotation) throw new NotFoundException('Quotation not found');
-    if (branchId && quotation.branchId && quotation.branchId !== branchId) {
-      throw new NotFoundException('Quotation not found');
-    }
-    if (quotation.type !== 'QUOTATION') {
-      throw new BadRequestException('Only QUOTATION type records can be converted');
-    }
-    const invoiceNumber = `INV-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
-    return this.prisma.invoice.update({
-      where: { id },
-      data: { type: 'INVOICE', invoiceNumber, status: 'PAID' },
-      include: { items: true },
+    return this.prisma.$transaction(async (tx) => {
+      const quotation = await tx.invoice.findUnique({
+        where: { id },
+        include: { items: true },
+      });
+      if (!quotation) throw new NotFoundException('Quotation not found');
+      if (branchId && quotation.branchId && quotation.branchId !== branchId) {
+        throw new NotFoundException('Quotation not found');
+      }
+      if (quotation.type !== 'QUOTATION') {
+        throw new BadRequestException(
+          'Only QUOTATION type records can be converted',
+        );
+      }
+
+      // Reserve real stock now — quotations don't reserve, so on conversion
+      // we run the same validate-and-decrement logic as a fresh invoice.
+      // Throws if any batch is expired, missing, or under-stocked.
+      for (const item of quotation.items) {
+        await this.deductStockForItem(
+          tx,
+          {
+            productId: item.productId,
+            productName: item.productName,
+            batchId: item.batchId,
+            batchNumber: item.batchNumber,
+            quantity: item.quantity,
+          },
+          branchId,
+        );
+      }
+
+      const invoiceNumber = await this.numbering.nextNumber(
+        tx,
+        'INV',
+        branchId ?? null,
+      );
+      return tx.invoice.update({
+        where: { id },
+        data: { type: 'INVOICE', invoiceNumber, status: 'PAID' },
+        include: { items: true },
+      });
     });
   }
 
@@ -330,7 +400,11 @@ export class BillingService {
           data: { currentOutstanding: { decrement: amountReceived } },
         });
 
-        const receiptNumber = `RCT-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+        const receiptNumber = await this.numbering.nextNumber(
+          tx,
+          'RCPT',
+          invoice.branchId ?? branchId ?? null,
+        );
         await tx.payment.create({
           data: {
             receiptNumber,

@@ -1,10 +1,19 @@
-import { Injectable, NotFoundException, BadRequestException, ForbiddenException } from '@nestjs/common';
+import {
+  Injectable,
+  NotFoundException,
+  BadRequestException,
+  ForbiddenException,
+} from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { ApprovalType } from '@prisma/client';
+import { DocumentNumberingService } from '../common/services/document-numbering.service';
 
 @Injectable()
 export class ApprovalsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly numbering: DocumentNumberingService,
+  ) {}
 
   // ── Create a pending request ───────────────────────────────
   async createRequest(opts: {
@@ -150,33 +159,118 @@ export class ApprovalsService {
       }
 
       case 'CREDIT_BILL': {
-        // Draft invoice already exists — just finalize it (flip to CREDIT status)
-        if (refId) {
-          await this.prisma.invoice.update({
+        // Re-validate stock NOW (between request and approval, other sales
+        // may have depleted the batches). If anything's short or expired,
+        // throw — the request stays approved-but-failed and admin sees the
+        // error; pharmacist must raise a new request.
+        if (!refId) break;
+        await this.prisma.$transaction(async (tx) => {
+          const invoice = await tx.invoice.findUnique({
+            where: { id: refId },
+            include: { items: true },
+          });
+          if (!invoice) throw new NotFoundException('Draft invoice not found');
+          if (invoice.status !== 'DRAFT') {
+            throw new BadRequestException(
+              `Draft invoice already in status ${invoice.status}`,
+            );
+          }
+          for (const item of invoice.items) {
+            const batch = await tx.batch.findUnique({
+              where: { id: item.batchId },
+            });
+            if (!batch) {
+              throw new BadRequestException(
+                `Batch ${item.batchNumber} for ${item.productName} no longer exists`,
+              );
+            }
+            if (new Date(batch.expiryDate) < new Date()) {
+              throw new BadRequestException(
+                `Cannot approve: batch ${item.batchNumber} of ${item.productName} has expired`,
+              );
+            }
+            if (batch.quantity < item.quantity) {
+              throw new BadRequestException(
+                `Cannot approve: insufficient stock for ${item.productName} batch ${item.batchNumber}. Available ${batch.quantity}, needed ${item.quantity}`,
+              );
+            }
+            await tx.batch.update({
+              where: { id: batch.id },
+              data: { quantity: batch.quantity - item.quantity },
+            });
+            await tx.product.update({
+              where: { id: item.productId },
+              data: { totalStock: { decrement: item.quantity } },
+            });
+          }
+          await tx.invoice.update({
             where: { id: refId },
             data: { status: 'CREDIT' },
           });
-          // Update customer outstanding
-          const invoice = await this.prisma.invoice.findUnique({ where: { id: refId } });
-          if (invoice?.customerId) {
-            await this.prisma.customer.update({
+          if (invoice.customerId) {
+            await tx.customer.update({
               where: { id: invoice.customerId },
-              data: { currentOutstanding: { increment: invoice.grandTotal } },
+              data: {
+                currentOutstanding: { increment: invoice.grandTotal },
+              },
             });
           }
-        }
+        });
         break;
       }
 
       case 'SALES_RETURN': {
-        // Re-execute the credit note creation from stored payload
-        const creditNoteNo = `CN-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+        // Re-execute the credit note creation from stored payload, with the
+        // same cumulative-return guard the direct create flow uses.
         await this.prisma.$transaction(async (tx) => {
+          const creditNoteNo = await this.numbering.nextNumber(
+            tx,
+            'CN',
+            branchId,
+          );
+          // Re-validate cumulative returned qty per (productId, batchId) so a
+          // prior credit note that landed between request + approval doesn't
+          // let us over-restore stock.
+          if (payload.invoiceId) {
+            const invoice = await tx.invoice.findUnique({
+              where: { id: payload.invoiceId },
+              include: { items: true },
+            });
+            if (!invoice) throw new NotFoundException('Invoice not found');
+            const priorReturns = await tx.creditNoteItem.findMany({
+              where: { creditNote: { invoiceId: invoice.id } },
+              select: { productId: true, batchId: true, returnedQty: true },
+            });
+            const priorByKey = new Map<string, number>();
+            for (const r of priorReturns) {
+              const k = `${r.productId}::${r.batchId}`;
+              priorByKey.set(k, (priorByKey.get(k) ?? 0) + r.returnedQty);
+            }
+            for (const item of payload.items ?? []) {
+              const sold = invoice.items.find(
+                (i) => i.productId === item.productId && i.batchId === item.batchId,
+              );
+              if (!sold) {
+                throw new BadRequestException(
+                  `Item ${item.productName} (batch ${item.batchNumber}) not found on invoice`,
+                );
+              }
+              const alreadyReturned =
+                priorByKey.get(`${item.productId}::${item.batchId}`) ?? 0;
+              const remaining = sold.quantity - alreadyReturned;
+              if (item.returnedQty > remaining) {
+                throw new BadRequestException(
+                  `Cannot approve return: only ${remaining} of ${item.productName} unreturned (sold ${sold.quantity}, already returned ${alreadyReturned})`,
+                );
+              }
+            }
+          }
           // Restore stock for each item
           for (const item of payload.items ?? []) {
             await tx.batch.update({ where: { id: item.batchId }, data: { quantity: { increment: item.returnedQty } } });
             await tx.product.update({ where: { id: item.productId }, data: { totalStock: { increment: item.returnedQty } } });
           }
+          const cnSettlementMode = payload.settlementMode ?? 'REFUND';
           await (tx as any).creditNote.create({
             data: {
               creditNoteNo,
@@ -190,7 +284,8 @@ export class ApprovalsService {
               sgst: payload.sgst ?? 0,
               igst: payload.igst ?? 0,
               totalAmount: payload.totalAmount,
-              settlementMode: payload.settlementMode ?? 'REFUND',
+              settlementMode: cnSettlementMode,
+              settledAt: cnSettlementMode === 'CREDIT' ? new Date() : null,
               createdById: payload.createdById,
               branchId: branchId ?? null,
               items: { create: payload.items.map((i: any) => ({
@@ -217,7 +312,6 @@ export class ApprovalsService {
       }
 
       case 'PURCHASE_RETURN': {
-        const debitNoteNo = `DN-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
         const settlementMode = payload.settlementMode ?? 'REFUND';
         // ADJUST is auto-settled at create; otherwise honour requested status (default SENT)
         const initialStatus = settlementMode === 'ADJUST'
@@ -226,6 +320,11 @@ export class ApprovalsService {
         // Short delivery = no physical stock to deduct (goods never arrived)
         const isShortDelivery = /short.*delivery|short.*supply/i.test(payload.reason ?? '');
         await this.prisma.$transaction(async (tx) => {
+          const debitNoteNo = await this.numbering.nextNumber(
+            tx,
+            'DN',
+            branchId,
+          );
           if (!isShortDelivery) {
             for (const item of payload.items ?? []) {
               await tx.batch.update({ where: { id: item.batchId }, data: { quantity: { decrement: item.returnedQty } } });
@@ -246,6 +345,9 @@ export class ApprovalsService {
               totalAmount: payload.totalAmount,
               status: initialStatus,
               settlementMode,
+              // Auto-flag short-delivery DNs as already-reversed so the admin
+              // sweep can never re-apply stock to them.
+              stockReversedAt: isShortDelivery ? new Date() : null,
               createdById: payload.createdById,
               branchId: branchId ?? null,
               items: { create: payload.items.map((i: any) => ({

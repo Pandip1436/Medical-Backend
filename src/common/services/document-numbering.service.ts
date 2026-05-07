@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 
-export type DocType = 'PO' | 'GRN' | 'DN';
+export type DocType = 'PO' | 'GRN' | 'DN' | 'INV' | 'CN' | 'QTN' | 'RCPT';
 
 @Injectable()
 export class DocumentNumberingService {
