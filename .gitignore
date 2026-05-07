@@ -1,5 +1,9 @@
 node_modules
-# Keep environment variables out of version control
+
+# Keep environment variables out of version control.
+# .env.example IS tracked — it's the template for new contributors.
 .env
+.env.*
+!.env.example
 
 /generated/prisma
