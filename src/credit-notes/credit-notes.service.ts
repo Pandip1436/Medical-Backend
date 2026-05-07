@@ -19,8 +19,40 @@ export class CreditNotesService {
   async create(dto: CreateCreditNoteDto, userId: string, branchId?: string, userRole?: string) {
     // PHARMACIST must request approval; action executes only after admin approves
     if (userRole === 'PHARMACIST') {
-      const invoice = await this.prisma.invoice.findUnique({ where: { id: dto.invoiceId } });
+      const invoice = await this.prisma.invoice.findUnique({
+        where: { id: dto.invoiceId },
+        include: { items: true },
+      });
       if (!invoice) throw new NotFoundException('Invoice not found');
+
+      // Reject at submit time if this request would exceed sold qty after
+      // counting prior credit notes AND other pending SALES_RETURN approvals
+      // for the same invoice. Without this, two back-to-back pharmacist
+      // submissions can both sit pending and only fail at admin approval.
+      const returnedSoFar = await this.getReturnedQtyByInvoice(invoice.id, branchId);
+      const priorByKey = new Map<string, number>();
+      for (const r of returnedSoFar) {
+        priorByKey.set(`${r.productId}::${r.batchId}`, r.alreadyReturned);
+      }
+      for (const item of dto.items) {
+        const sold = invoice.items.find(
+          (i) => i.productId === item.productId && i.batchId === item.batchId,
+        );
+        if (!sold) {
+          throw new BadRequestException(
+            `Item ${item.productName} (batch ${item.batchNumber}) not found on invoice`,
+          );
+        }
+        const alreadyReturned =
+          priorByKey.get(`${item.productId}::${item.batchId}`) ?? 0;
+        const remaining = sold.quantity - alreadyReturned;
+        if (item.returnedQty > remaining) {
+          throw new BadRequestException(
+            `Cannot return ${item.returnedQty} of ${item.productName}: only ${remaining} unreturned (sold ${sold.quantity}, already returned/pending ${alreadyReturned})`,
+          );
+        }
+      }
+
       const req = await this.approvalsService.createRequest({
         type: 'SALES_RETURN',
         payload: {
@@ -185,5 +217,49 @@ export class CreditNotesService {
       throw new NotFoundException('Credit note not found');
     }
     return cn;
+  }
+
+  // Returns already-returned quantity per (productId, batchId) for an invoice.
+  // Counts both approved credit notes and pending SALES_RETURN approvals so the
+  // FE can clamp the input qty before the user submits, and back-to-back
+  // pharmacist submissions on the same line cannot exceed sold qty.
+  async getReturnedQtyByInvoice(invoiceId: string, branchId?: string) {
+    const invoice = await this.prisma.invoice.findUnique({
+      where: { id: invoiceId },
+      select: { id: true, branchId: true },
+    });
+    if (!invoice) throw new NotFoundException('Invoice not found');
+    if (branchId && invoice.branchId && invoice.branchId !== branchId) {
+      throw new NotFoundException('Invoice not found');
+    }
+
+    const approved = await this.prisma.creditNoteItem.findMany({
+      where: { creditNote: { invoiceId } },
+      select: { productId: true, batchId: true, returnedQty: true },
+    });
+
+    const pending = await this.prisma.approvalRequest.findMany({
+      where: { type: 'SALES_RETURN', status: 'PENDING' },
+      select: { payload: true },
+    });
+
+    const totals = new Map<string, number>();
+    for (const r of approved) {
+      const k = `${r.productId}::${r.batchId}`;
+      totals.set(k, (totals.get(k) ?? 0) + r.returnedQty);
+    }
+    for (const req of pending) {
+      const payload = req.payload as { invoiceId?: string; items?: Array<{ productId: string; batchId: string; returnedQty: number }> };
+      if (payload?.invoiceId !== invoiceId) continue;
+      for (const it of payload.items ?? []) {
+        const k = `${it.productId}::${it.batchId}`;
+        totals.set(k, (totals.get(k) ?? 0) + Number(it.returnedQty ?? 0));
+      }
+    }
+
+    return Array.from(totals.entries()).map(([key, alreadyReturned]) => {
+      const [productId, batchId] = key.split('::');
+      return { productId, batchId, alreadyReturned };
+    });
   }
 }

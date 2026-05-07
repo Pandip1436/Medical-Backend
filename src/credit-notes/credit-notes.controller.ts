@@ -30,6 +30,13 @@ export class CreditNotesController {
     return this.creditNotesService.findAll(q, customerId, effectiveBranchId);
   }
 
+  @Get('invoice/:invoiceId/returned-qty')
+  @Roles('ADMIN', 'PHARMACIST', 'ACCOUNTANT')
+  @ApiOperation({ summary: 'Already-returned qty per (productId, batchId) for an invoice (includes pending approvals)' })
+  getReturnedQtyByInvoice(@Param('invoiceId') invoiceId: string, @Request() req: any) {
+    return this.creditNotesService.getReturnedQtyByInvoice(invoiceId, req.user.branchId);
+  }
+
   @Get(':id')
   @Roles('ADMIN', 'PHARMACIST', 'ACCOUNTANT')
   @ApiOperation({ summary: 'Get specific credit note by ID' })
