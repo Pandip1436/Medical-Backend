@@ -38,16 +38,19 @@ steps:
   - name: 'gcr.io/$PROJECT_ID/medical-backend:$COMMIT_SHA'
     id: 'migrate'
     entrypoint: 'sh'
+    # Note the $$ escapes — Cloud Build treats single-$ as its own substitution
+    # syntax, so any shell variable reference needs to be doubled to survive
+    # the YAML preprocessing intact.
     args:
       - '-c'
       - |
         set -e
-        if [ -z "$DATABASE_URL" ]; then
+        if [ -z "$$DATABASE_URL" ]; then
           echo ""
           echo "==========================================================="
           echo "FATAL: DATABASE_URL is empty."
           echo "Add the '_DATABASE_URL' substitution variable in the Cloud"
-          echo "Build trigger settings (Advanced → Substitution variables)."
+          echo "Build trigger settings (Advanced -> Substitution variables)."
           echo "==========================================================="
           echo ""
           exit 1
