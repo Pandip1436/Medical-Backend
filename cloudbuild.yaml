@@ -38,9 +38,10 @@ steps:
   - name: 'gcr.io/$PROJECT_ID/medical-backend:$COMMIT_SHA'
     id: 'migrate'
     entrypoint: 'sh'
-    # Note the $$ escapes — Cloud Build treats single-$ as its own substitution
-    # syntax, so any shell variable reference needs to be doubled to survive
-    # the YAML preprocessing intact.
+    # Cloud Build steps default working directory to /workspace, but our
+    # image's prisma/schema.prisma lives at /app (Dockerfile WORKDIR). We
+    # cd in explicitly so prisma can find the schema. The $$ escapes are
+    # required because Cloud Build treats single-$ as its own substitution.
     args:
       - '-c'
       - |
@@ -55,7 +56,8 @@ steps:
           echo ""
           exit 1
         fi
-        echo "DATABASE_URL is set; running prisma migrate deploy..."
+        cd /app
+        echo "DATABASE_URL is set; running prisma migrate deploy from /app..."
         npx prisma migrate deploy
     env:
       - 'DATABASE_URL=${_DATABASE_URL}'
