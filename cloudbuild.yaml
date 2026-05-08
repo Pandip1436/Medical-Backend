@@ -31,12 +31,29 @@ steps:
   # 3. Apply Prisma migrations to PROD using the just-built image. If this
   #    step fails the deploy is aborted and the previous revision keeps
   #    serving traffic — much safer than crash-looping a half-migrated app.
+  #
+  #    The precondition check below fails fast with an obvious message when
+  #    the trigger forgot to set _DATABASE_URL; Prisma's own error in that
+  #    case is cryptic and the build-step log isn't always available.
   - name: 'gcr.io/$PROJECT_ID/medical-backend:$COMMIT_SHA'
     id: 'migrate'
     entrypoint: 'sh'
     args:
       - '-c'
-      - 'npx prisma migrate deploy'
+      - |
+        set -e
+        if [ -z "$DATABASE_URL" ]; then
+          echo ""
+          echo "==========================================================="
+          echo "FATAL: DATABASE_URL is empty."
+          echo "Add the '_DATABASE_URL' substitution variable in the Cloud"
+          echo "Build trigger settings (Advanced → Substitution variables)."
+          echo "==========================================================="
+          echo ""
+          exit 1
+        fi
+        echo "DATABASE_URL is set; running prisma migrate deploy..."
+        npx prisma migrate deploy
     env:
       - 'DATABASE_URL=${_DATABASE_URL}'
 
