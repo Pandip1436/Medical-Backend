@@ -50,6 +50,9 @@ RUN mkdir -p uploads
 # Cloud Run injects PORT automatically (default 8080)
 EXPOSE 8080
 
-# Command to run migrations and then start the server
-# Note: In production, 'prisma migrate deploy' is used for zero-downtime safe migrations
-CMD ["/bin/sh", "-c", "npx prisma migrate deploy && node dist/src/main"]
+# Just start the server. Migrations run as a separate `migrate` step in
+# cloudbuild.yaml BEFORE this revision is deployed, so we don't burn the
+# 240s startup probe on `prisma migrate deploy` + Neon cold-start. This also
+# means deploys fail fast and clearly when a migration is broken, instead of
+# the container crash-looping while old traffic keeps serving.
+CMD ["node", "dist/src/main"]
