@@ -35,6 +35,7 @@ model Branch {
   notifications   Notification[]
   payments        Payment[]
   reminders       CustomerReminder[]
+  categories      Category[]
 }
 
 // ── Users & Auth ──────────────────────────────────────────────
@@ -118,13 +119,17 @@ model Prescription {
 // ── Categories ────────────────────────────────────────────────
 model Category {
   id          String    @id @default(cuid())
-  name        String    @unique
+  name        String
   description String?
   color       String?   // hex color for UI badge
   isActive    Boolean   @default(true)
+  branchId    String?
+  branch      Branch?   @relation(fields: [branchId], references: [id])
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
   products    Product[]
+
+  @@unique([name, branchId])
 }
 
 // ── Products & Batches ────────────────────────────────────────
@@ -167,20 +172,21 @@ model Product {
 }
 
 model StockAdjustmentLog {
-  id          String   @id @default(cuid())
-  productId   String
-  product     Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
-  batchId     String
-  batchNumber String
-  userId      String
-  userName    String
-  reason      String
-  previousQty Int
-  adjustedQty Int
-  diff        Int
-  notes       String?
-  branchId    String?
-  createdAt   DateTime @default(now())
+  id            String   @id @default(cuid())
+  adjustmentNo  String?
+  productId     String
+  product       Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  batchId       String
+  batchNumber   String
+  userId        String
+  userName      String
+  reason        String
+  previousQty   Int
+  adjustedQty   Int
+  diff          Int
+  notes         String?
+  branchId      String?
+  createdAt     DateTime @default(now())
 }
 
 enum Schedule {
@@ -747,6 +753,7 @@ enum ApprovalType {
   CREDIT_BILL
   SALES_RETURN
   PURCHASE_RETURN
+  INVENTORY_ADJUSTMENT
 }
 
 enum ApprovalStatus {

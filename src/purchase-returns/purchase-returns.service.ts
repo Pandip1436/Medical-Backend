@@ -132,7 +132,21 @@ export class PurchaseReturnsService {
       });
 
       // ADJUST: reduce supplier outstanding immediately (we owe them less now). Mark settled.
+      // Reject if the adjustment would push outstanding below zero — that
+      // means we're claiming a credit larger than what we owe, which should
+      // be split into two transactions (settle outstanding + record an
+      // advance/refund) rather than silently going negative.
       if (settlementMode === 'ADJUST') {
+        const supplier = await tx.supplier.findUnique({
+          where: { id: dto.supplierId },
+          select: { currentOutstanding: true, name: true },
+        });
+        const currentOutstanding = Number(supplier?.currentOutstanding ?? 0);
+        if (Number(dto.totalAmount) > currentOutstanding + 0.01) {
+          throw new BadRequestException(
+            `ADJUST debit note (₹${Number(dto.totalAmount).toFixed(2)}) exceeds supplier "${supplier?.name}" outstanding (₹${currentOutstanding.toFixed(2)}). Use REFUND mode for the excess, or split into two notes.`,
+          );
+        }
         await tx.supplier.update({
           where: { id: dto.supplierId },
           data: { currentOutstanding: { decrement: dto.totalAmount } },

@@ -245,8 +245,16 @@ async function main() {
     { name: 'OTC', description: 'Over the counter medicines', color: '#F59E0B' },
     { name: 'SURGICAL', description: 'Surgical supplies and equipment', color: '#EF4444' },
   ];
+  // Seed categories at the global scope (branchId: null) so both branches see
+  // them via the branchScope union in CategoriesService.findAll.
   const seededCats = await Promise.all(
-    categoryDefs.map(c => prisma.category.upsert({ where: { name: c.name }, update: {}, create: c }))
+    categoryDefs.map(c =>
+      prisma.category.upsert({
+        where: { name_branchId: { name: c.name, branchId: null as any } },
+        update: {},
+        create: c,
+      }),
+    ),
   );
   const catId = (name: string) => seededCats.find(c => c.name === name)!.id;
 

@@ -7,48 +7,74 @@ import { UpdateCategoryDto } from './dto/update-category.dto';
 export class CategoriesService {
   constructor(private readonly prisma: PrismaService) {}
 
-  async create(dto: CreateCategoryDto) {
-    const existing = await this.prisma.category.findUnique({ where: { name: dto.name } });
-    if (existing) throw new ConflictException(`Category "${dto.name}" already exists`);
-    return this.prisma.category.create({ data: dto });
+  // Branch-scoped lookup: a row is "visible" to a branch if it's in that branch
+  // OR if its branchId is null (legacy global categories that pre-date the
+  // branch column — kept readable for back-compat). New categories should
+  // always be created with a branchId.
+  private branchScope(branchId?: string) {
+    if (!branchId) return {};
+    return { OR: [{ branchId }, { branchId: null }] };
   }
 
-  async findAll() {
+  private async assertNameAvailable(name: string, branchId?: string, ignoreId?: string) {
+    const existing = await this.prisma.category.findFirst({
+      where: {
+        name: { equals: name, mode: 'insensitive' },
+        branchId: branchId ?? null,
+        ...(ignoreId ? { NOT: { id: ignoreId } } : {}),
+      } as any,
+    });
+    if (existing) {
+      throw new ConflictException(`Category "${name}" already exists in this branch`);
+    }
+  }
+
+  async create(dto: CreateCategoryDto, branchId?: string) {
+    await this.assertNameAvailable(dto.name, branchId);
+    return this.prisma.category.create({
+      data: { ...dto, branchId: branchId ?? null } as any,
+    });
+  }
+
+  async findAll(branchId?: string) {
     const categories = await this.prisma.category.findMany({
+      where: this.branchScope(branchId) as any,
       orderBy: { name: 'asc' },
       include: { _count: { select: { products: true } } },
     });
     return categories.map((c) => ({ ...c, productCount: c._count.products }));
   }
 
-  async findOne(id: string) {
+  async findOne(id: string, branchId?: string) {
     const category = await this.prisma.category.findUnique({
       where: { id },
       include: { _count: { select: { products: true } } },
     });
     if (!category) throw new NotFoundException('Category not found');
+    if (branchId && (category as any).branchId && (category as any).branchId !== branchId) {
+      throw new NotFoundException('Category not found');
+    }
     return { ...category, productCount: category._count.products };
   }
 
-  async update(id: string, dto: UpdateCategoryDto) {
-    await this.findOne(id);
+  async update(id: string, dto: UpdateCategoryDto, branchId?: string) {
+    await this.findOne(id, branchId);
     if (dto.name) {
-      const existing = await this.prisma.category.findUnique({ where: { name: dto.name } });
-      if (existing && existing.id !== id) throw new ConflictException(`Category "${dto.name}" already exists`);
+      await this.assertNameAvailable(dto.name, branchId, id);
     }
     return this.prisma.category.update({ where: { id }, data: dto });
   }
 
-  async remove(id: string) {
-    const category = await this.findOne(id);
+  async remove(id: string, branchId?: string) {
+    const category = await this.findOne(id, branchId);
     if (category.productCount > 0) {
       throw new BadRequestException(`Cannot delete category "${category.name}" — it has ${category.productCount} product(s) assigned`);
     }
     return this.prisma.category.delete({ where: { id } });
   }
 
-  async exportCsv(): Promise<string> {
-    const categories = await this.findAll();
+  async exportCsv(branchId?: string): Promise<string> {
+    const categories = await this.findAll(branchId);
     const header = 'name,description,color,isActive,productCount';
     const rows = categories.map((c) =>
       [
@@ -62,7 +88,7 @@ export class CategoriesService {
     return [header, ...rows].join('\n');
   }
 
-  async importCsv(buffer: Buffer): Promise<{ created: number; skipped: number; errors: string[] }> {
+  async importCsv(buffer: Buffer, branchId?: string): Promise<{ created: number; skipped: number; errors: string[] }> {
     const text = buffer.toString('utf-8');
     const lines = text.split(/\r?\n/).filter((l) => l.trim());
     if (lines.length < 2) throw new BadRequestException('CSV must have a header row and at least one data row');
@@ -82,7 +108,12 @@ export class CategoriesService {
       if (!row['name']) { errors.push(`Row ${i + 1}: name is required`); continue; }
 
       try {
-        const existing = await this.prisma.category.findUnique({ where: { name: row['name'] } });
+        const existing = await this.prisma.category.findFirst({
+          where: {
+            name: { equals: row['name'], mode: 'insensitive' },
+            branchId: branchId ?? null,
+          } as any,
+        });
         if (existing) { skipped++; continue; }
         await this.prisma.category.create({
           data: {
@@ -90,7 +121,8 @@ export class CategoriesService {
             description: row['description'] || undefined,
             color: row['color'] || undefined,
             isActive: row['isactive'] !== 'false',
-          },
+            branchId: branchId ?? null,
+          } as any,
         });
         created++;
       } catch (err: any) {

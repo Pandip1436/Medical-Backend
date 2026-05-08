@@ -4,6 +4,7 @@ import { memoryStorage } from 'multer';
 import { ProductsService } from './products.service';
 import { CreateProductDto } from './dto/create-product.dto';
 import { UpdateProductDto } from './dto/update-product.dto';
+import { AdjustStockDto, BulkAdjustStockDto } from './dto/adjust-stock.dto';
 import { ApiTags, ApiOperation, ApiBearerAuth, ApiQuery, ApiConsumes } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
@@ -111,26 +112,38 @@ export class ProductsController {
 
   @Post('bulk-adjust')
   @Roles('ADMIN', 'INVENTORY_MANAGER')
-  @ApiOperation({ summary: 'Atomically adjust stock for multiple batches in one transaction' })
+  @ApiOperation({ summary: 'Submit a stock adjustment for multiple batches; queues approval if total impact exceeds threshold for non-admin users' })
   bulkAdjust(
-    @Body() body: { items: { productId: string; batchId: string; adjustedQty: number; reason: string }[] },
+    @Body() body: BulkAdjustStockDto,
     @Request() req: any,
   ) {
-    const user = { userId: req.user.userId, name: req.user.name ?? req.user.email ?? 'Unknown' };
-    return this.productsService.bulkAdjustStock(body.items, req.user.branchId, user);
+    const user = {
+      userId: req.user.userId,
+      name: req.user.name ?? req.user.email ?? 'Unknown',
+      role: req.user.role,
+    };
+    return this.productsService.submitBulkAdjustment(body.items, req.user.branchId, user);
   }
 
   @Patch(':id/batches/:batchId/adjust')
   @Roles('ADMIN', 'INVENTORY_MANAGER')
-  @ApiOperation({ summary: 'Adjust stock quantity for a specific batch' })
+  @ApiOperation({ summary: 'Adjust stock for a specific batch; queues approval for non-admin if value exceeds threshold' })
   adjust(
     @Param('id') id: string,
     @Param('batchId') batchId: string,
-    @Body() body: { adjustedQty: number; reason: string; notes?: string },
+    @Body() body: AdjustStockDto,
     @Request() req: any,
   ) {
-    const user = { userId: req.user.userId, name: req.user.name ?? req.user.email ?? 'Unknown' };
-    return this.productsService.adjustBatchStock(id, batchId, body, req.user.branchId, user);
+    const user = {
+      userId: req.user.userId,
+      name: req.user.name ?? req.user.email ?? 'Unknown',
+      role: req.user.role,
+    };
+    return this.productsService.submitBulkAdjustment(
+      [{ productId: id, batchId, adjustedQty: body.adjustedQty, reason: body.reason }],
+      req.user.branchId,
+      user,
+    );
   }
 
   @Patch(':id/toggle-active')

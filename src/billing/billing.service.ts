@@ -13,6 +13,49 @@ export class BillingService {
     private readonly numbering: DocumentNumberingService,
   ) {}
 
+  // Schedule H, H1, and X are prescription-only drugs under the Drugs &
+  // Cosmetics Rules. Walk-in sales are illegal; for registered customers a
+  // current valid prescription must be on record. We enforce this once per
+  // invoice create / quotation conversion before any stock decrement.
+  private async assertPrescriptionForScheduledItems(
+    tx: Prisma.TransactionClient,
+    items: Array<{ productId: string; productName: string }>,
+    customerId: string | null | undefined,
+  ) {
+    if (!items.length) return;
+    const productIds = items.map((i) => i.productId);
+    const products = await tx.product.findMany({
+      where: { id: { in: productIds } },
+      select: { id: true, name: true, schedule: true },
+    });
+    const scheduledProducts = products.filter(
+      (p) => p.schedule === 'H' || p.schedule === 'H1' || p.schedule === 'X',
+    );
+    if (scheduledProducts.length === 0) return;
+
+    if (!customerId) {
+      const names = scheduledProducts.map((p) => p.name).join(', ');
+      throw new BadRequestException(
+        `Schedule H/H1/X drugs (${names}) cannot be sold to a walk-in customer — record the customer and their prescription first.`,
+      );
+    }
+
+    const activeRx = await tx.prescription.findFirst({
+      where: {
+        customerId,
+        isActive: true,
+        OR: [{ validUntil: null }, { validUntil: { gte: new Date() } }],
+      },
+      select: { id: true },
+    });
+    if (!activeRx) {
+      const names = scheduledProducts.map((p) => p.name).join(', ');
+      throw new BadRequestException(
+        `Cannot dispense ${names} — customer has no active, non-expired prescription on file.`,
+      );
+    }
+  }
+
   // Validate batch + decrement stock for one invoice line. Blocks expired batches
   // and insufficient stock. Also fires LOW_STOCK alerts. Reused by create() and
   // convertToInvoice().
@@ -64,11 +107,16 @@ export class BillingService {
       (updatedProduct.minStock > 0 &&
         updatedProduct.totalStock <= updatedProduct.minStock);
     if (isLow) {
+      // Window-based dedup so marking the previous alert as read doesn't make
+      // the next sale immediately re-fire a duplicate. 24h matches the
+      // notifications.service default window.
+      const dedupSince = new Date();
+      dedupSince.setHours(dedupSince.getHours() - 24);
       const alreadyNotified = await tx.notification.findFirst({
         where: {
           type: 'LOW_STOCK',
-          isRead: false,
           message: { contains: `[productId:${updatedProduct.id}]` },
+          createdAt: { gte: dedupSince },
         },
       });
       if (!alreadyNotified) {
@@ -193,6 +241,13 @@ export class BillingService {
       // 3. Validate and deduct stock — only for actual invoices, not quotations.
       // Quotations are non-binding offers; stock isn't reserved until conversion.
       if (!isQuotation) {
+        // Block dispensing of Schedule H/H1/X drugs without a valid prescription
+        // on file before we touch any stock.
+        await this.assertPrescriptionForScheduledItems(
+          tx,
+          createInvoiceDto.items,
+          createInvoiceDto.customerId ?? null,
+        );
         for (const item of createInvoiceDto.items) {
           await this.deductStockForItem(tx, item, branchId);
         }
@@ -336,6 +391,11 @@ export class BillingService {
       // Reserve real stock now — quotations don't reserve, so on conversion
       // we run the same validate-and-decrement logic as a fresh invoice.
       // Throws if any batch is expired, missing, or under-stocked.
+      await this.assertPrescriptionForScheduledItems(
+        tx,
+        quotation.items.map((i) => ({ productId: i.productId, productName: i.productName })),
+        quotation.customerId ?? null,
+      );
       for (const item of quotation.items) {
         await this.deductStockForItem(
           tx,
@@ -435,6 +495,16 @@ export class BillingService {
     if (!invoice) throw new NotFoundException('Invoice not found');
     if (branchId && invoice.branchId && invoice.branchId !== branchId) {
       throw new NotFoundException('Invoice not found');
+    }
+    // Block hard-delete of any invoice that has financial impact (paid, partly
+    // paid, on credit, returned, or in draft awaiting approval). Only DRAFT
+    // QUOTATIONs and CANCELLED invoices are safe to physically remove.
+    const deletable = invoice.status === 'CANCELLED'
+      || (invoice.type === 'QUOTATION' && invoice.status === 'DRAFT');
+    if (!deletable) {
+      throw new BadRequestException(
+        `Cannot delete invoice ${invoice.invoiceNumber} (status: ${invoice.status}). Cancel it first; deletion is reserved for cancelled invoices and unconverted quotations.`,
+      );
     }
     return this.prisma.invoice.delete({ where: { id } });
   }

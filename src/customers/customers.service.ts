@@ -16,6 +16,15 @@ export class CustomersService {
     private readonly approvalsService: ApprovalsService,
   ) {}
 
+  // Strip everything except digits so "9876543210", "(987) 654-3210", and
+  // "+91 98765 43210" all collapse to a comparable form. Used both for the
+  // uniqueness check and for what gets persisted, so the stored value stays
+  // canonical.
+  private normalizePhone(phone: string | null | undefined): string {
+    if (!phone) return '';
+    return phone.replace(/\D/g, '');
+  }
+
   // Reject creating a customer that duplicates an existing one's phone within
   // the same branch scope. Phone is the natural key pharmacies use to look
   // people up — duplicates split a customer's history across two records.
@@ -24,23 +33,29 @@ export class CustomersService {
     branchId?: string | null,
     excludeId?: string,
   ) {
-    if (!phone) return;
+    const normalized = this.normalizePhone(phone);
+    if (!normalized) return;
     const branchScope = branchId
       ? [{ branchId }, { branchId: null }]
       : [{ branchId: null }];
-    const existing = await this.prisma.customer.findFirst({
+    // Match any existing record whose digits-only phone matches. We can't do
+    // this in pure SQL without a normalised column, so we scan candidates
+    // matching the last 10 digits (Indian mobile length) — narrow enough to
+    // keep this cheap on real data.
+    const last10 = normalized.slice(-10);
+    const candidates = await this.prisma.customer.findFirst({
       where: {
         AND: [
-          { phone },
+          { phone: { contains: last10 } },
           { OR: branchScope },
           ...(excludeId ? [{ id: { not: excludeId } }] : []),
         ],
       },
       select: { id: true, name: true, phone: true },
     });
-    if (existing) {
+    if (candidates && this.normalizePhone(candidates.phone) === normalized) {
       throw new ConflictException(
-        `Phone ${phone} is already used by customer "${existing.name}". Search and edit that record instead of creating a duplicate.`,
+        `Phone ${phone} is already used by customer "${candidates.name}". Search and edit that record instead of creating a duplicate.`,
       );
     }
   }
@@ -49,17 +64,21 @@ export class CustomersService {
     createCustomerDto: CreateCustomerDto & { branchId?: string },
     user?: { userId: string; role: string },
   ) {
+    // Canonicalise phone before storing so future lookups + the unique check
+    // both work even if the user pasted in a formatted number.
+    const normalizedPhone = this.normalizePhone(createCustomerDto.phone);
+    const dto = { ...createCustomerDto, phone: normalizedPhone };
     // Block phone-duplicate before either path (direct create or approval).
     // For the approval path we want the pharmacist to see the conflict
     // immediately rather than having admin discover it later.
     await this.assertUniquePhone(
-      createCustomerDto.phone,
-      createCustomerDto.branchId ?? null,
+      dto.phone,
+      dto.branchId ?? null,
     );
 
     // PHARMACISTs must request approval; ADMINs and others create directly
     if (user?.role === 'PHARMACIST') {
-      const { branchId, ...payload } = createCustomerDto;
+      const { branchId, ...payload } = dto;
       const req = await this.approvalsService.createRequest({
         type: 'NEW_CUSTOMER',
         payload: payload as Record<string, any>,
@@ -68,7 +87,7 @@ export class CustomersService {
       });
       return { approvalRequested: true, approvalRequestId: req.id };
     }
-    return this.prisma.customer.create({ data: createCustomerDto });
+    return this.prisma.customer.create({ data: dto });
   }
 
   async findAll(query?: string, branchId?: string) {
@@ -114,18 +133,39 @@ export class CustomersService {
 
   async update(id: string, updateCustomerDto: UpdateCustomerDto, branchId?: string) {
     const existing = await this.findOne(id, branchId);
-    if (updateCustomerDto.phone && updateCustomerDto.phone !== existing.phone) {
-      await this.assertUniquePhone(
-        updateCustomerDto.phone,
-        existing.branchId ?? null,
-        id,
-      );
+    const data = { ...updateCustomerDto } as UpdateCustomerDto;
+    if (data.phone !== undefined) {
+      const normalized = this.normalizePhone(data.phone);
+      if (normalized !== this.normalizePhone(existing.phone)) {
+        await this.assertUniquePhone(normalized, existing.branchId ?? null, id);
+      }
+      data.phone = normalized;
     }
-    return this.prisma.customer.update({ where: { id }, data: updateCustomerDto });
+    return this.prisma.customer.update({ where: { id }, data });
   }
 
   async remove(id: string, branchId?: string) {
-    await this.findOne(id, branchId);
+    const customer = await this.findOne(id, branchId);
+    // Block delete if the customer has any non-terminal invoices. Hard-deleting
+    // a customer with open credit invoices would either FK-cascade their entire
+    // history away or fail with an opaque DB error — both bad outcomes.
+    const openInvoiceCount = await this.prisma.invoice.count({
+      where: {
+        customerId: id,
+        status: { notIn: ['PAID', 'RETURNED', 'CANCELLED'] },
+      },
+    });
+    if (openInvoiceCount > 0) {
+      throw new BadRequestException(
+        `Cannot delete "${customer.name}" — they have ${openInvoiceCount} open invoice(s). Settle or cancel those first, or set the customer inactive instead.`,
+      );
+    }
+    const outstanding = Number(customer.currentOutstanding ?? 0);
+    if (outstanding > 0) {
+      throw new BadRequestException(
+        `Cannot delete "${customer.name}" — outstanding balance is ₹${outstanding.toFixed(2)}. Reconcile the ledger first.`,
+      );
+    }
     return this.prisma.customer.delete({ where: { id } });
   }
 

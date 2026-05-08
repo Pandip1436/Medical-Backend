@@ -39,8 +39,9 @@ export class SuppliersController {
     @Request() req: AuthenticatedRequest,
     @Query('branchId') qBranchId?: string,
   ) {
-    // If user has a fixed branch (branch-specific role), use it.
-    // Otherwise, use the branchId from the request body or query param.
+    // Suppliers are per-branch master data: HQ's "Sun Pharma" and BR1's
+    // "Sun Pharma" are separate records so each branch's history and
+    // outstanding stay isolated. Pin new suppliers to the caller's branch.
     const effectiveBranchId =
       req.user.branchId ?? createSupplierDto.branchId ?? qBranchId ?? undefined;
 

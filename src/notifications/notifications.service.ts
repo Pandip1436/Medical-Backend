@@ -2,6 +2,18 @@ import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateNotificationDto, NotificationType } from './dto/create-notification.dto';
 
+// Window-based dedup: don't fire the same alert again within this many hours,
+// regardless of whether the user has read the previous one. Without a window,
+// once an admin marked the alert as read, the next sweep would create a new
+// duplicate notification on every cycle.
+const DEDUP_WINDOW_HOURS = Number(process.env.NOTIFICATION_DEDUP_WINDOW_HOURS ?? 24);
+
+function dedupSince(): Date {
+  const d = new Date();
+  d.setHours(d.getHours() - DEDUP_WINDOW_HOURS);
+  return d;
+}
+
 @Injectable()
 export class NotificationsService {
   constructor(private readonly prisma: PrismaService) {}
@@ -64,12 +76,13 @@ export class NotificationsService {
     let created = 0;
 
     for (const p of lowStock) {
-      // Use exact marker [productId:X] so the dedup check is precise
+      // Dedup by marker within a time window — independent of read state, so
+      // marking the previous alert as read doesn't unblock immediate re-firing.
       const existing = await this.prisma.notification.findFirst({
         where: {
           type: NotificationType.LOW_STOCK,
-          isRead: false,
           message: { contains: `[productId:${p.id}]` },
+          createdAt: { gte: dedupSince() },
         },
       });
       if (!existing) {
@@ -125,8 +138,8 @@ export class NotificationsService {
       const existing = await this.prisma.notification.findFirst({
         where: {
           type: NotificationType.EXPIRY,
-          isRead: false,
           message: { contains: `[batchId:${b.id}]` },
+          createdAt: { gte: dedupSince() },
         },
       });
       if (!existing) {
@@ -207,8 +220,8 @@ export class NotificationsService {
       const existing = await this.prisma.notification.findFirst({
         where: {
           type: NotificationType.PAYMENT_DUE,
-          isRead: false,
           message: { contains: `[invoiceId:${inv.id}]` },
+          createdAt: { gte: dedupSince() },
         },
       });
       if (!existing) {

@@ -3,6 +3,15 @@ import { PrismaService } from '../prisma/prisma.service';
 import { CreateExpenseDto } from './dto/create-expense.dto';
 import { UpdateExpenseDto } from './dto/update-expense.dto';
 
+// Canonicalise paymentMode strings to UPPERCASE before storing. Reports filter
+// by exact match (`paymentMode IN ('CASH', ...)`), so a row stored as 'Cash'
+// silently disappears from the cash book. Normalising on the way in (and on
+// updates) keeps the storage shape predictable for everyone.
+function normalizePaymentMode(mode: string | null | undefined): string | undefined {
+  if (!mode) return undefined;
+  return mode.trim().toUpperCase();
+}
+
 @Injectable()
 export class ExpensesService {
   constructor(private prisma: PrismaService) {}
@@ -14,7 +23,7 @@ export class ExpensesService {
         category: dto.category,
         description: dto.description,
         amount: dto.amount,
-        paymentMode: dto.paymentMode,
+        paymentMode: normalizePaymentMode(dto.paymentMode) ?? 'CASH',
         receiptImage: dto.receiptImage,
         branchId: branchId ?? dto.branchId,
       },
@@ -56,7 +65,7 @@ export class ExpensesService {
         ...(dto.category && { category: dto.category }),
         ...(dto.description && { description: dto.description }),
         ...(dto.amount !== undefined && { amount: dto.amount }),
-        ...(dto.paymentMode && { paymentMode: dto.paymentMode }),
+        ...(dto.paymentMode && { paymentMode: normalizePaymentMode(dto.paymentMode) }),
         ...(dto.receiptImage !== undefined && { receiptImage: dto.receiptImage }),
       },
     });

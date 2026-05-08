@@ -163,6 +163,18 @@ export class ReportsController {
     return this.reportsService.getProfitLoss({ from, to, branchId: req.user.branchId ?? branchId });
   }
 
+  @Get('financial/profit-loss/monthly')
+  @Roles('ADMIN', 'ACCOUNTANT')
+  @ApiOperation({ summary: 'Monthly revenue + net profit for a year (drives the P&L trend chart)' })
+  @ApiQuery({ name: 'year', required: false })
+  @ApiQuery({ name: 'branchId', required: false })
+  getMonthlyProfitLoss(@Request() req: any, @Query('year') year?: string, @Query('branchId') branchId?: string) {
+    return this.reportsService.getMonthlyProfitLoss(
+      year ? Number(year) : undefined,
+      req.user.branchId ?? branchId,
+    );
+  }
+
   @Get('financial/cash-book')
   @Roles('ADMIN', 'ACCOUNTANT')
   @ApiOperation({ summary: 'Cash book with receipts and payments' })

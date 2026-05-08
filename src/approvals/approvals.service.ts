@@ -78,10 +78,18 @@ export class ApprovalsService {
   }
 
   // ── Admin approves ─────────────────────────────────────────
-  async approve(id: string, reviewedById: string, reviewNote?: string) {
+  async approve(id: string, reviewedById: string, reviewNote?: string, reviewerBranchId?: string) {
     const req = await this.prisma.approvalRequest.findUnique({ where: { id } });
     if (!req) throw new NotFoundException('Approval request not found');
     if (req.status !== 'PENDING') throw new BadRequestException('Request is no longer pending');
+    // Branch isolation: an admin tied to a branch can only review requests
+    // from the same branch. Admins without a branchId (super-admin / multi-
+    // branch) can review anything.
+    if (reviewerBranchId && req.branchId && reviewerBranchId !== req.branchId) {
+      throw new ForbiddenException(
+        'You cannot approve a request from a different branch',
+      );
+    }
 
     const updated = await this.prisma.approvalRequest.update({
       where: { id },
@@ -106,10 +114,15 @@ export class ApprovalsService {
   }
 
   // ── Admin rejects ──────────────────────────────────────────
-  async reject(id: string, reviewedById: string, reviewNote: string) {
+  async reject(id: string, reviewedById: string, reviewNote: string, reviewerBranchId?: string) {
     const req = await this.prisma.approvalRequest.findUnique({ where: { id } });
     if (!req) throw new NotFoundException('Approval request not found');
     if (req.status !== 'PENDING') throw new BadRequestException('Request is no longer pending');
+    if (reviewerBranchId && req.branchId && reviewerBranchId !== req.branchId) {
+      throw new ForbiddenException(
+        'You cannot reject a request from a different branch',
+      );
+    }
 
     const updated = await this.prisma.approvalRequest.update({
       where: { id },
@@ -174,6 +187,37 @@ export class ApprovalsService {
             throw new BadRequestException(
               `Draft invoice already in status ${invoice.status}`,
             );
+          }
+          // Re-check Schedule H/H1/X prescription requirement at approval
+          // time — if the customer's Rx expired between request and approval,
+          // we can't legally dispense.
+          const productSchedules = await tx.product.findMany({
+            where: { id: { in: invoice.items.map((i) => i.productId) } },
+            select: { id: true, name: true, schedule: true },
+          });
+          const needsRx = productSchedules.filter(
+            (p) => p.schedule === 'H' || p.schedule === 'H1' || p.schedule === 'X',
+          );
+          if (needsRx.length > 0) {
+            if (!invoice.customerId) {
+              throw new BadRequestException(
+                `Cannot approve: Schedule H/H1/X drugs require a registered customer with a valid prescription.`,
+              );
+            }
+            const activeRx = await tx.prescription.findFirst({
+              where: {
+                customerId: invoice.customerId,
+                isActive: true,
+                OR: [{ validUntil: null }, { validUntil: { gte: new Date() } }],
+              },
+              select: { id: true },
+            });
+            if (!activeRx) {
+              const names = needsRx.map((p) => p.name).join(', ');
+              throw new BadRequestException(
+                `Cannot approve: customer has no active prescription for ${names}.`,
+              );
+            }
           }
           for (const item of invoice.items) {
             const batch = await tx.batch.findUnique({
@@ -311,6 +355,68 @@ export class ApprovalsService {
         break;
       }
 
+      case 'INVENTORY_ADJUSTMENT' as any: {
+        // Re-execute the bulk stock adjustment from stored payload. We re-load
+        // each batch fresh (don't trust quantities captured at submit time —
+        // they may have moved between request and approval) and re-issue an
+        // ADJ document number atomically.
+        const items = (payload.items as Array<{
+          productId: string;
+          batchId: string;
+          adjustedQty: number;
+          reason: string;
+        }>) ?? [];
+        await this.prisma.$transaction(async (tx) => {
+          const adjustmentNo = await this.numbering.nextNumber(
+            tx,
+            'ADJ' as any,
+            branchId,
+          );
+          for (const item of items) {
+            const product = await tx.product.findUnique({ where: { id: item.productId } });
+            if (!product) {
+              throw new NotFoundException(`Product ${item.productId} not found`);
+            }
+            if (branchId && product.branchId && product.branchId !== branchId) {
+              throw new BadRequestException(
+                `Product ${product.name} belongs to a different branch`,
+              );
+            }
+            const batch = await tx.batch.findFirst({
+              where: { id: item.batchId, productId: item.productId },
+            });
+            if (!batch) {
+              throw new NotFoundException(`Batch ${item.batchId} not found`);
+            }
+            const diff = item.adjustedQty - batch.quantity;
+            await tx.batch.update({
+              where: { id: batch.id },
+              data: { quantity: item.adjustedQty },
+            });
+            await tx.product.update({
+              where: { id: product.id },
+              data: { totalStock: { increment: diff } },
+            });
+            await (tx as any).stockAdjustmentLog.create({
+              data: {
+                adjustmentNo,
+                productId: product.id,
+                batchId: batch.id,
+                batchNumber: batch.batchNumber,
+                userId: payload.requestedById ?? '',
+                userName: payload.requestedByName ?? 'Unknown',
+                reason: item.reason,
+                previousQty: batch.quantity,
+                adjustedQty: item.adjustedQty,
+                diff,
+                branchId: product.branchId ?? branchId ?? null,
+              },
+            });
+          }
+        });
+        break;
+      }
+
       case 'PURCHASE_RETURN': {
         const settlementMode = payload.settlementMode ?? 'REFUND';
         // ADJUST is auto-settled at create; otherwise honour requested status (default SENT)
@@ -363,8 +469,21 @@ export class ApprovalsService {
               })) },
             },
           });
-          // ADJUST: decrement supplier outstanding (we owe them less now)
+          // ADJUST: decrement supplier outstanding (we owe them less now).
+          // Re-check at approval-time: between request and approval, other
+          // payments may have settled the outstanding. Block if the adjustment
+          // would push outstanding negative.
           if (settlementMode === 'ADJUST') {
+            const supplier = await tx.supplier.findUnique({
+              where: { id: payload.supplierId },
+              select: { currentOutstanding: true, name: true },
+            });
+            const currentOutstanding = Number(supplier?.currentOutstanding ?? 0);
+            if (Number(payload.totalAmount) > currentOutstanding + 0.01) {
+              throw new BadRequestException(
+                `ADJUST debit note (₹${Number(payload.totalAmount).toFixed(2)}) exceeds supplier "${supplier?.name}" outstanding (₹${currentOutstanding.toFixed(2)}). The outstanding may have been settled since the request was raised.`,
+              );
+            }
             await tx.supplier.update({
               where: { id: payload.supplierId },
               data: { currentOutstanding: { decrement: payload.totalAmount } as any },

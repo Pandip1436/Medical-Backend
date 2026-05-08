@@ -6,7 +6,7 @@ import {
   Delete,
   Body,
   Param,
-  Query,
+  Request,
   UseGuards,
 } from '@nestjs/common';
 import { RemindersService } from './reminders.service';
@@ -30,37 +30,39 @@ export class RemindersController {
   constructor(private readonly service: RemindersService) {}
 
   @Get()
-  findAll(@Query('branchId') branchId?: string) {
-    return this.service.findAll(branchId);
+  findAll(@Request() req: any) {
+    return this.service.findAll(req.user.branchId);
   }
 
   @Get('due-today')
-  findDueToday(@Query('branchId') branchId?: string) {
-    return this.service.findDueToday(branchId);
+  findDueToday(@Request() req: any) {
+    return this.service.findDueToday(req.user.branchId);
   }
 
   @Post()
-  create(@Body() dto: CreateReminderDto) {
-    return this.service.create(dto);
+  create(@Body() dto: CreateReminderDto, @Request() req: any) {
+    // Force the reminder onto the user's branch so a BR1 user can't slip a
+    // BR2 branchId into the body.
+    return this.service.create({ ...dto, branchId: req.user.branchId ?? dto.branchId });
   }
 
   @Patch(':id')
-  update(@Param('id') id: string, @Body() dto: UpdateReminderDto) {
-    return this.service.update(id, dto);
+  update(@Param('id') id: string, @Body() dto: UpdateReminderDto, @Request() req: any) {
+    return this.service.update(id, dto, req.user.branchId);
   }
 
   @Delete(':id')
-  remove(@Param('id') id: string) {
-    return this.service.remove(id);
+  remove(@Param('id') id: string, @Request() req: any) {
+    return this.service.remove(id, req.user.branchId);
   }
 
   @Post(':id/contacts')
-  addContactLog(@Param('id') id: string, @Body() dto: CreateContactLogDto) {
-    return this.service.addContactLog(id, dto);
+  addContactLog(@Param('id') id: string, @Body() dto: CreateContactLogDto, @Request() req: any) {
+    return this.service.addContactLog(id, dto, req.user.branchId);
   }
 
   @Get(':id/contacts')
-  getContactLogs(@Param('id') id: string) {
-    return this.service.getContactLogs(id);
+  getContactLogs(@Param('id') id: string, @Request() req: any) {
+    return this.service.getContactLogs(id, req.user.branchId);
   }
 }

@@ -1,15 +1,45 @@
-import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException, ConflictException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { ApprovalsService } from '../approvals/approvals.service';
+import { DocumentNumberingService } from '../common/services/document-numbering.service';
 import { Prisma } from '@prisma/client';
 import { CreateProductDto } from './dto/create-product.dto';
 import { UpdateProductDto } from './dto/update-product.dto';
 
+// Adjustments above this rupee value require admin approval when submitted by
+// a non-admin user. Configurable via env so finance can tune it.
+const DEFAULT_ADJUSTMENT_APPROVAL_THRESHOLD = 5000;
+
 @Injectable()
 export class ProductsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly approvalsService: ApprovalsService,
+    private readonly numbering: DocumentNumberingService,
+  ) {}
+
+  // Reject duplicate product name within the same branch (case-insensitive).
+  // Two products with identical names break FEFO selection (which one to ship?)
+  // and confuse stock reporting. Barcode uniqueness alone isn't enough — many
+  // products are entered without barcodes.
+  private async assertUniqueName(name: string, branchId?: string, ignoreId?: string) {
+    const existing = await this.prisma.product.findFirst({
+      where: {
+        name: { equals: name, mode: 'insensitive' },
+        branchId: branchId ?? null,
+        ...(ignoreId ? { NOT: { id: ignoreId } } : {}),
+      },
+    });
+    if (existing) {
+      throw new ConflictException(
+        `Product "${name}" already exists in this branch (id: ${existing.id})`,
+      );
+    }
+  }
 
   async create(createProductDto: CreateProductDto & { branchId?: string }) {
     const { categoryId, branchId, ...rest } = createProductDto;
+    await this.assertUniqueName(rest.name, branchId);
     return this.prisma.product.create({
       data: { ...rest, categoryId, ...(branchId ? { branchId } : {}) } as unknown as Prisma.ProductUncheckedCreateInput,
     });
@@ -77,6 +107,9 @@ export class ProductsService {
 
   async update(id: string, updateProductDto: UpdateProductDto, branchId?: string) {
     await this.findOne(id, branchId);
+    if (updateProductDto.name) {
+      await this.assertUniqueName(updateProductDto.name, branchId, id);
+    }
     return this.prisma.product.update({ where: { id }, data: updateProductDto });
   }
 
@@ -119,6 +152,15 @@ export class ProductsService {
           });
           if (existing) { skipped++; continue; }
         }
+        // Skip rows whose name already exists in this branch
+        const dupName = await this.prisma.product.findFirst({
+          where: {
+            name: { equals: row['name'], mode: 'insensitive' },
+            branchId: branchId ?? null,
+          },
+          select: { id: true },
+        });
+        if (dupName) { skipped++; continue; }
 
         const categoryId = row['category']
           ? categoryByName.get(row['category'].toLowerCase().trim()) ?? undefined
@@ -177,25 +219,42 @@ export class ProductsService {
 
     const diff = dto.adjustedQty - batch.quantity;
 
-    await this.prisma.$transaction([
-      this.prisma.batch.update({ where: { id: batchId }, data: { quantity: dto.adjustedQty } }),
-      this.prisma.product.update({ where: { id: productId }, data: { totalStock: { increment: diff } } }),
-      ...(user ? [(this.prisma as any).stockAdjustmentLog.create({ data: {
-        productId,
+    return this.prisma.$transaction(async (tx) => {
+      const adjustmentNo = await this.numbering.nextNumber(
+        tx,
+        'ADJ',
+        product.branchId ?? branchId ?? null,
+      );
+      await tx.batch.update({ where: { id: batchId }, data: { quantity: dto.adjustedQty } });
+      await tx.product.update({ where: { id: productId }, data: { totalStock: { increment: diff } } });
+      if (user) {
+        await (tx as any).stockAdjustmentLog.create({
+          data: {
+            adjustmentNo,
+            productId,
+            batchId,
+            batchNumber: batch.batchNumber,
+            userId: user.userId,
+            userName: user.name,
+            reason: dto.reason,
+            previousQty: batch.quantity,
+            adjustedQty: dto.adjustedQty,
+            diff,
+            notes: dto.notes ?? null,
+            branchId: product.branchId ?? branchId ?? null,
+          },
+        });
+      }
+      return {
+        success: true,
+        adjustmentNo,
         batchId,
-        batchNumber: batch.batchNumber,
-        userId: user.userId,
-        userName: user.name,
-        reason: dto.reason,
         previousQty: batch.quantity,
-        adjustedQty: dto.adjustedQty,
+        newQty: dto.adjustedQty,
         diff,
-        notes: dto.notes ?? null,
-        branchId: product.branchId ?? branchId ?? null,
-      }})] : []),
-    ]);
-
-    return { success: true, batchId, previousQty: batch.quantity, newQty: dto.adjustedQty, diff, reason: dto.reason };
+        reason: dto.reason,
+      };
+    });
   }
 
   async getProductHistory(productId: string, branchId?: string, opts: { skip?: number; take?: number } = {}) {
@@ -375,31 +434,116 @@ export class ProductsService {
         }
         const batch = await this.prisma.batch.findFirst({ where: { id: item.batchId, productId: item.productId } });
         if (!batch) throw new NotFoundException(`Batch ${item.batchId} not found`);
-        return { ...item, previousQty: batch.quantity, diff: item.adjustedQty - batch.quantity, branchId: product.branchId, batchNumber: batch.batchNumber };
+        return {
+          ...item,
+          previousQty: batch.quantity,
+          diff: item.adjustedQty - batch.quantity,
+          branchId: product.branchId,
+          batchNumber: batch.batchNumber,
+        };
       }),
     );
 
-    await this.prisma.$transaction([
-      ...resolved.flatMap((item) => [
-        this.prisma.batch.update({ where: { id: item.batchId }, data: { quantity: item.adjustedQty } }),
-        this.prisma.product.update({ where: { id: item.productId }, data: { totalStock: { increment: item.diff } } }),
-      ]),
-      ...(user ? resolved.map((item) =>
-        (this.prisma as any).stockAdjustmentLog.create({ data: {
-          productId: item.productId,
-          batchId: item.batchId,
-          batchNumber: item.batchNumber,
-          userId: user.userId,
-          userName: user.name,
-          reason: item.reason,
-          previousQty: item.previousQty,
-          adjustedQty: item.adjustedQty,
-          diff: item.diff,
-          branchId: item.branchId ?? branchId ?? null,
-        }})
-      ) : []),
-    ]);
+    return this.prisma.$transaction(async (tx) => {
+      const adjustmentNo = await this.numbering.nextNumber(
+        tx,
+        'ADJ',
+        branchId ?? null,
+      );
+      for (const item of resolved) {
+        await tx.batch.update({
+          where: { id: item.batchId },
+          data: { quantity: item.adjustedQty },
+        });
+        await tx.product.update({
+          where: { id: item.productId },
+          data: { totalStock: { increment: item.diff } },
+        });
+        if (user) {
+          await (tx as any).stockAdjustmentLog.create({
+            data: {
+              adjustmentNo,
+              productId: item.productId,
+              batchId: item.batchId,
+              batchNumber: item.batchNumber,
+              userId: user.userId,
+              userName: user.name,
+              reason: item.reason,
+              previousQty: item.previousQty,
+              adjustedQty: item.adjustedQty,
+              diff: item.diff,
+              branchId: item.branchId ?? branchId ?? null,
+            },
+          });
+        }
+      }
+      return {
+        success: true,
+        adjustmentNo,
+        adjusted: resolved.length,
+        items: resolved.map(({ productId, batchId, previousQty, adjustedQty, diff, reason }) => ({
+          productId,
+          batchId,
+          previousQty,
+          newQty: adjustedQty,
+          diff,
+          reason,
+        })),
+      };
+    });
+  }
 
-    return { success: true, adjusted: resolved.length, items: resolved.map(({ productId, batchId, previousQty, adjustedQty, diff, reason }) => ({ productId, batchId, previousQty, newQty: adjustedQty, diff, reason })) };
+  // Estimate the rupee-value impact of an adjustment so the controller can
+  // decide whether to queue an approval. Uses batch.mrp as the per-unit value.
+  // Skips lines whose batch can't be found — those will throw at execute time.
+  async estimateAdjustmentValue(
+    items: { productId: string; batchId: string; adjustedQty: number }[],
+    branchId?: string,
+  ): Promise<number> {
+    let total = 0;
+    for (const item of items) {
+      const batch = await this.prisma.batch.findFirst({
+        where: { id: item.batchId, productId: item.productId },
+      });
+      if (!batch) continue;
+      const product = await this.prisma.product.findUnique({
+        where: { id: item.productId },
+        select: { branchId: true },
+      });
+      if (branchId && product?.branchId && product.branchId !== branchId) continue;
+      const diff = Math.abs(item.adjustedQty - batch.quantity);
+      total += diff * Number(batch.mrp);
+    }
+    return total;
+  }
+
+  // Decide whether to execute the adjustment immediately or queue it for admin
+  // approval based on rupee value and user role. Admins always execute.
+  async submitBulkAdjustment(
+    items: { productId: string; batchId: string; adjustedQty: number; reason: string }[],
+    branchId: string | undefined,
+    user: { userId: string; name: string; role: string },
+  ) {
+    const totalValue = await this.estimateAdjustmentValue(items, branchId);
+    const threshold = Number(
+      process.env.MAX_ADJUSTMENT_VALUE_NO_APPROVAL ?? DEFAULT_ADJUSTMENT_APPROVAL_THRESHOLD,
+    );
+
+    if (user.role !== 'ADMIN' && totalValue > threshold) {
+      const req = await this.approvalsService.createRequest({
+        type: 'INVENTORY_ADJUSTMENT' as any,
+        payload: { items, requestedByName: user.name },
+        requestedById: user.userId,
+        branchId,
+      });
+      return {
+        approvalRequested: true,
+        approvalRequestId: req.id,
+        totalValue,
+        threshold,
+      };
+    }
+
+    return this.bulkAdjustStock(items, branchId, user);
   }
 }

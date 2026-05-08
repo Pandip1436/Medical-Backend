@@ -462,10 +462,36 @@ export class ReportsService {
     const { from, to } = this.resolvePeriod(query);
     const bFilter = this.branchFilter(query.branchId);
 
+    // Only INVOICE-type rows that actually represent finalised sales count
+    // toward revenue. Exclude DRAFT (pharmacist's pending credit drafts not
+    // yet approved), CANCELLED (voided), and QUOTATION (non-binding).
+    const invoiceWhere = {
+      date: { gte: from, lte: to },
+      type: 'INVOICE' as const,
+      status: { notIn: ['DRAFT', 'CANCELLED'] as any[] },
+      ...bFilter,
+    };
     const invoices = await this.prisma.invoice.findMany({
-      where: { date: { gte: from, lte: to }, ...bFilter },
+      where: invoiceWhere,
       include: { items: true },
     });
+    // Fetch every referenced batch in one query so COGS can use real
+    // purchase rates without an N+1. InvoiceItem stores batchId without a
+    // declared Prisma relation, so we resolve it ourselves.
+    const batchIds = Array.from(
+      new Set(
+        invoices.flatMap((inv) => inv.items.map((it) => it.batchId).filter(Boolean)),
+      ),
+    );
+    const batches = batchIds.length
+      ? await this.prisma.batch.findMany({
+          where: { id: { in: batchIds } },
+          select: { id: true, purchaseRate: true },
+        })
+      : [];
+    const purchaseRateByBatchId = new Map(
+      batches.map((b) => [b.id, Number(b.purchaseRate ?? 0)]),
+    );
     const creditNotes = await this.prisma.creditNote.aggregate({
       where: { date: { gte: from, lte: to }, ...bFilter },
       _sum: { totalAmount: true },
@@ -490,8 +516,16 @@ export class ReportsService {
     );
     const salesReturn = Number(creditNotes._sum.totalAmount ?? 0);
     const netSales = grossSales - salesReturn;
+    // COGS uses each batch's actual purchase rate. If the batch row was
+    // deleted (shouldn't happen — FK constraints), the line contributes 0 —
+    // better to under-report cost than fabricate it from a markup assumption.
     const costOfGoods = invoices.reduce(
-      (s, inv) => s + inv.items.reduce((si, it) => si + Number(it.rate) * 0.7 * it.quantity, 0),
+      (s, inv) =>
+        s +
+        inv.items.reduce((si, it) => {
+          const cost = purchaseRateByBatchId.get(it.batchId) ?? 0;
+          return si + cost * Number(it.quantity);
+        }, 0),
       0,
     );
     const grossPurchases = Number(purchases._sum.totalAmount ?? 0);
@@ -523,6 +557,29 @@ export class ReportsService {
       ],
       extras: { grossPurchases, purchaseReturn, totalTax },
     };
+  }
+
+  // Monthly P&L for a year — drives the trend chart on the FE so it shows
+  // real profit per month instead of a fake 20% derivation. Each month
+  // delegates to getProfitLoss so the calculation stays canonical.
+  async getMonthlyProfitLoss(year?: number, branchId?: string) {
+    const targetYear = year ?? new Date().getFullYear();
+    const months = Array.from({ length: 12 }, (_, i) => i);
+    const results = await Promise.all(
+      months.map(async (m) => {
+        const from = new Date(targetYear, m, 1).toISOString().slice(0, 10);
+        const to = new Date(targetYear, m + 1, 0).toISOString().slice(0, 10);
+        const pl = await this.getProfitLoss({ from, to, branchId });
+        const find = (label: string) =>
+          Number(pl.lineItems.find((li) => li.label === label)?.amount ?? 0);
+        return {
+          month: new Date(targetYear, m, 1).toLocaleString('en-IN', { month: 'short' }),
+          revenue: find('Net Sales'),
+          profit: find('Net Profit'),
+        };
+      }),
+    );
+    return { year: targetYear, chartData: results };
   }
 
   // ── GST Reports ────────────────────────────────────────────────
@@ -678,8 +735,15 @@ export class ReportsService {
       },
     });
 
+    // Case-insensitive cash match. New writes are normalised UPPERCASE in
+    // ExpensesService; the `mode: 'insensitive'` covers legacy rows stored as
+    // 'Cash' / 'cash' before the normalization landed.
     const cashExpenses = await this.prisma.expense.findMany({
-      where: { date: { gte: from, lte: to }, paymentMode: { in: ['CASH', 'cash'] }, ...bFilter },
+      where: {
+        date: { gte: from, lte: to },
+        paymentMode: { equals: 'CASH', mode: 'insensitive' },
+        ...bFilter,
+      },
       orderBy: { date: 'asc' },
     });
 
@@ -706,33 +770,68 @@ export class ReportsService {
       (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime(),
     );
 
-    let running = 0;
+    // Opening balance = sum of all CASH receipts and CASH expenses BEFORE the
+    // requested period. Carries the cash drawer forward day-to-day so a
+    // morning view of today's cash book starts with last night's close.
+    const [priorReceipts, priorPayments] = await Promise.all([
+      this.prisma.invoice.aggregate({
+        where: {
+          date: { lt: from },
+          paymentMode: { in: ['CASH', 'SPLIT'] },
+          ...bFilter,
+        },
+        _sum: { amountPaid: true },
+      }),
+      this.prisma.expense.aggregate({
+        where: {
+          date: { lt: from },
+          paymentMode: { equals: 'CASH', mode: 'insensitive' },
+          ...bFilter,
+        },
+        _sum: { amount: true },
+      }),
+    ]);
+    const openingBalance =
+      Number(priorReceipts._sum.amountPaid ?? 0) -
+      Number(priorPayments._sum.amount ?? 0);
+
+    let running = openingBalance;
     const ledger = entries.map((e) => {
       running += e.type === 'RECEIPT' ? e.amount : -e.amount;
       return { ...e, balance: running };
     });
 
+    const closingBalance = openingBalance + totalReceipts - totalPayments;
+
     return {
       period: { from, to },
+      openingBalance,
+      closingBalance,
       tableData: ledger,
       kpis: [
+        { label: 'Opening Balance', value: this.inr(openingBalance) },
         { label: 'Total Receipts', value: this.inr(totalReceipts) },
         { label: 'Total Payments', value: this.inr(totalPayments) },
-        { label: 'Net Cash Flow', value: this.inr(totalReceipts - totalPayments) },
+        { label: 'Closing Balance', value: this.inr(closingBalance) },
       ],
     };
   }
 
   // ── Customer Ledger ────────────────────────────────────────────
-  async getCustomerLedger(customerId: string, query: PeriodQuery) {
+  async getCustomerLedger(customerId: string, query: PeriodQuery & { branchId?: string }) {
     const { from, to } = this.resolvePeriod(query);
     const bFilter = this.branchFilter(query.branchId);
 
+    // Reject the lookup if the customer belongs to a different branch — keeps
+    // a BR1 accountant from probing HQ customer ids directly.
     const customer = await this.prisma.customer.findUnique({ where: { id: customerId } });
     if (!customer) return { customer: null, tableData: [], kpis: [] };
+    if (query.branchId && customer.branchId && customer.branchId !== query.branchId) {
+      return { customer: null, tableData: [], kpis: [] };
+    }
 
     const invoices = await this.prisma.invoice.findMany({
-      where: { customerId, date: { gte: from, lte: to } },
+      where: { customerId, date: { gte: from, lte: to }, ...bFilter },
       orderBy: { date: 'asc' },
       select: {
         id: true,
@@ -744,7 +843,7 @@ export class ReportsService {
       },
     });
     const creditNotes = await this.prisma.creditNote.findMany({
-      where: { customerId, date: { gte: from, lte: to } },
+      where: { customerId, date: { gte: from, lte: to }, ...bFilter },
       orderBy: { date: 'asc' },
     });
 
@@ -802,27 +901,32 @@ export class ReportsService {
   }
 
   // ── Supplier Ledger ────────────────────────────────────────────
-  async getSupplierLedger(supplierId: string, query: PeriodQuery) {
+  async getSupplierLedger(supplierId: string, query: PeriodQuery & { branchId?: string }) {
     const { from, to } = this.resolvePeriod(query);
     const bFilter = this.branchFilter(query.branchId);
 
+    // Same branch-scope check as customer ledger: reject if the supplier
+    // belongs to a different branch.
     const supplier = await this.prisma.supplier.findUnique({ where: { id: supplierId } });
     if (!supplier) return { supplier: null, tableData: [], kpis: [] };
+    if (query.branchId && supplier.branchId && supplier.branchId !== query.branchId) {
+      return { supplier: null, tableData: [], kpis: [] };
+    }
 
     const orders = await this.prisma.purchaseOrder.findMany({
-      where: { supplierId, date: { gte: from, lte: to } },
+      where: { supplierId, date: { gte: from, lte: to }, ...bFilter },
       orderBy: { date: 'asc' },
       select: { id: true, date: true, totalAmount: true, status: true, poNumber: true },
     });
 
     const grns = await this.prisma.gRN.findMany({
-      where: { supplierId, date: { gte: from, lte: to } },
+      where: { supplierId, date: { gte: from, lte: to }, ...bFilter },
       orderBy: { date: 'asc' },
       select: { id: true, date: true, totalAmount: true, grnNumber: true },
     });
 
     const purchaseReturns = await this.prisma.purchaseReturn.findMany({
-      where: { supplierId, createdAt: { gte: from, lte: to } },
+      where: { supplierId, createdAt: { gte: from, lte: to }, ...bFilter },
       orderBy: { createdAt: 'asc' },
       select: { id: true, createdAt: true, totalAmount: true, debitNoteNo: true },
     });
