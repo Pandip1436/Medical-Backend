@@ -228,9 +228,9 @@ let ProductsService = class ProductsService {
         return product;
     }
     async update(id, updateProductDto, branchId) {
-        await this.findOne(id, branchId);
-        if (updateProductDto.name) {
-            await this.assertUniqueName(updateProductDto.name, branchId, id);
+        const existing = await this.findOne(id, branchId);
+        if (updateProductDto.name && updateProductDto.name !== existing.name) {
+            await this.assertUniqueName(updateProductDto.name, existing.branchId ?? undefined, id);
         }
         return this.prisma.product.update({ where: { id }, data: updateProductDto });
     }

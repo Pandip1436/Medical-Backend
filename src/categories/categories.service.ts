@@ -58,9 +58,16 @@ export class CategoriesService {
   }
 
   async update(id: string, dto: UpdateCategoryDto, branchId?: string) {
-    await this.findOne(id, branchId);
-    if (dto.name) {
-      await this.assertNameAvailable(dto.name, branchId, id);
+    const existing = await this.findOne(id, branchId);
+    // Only re-check when the name actually changes; scope to the category's
+    // own branch so Super Admins (whose req.user.branchId may be null) don't
+    // false-positive against an unrelated category in the global scope.
+    if (dto.name && dto.name !== existing.name) {
+      await this.assertNameAvailable(
+        dto.name,
+        (existing as any).branchId ?? undefined,
+        id,
+      );
     }
     return this.prisma.category.update({ where: { id }, data: dto });
   }

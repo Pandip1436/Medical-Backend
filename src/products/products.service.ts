@@ -268,9 +268,17 @@ export class ProductsService {
   }
 
   async update(id: string, updateProductDto: UpdateProductDto, branchId?: string) {
-    await this.findOne(id, branchId);
-    if (updateProductDto.name) {
-      await this.assertUniqueName(updateProductDto.name, branchId, id);
+    const existing = await this.findOne(id, branchId);
+    // Re-check name uniqueness only when the name is actually changing, and
+    // scope the check to the product's own branch rather than the requester's:
+    // Super Admins editing a branch-scoped product would otherwise look in the
+    // wrong scope and trip on unrelated products that happen to share a name.
+    if (updateProductDto.name && updateProductDto.name !== existing.name) {
+      await this.assertUniqueName(
+        updateProductDto.name,
+        existing.branchId ?? undefined,
+        id,
+      );
     }
     return this.prisma.product.update({ where: { id }, data: updateProductDto });
   }

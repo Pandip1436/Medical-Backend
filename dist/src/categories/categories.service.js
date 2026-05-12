@@ -61,9 +61,9 @@ let CategoriesService = class CategoriesService {
         return { ...category, productCount: category._count.products };
     }
     async update(id, dto, branchId) {
-        await this.findOne(id, branchId);
-        if (dto.name) {
-            await this.assertNameAvailable(dto.name, branchId, id);
+        const existing = await this.findOne(id, branchId);
+        if (dto.name && dto.name !== existing.name) {
+            await this.assertNameAvailable(dto.name, existing.branchId ?? undefined, id);
         }
         return this.prisma.category.update({ where: { id }, data: dto });
     }
