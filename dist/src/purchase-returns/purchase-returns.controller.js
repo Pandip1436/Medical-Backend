@@ -16,6 +16,7 @@ exports.PurchaseReturnsController = void 0;
 const common_1 = require("@nestjs/common");
 const purchase_returns_service_1 = require("./purchase-returns.service");
 const create_purchase_return_dto_1 = require("./dto/create-purchase-return.dto");
+const client_1 = require("@prisma/client");
 const swagger_1 = require("@nestjs/swagger");
 const jwt_auth_guard_1 = require("../common/guards/jwt-auth.guard");
 const roles_guard_1 = require("../common/guards/roles.guard");
@@ -26,27 +27,29 @@ let PurchaseReturnsController = class PurchaseReturnsController {
         this.purchaseReturnsService = purchaseReturnsService;
     }
     create(dto, req) {
-        return this.purchaseReturnsService.create(dto, req.user.userId, req.user.branchId, req.user.role);
+        return this.purchaseReturnsService.create(dto, req.user.userId, req.user.branchId ?? undefined, req.user.role);
     }
     findAll(req, q, branchId) {
-        const effectiveBranchId = req.user.branchId ?? branchId;
+        const effectiveBranchId = req.user.branchId ?? branchId ?? undefined;
         return this.purchaseReturnsService.findAll(q, effectiveBranchId);
     }
     findOne(id, req) {
-        return this.purchaseReturnsService.findOne(id, req.user.branchId);
+        return this.purchaseReturnsService.findOne(id, req.user.branchId ?? undefined);
     }
     updateStatus(id, status, req) {
-        return this.purchaseReturnsService.updateStatus(id, status, req.user.branchId);
+        return this.purchaseReturnsService.updateStatus(id, status, req.user.branchId ?? undefined);
     }
     linkReplacement(id, replacementGrnId, req) {
-        return this.purchaseReturnsService.linkReplacementGrn(id, replacementGrnId, req.user.branchId);
+        return this.purchaseReturnsService.linkReplacementGrn(id, replacementGrnId, req.user.branchId ?? undefined);
     }
 };
 exports.PurchaseReturnsController = PurchaseReturnsController;
 __decorate([
     (0, common_1.Post)(),
     (0, roles_decorator_1.Roles)('ADMIN', 'PHARMACIST', 'INVENTORY_MANAGER'),
-    (0, swagger_1.ApiOperation)({ summary: 'Create a purchase return / debit note to supplier' }),
+    (0, swagger_1.ApiOperation)({
+        summary: 'Create a purchase return / debit note to supplier',
+    }),
     __param(0, (0, common_1.Body)()),
     __param(1, (0, common_1.Request)()),
     __metadata("design:type", Function),
@@ -55,7 +58,7 @@ __decorate([
 ], PurchaseReturnsController.prototype, "create", null);
 __decorate([
     (0, common_1.Get)(),
-    (0, roles_decorator_1.Roles)('ADMIN', 'INVENTORY_MANAGER', 'ACCOUNTANT'),
+    (0, roles_decorator_1.Roles)('ADMIN', 'INVENTORY_MANAGER', 'ACCOUNTANT', 'PHARMACIST'),
     (0, swagger_1.ApiOperation)({ summary: 'List purchase returns or search' }),
     (0, swagger_1.ApiQuery)({ name: 'branchId', required: false }),
     (0, swagger_1.ApiQuery)({ name: 'q', required: false }),
@@ -68,7 +71,7 @@ __decorate([
 ], PurchaseReturnsController.prototype, "findAll", null);
 __decorate([
     (0, common_1.Get)(':id'),
-    (0, roles_decorator_1.Roles)('ADMIN', 'INVENTORY_MANAGER', 'ACCOUNTANT'),
+    (0, roles_decorator_1.Roles)('ADMIN', 'INVENTORY_MANAGER', 'ACCOUNTANT', 'PHARMACIST'),
     (0, swagger_1.ApiOperation)({ summary: 'Get specific purchase return by ID' }),
     __param(0, (0, common_1.Param)('id')),
     __param(1, (0, common_1.Request)()),
@@ -78,19 +81,21 @@ __decorate([
 ], PurchaseReturnsController.prototype, "findOne", null);
 __decorate([
     (0, common_1.Patch)(':id'),
-    (0, roles_decorator_1.Roles)('ADMIN', 'INVENTORY_MANAGER', 'ACCOUNTANT'),
+    (0, roles_decorator_1.Roles)('ADMIN', 'INVENTORY_MANAGER', 'ACCOUNTANT', 'PHARMACIST'),
     (0, swagger_1.ApiOperation)({ summary: 'Update purchase return status' }),
     __param(0, (0, common_1.Param)('id')),
     __param(1, (0, common_1.Body)('status')),
     __param(2, (0, common_1.Request)()),
     __metadata("design:type", Function),
-    __metadata("design:paramtypes", [String, Object, Object]),
+    __metadata("design:paramtypes", [String, String, Object]),
     __metadata("design:returntype", void 0)
 ], PurchaseReturnsController.prototype, "updateStatus", null);
 __decorate([
     (0, common_1.Patch)(':id/link-replacement'),
     (0, roles_decorator_1.Roles)('ADMIN', 'INVENTORY_MANAGER'),
-    (0, swagger_1.ApiOperation)({ summary: 'Link a replacement GRN to a REPLACEMENT settlement debit note and mark as SETTLED' }),
+    (0, swagger_1.ApiOperation)({
+        summary: 'Link a replacement GRN to a REPLACEMENT settlement debit note and mark as SETTLED',
+    }),
     __param(0, (0, common_1.Param)('id')),
     __param(1, (0, common_1.Body)('replacementGrnId')),
     __param(2, (0, common_1.Request)()),

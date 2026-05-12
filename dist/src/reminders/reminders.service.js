@@ -17,6 +17,23 @@ let RemindersService = class RemindersService {
     constructor(prisma) {
         this.prisma = prisma;
     }
+    validateDayOfMonth(day) {
+        if (day < 1 || day > 28) {
+            throw new common_1.BadRequestException('dayOfMonth must be between 1 and 28 so the reminder fires every month (use 28 for end-of-month).');
+        }
+    }
+    async assertOwnedByBranch(id, branchId) {
+        const existing = await this.prisma.customerReminder.findUnique({
+            where: { id },
+            select: { id: true, branchId: true },
+        });
+        if (!existing)
+            throw new common_1.NotFoundException('Reminder not found');
+        if (branchId && existing.branchId && existing.branchId !== branchId) {
+            throw new common_1.NotFoundException('Reminder not found');
+        }
+        return existing;
+    }
     async findAll(branchId) {
         return this.prisma.customerReminder.findMany({
             where: branchId ? { branchId } : undefined,
@@ -38,6 +55,7 @@ let RemindersService = class RemindersService {
         });
     }
     async create(dto) {
+        this.validateDayOfMonth(dto.dayOfMonth);
         return this.prisma.customerReminder.create({
             data: {
                 customerId: dto.customerId,
@@ -52,7 +70,11 @@ let RemindersService = class RemindersService {
             },
         });
     }
-    async update(id, dto) {
+    async update(id, dto, branchId) {
+        await this.assertOwnedByBranch(id, branchId);
+        if (dto.dayOfMonth !== undefined) {
+            this.validateDayOfMonth(dto.dayOfMonth);
+        }
         return this.prisma.customerReminder.update({
             where: { id },
             data: dto,
@@ -62,10 +84,12 @@ let RemindersService = class RemindersService {
             },
         });
     }
-    async remove(id) {
+    async remove(id, branchId) {
+        await this.assertOwnedByBranch(id, branchId);
         return this.prisma.customerReminder.delete({ where: { id } });
     }
-    async addContactLog(reminderId, dto) {
+    async addContactLog(reminderId, dto, branchId) {
+        await this.assertOwnedByBranch(reminderId, branchId);
         return this.prisma.reminderContact.create({
             data: {
                 reminderId,
@@ -74,7 +98,8 @@ let RemindersService = class RemindersService {
             },
         });
     }
-    async getContactLogs(reminderId) {
+    async getContactLogs(reminderId, branchId) {
+        await this.assertOwnedByBranch(reminderId, branchId);
         return this.prisma.reminderContact.findMany({
             where: { reminderId },
             orderBy: { contactedAt: 'desc' },

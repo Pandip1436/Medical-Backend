@@ -13,18 +13,40 @@ exports.CreditNotesService = void 0;
 const common_1 = require("@nestjs/common");
 const prisma_service_1 = require("../prisma/prisma.service");
 const approvals_service_1 = require("../approvals/approvals.service");
+const document_numbering_service_1 = require("../common/services/document-numbering.service");
 let CreditNotesService = class CreditNotesService {
     prisma;
     approvalsService;
-    constructor(prisma, approvalsService) {
+    numbering;
+    constructor(prisma, approvalsService, numbering) {
         this.prisma = prisma;
         this.approvalsService = approvalsService;
+        this.numbering = numbering;
     }
     async create(dto, userId, branchId, userRole) {
         if (userRole === 'PHARMACIST') {
-            const invoice = await this.prisma.invoice.findUnique({ where: { id: dto.invoiceId } });
+            const invoice = await this.prisma.invoice.findUnique({
+                where: { id: dto.invoiceId },
+                include: { items: true },
+            });
             if (!invoice)
                 throw new common_1.NotFoundException('Invoice not found');
+            const returnedSoFar = await this.getReturnedQtyByInvoice(invoice.id, branchId);
+            const priorByKey = new Map();
+            for (const r of returnedSoFar) {
+                priorByKey.set(`${r.productId}::${r.batchId}`, r.alreadyReturned);
+            }
+            for (const item of dto.items) {
+                const sold = invoice.items.find((i) => i.productId === item.productId && i.batchId === item.batchId);
+                if (!sold) {
+                    throw new common_1.BadRequestException(`Item ${item.productName} (batch ${item.batchNumber}) not found on invoice`);
+                }
+                const alreadyReturned = priorByKey.get(`${item.productId}::${item.batchId}`) ?? 0;
+                const remaining = sold.quantity - alreadyReturned;
+                if (item.returnedQty > remaining) {
+                    throw new common_1.BadRequestException(`Cannot return ${item.returnedQty} of ${item.productName}: only ${remaining} unreturned (sold ${sold.quantity}, already returned/pending ${alreadyReturned})`);
+                }
+            }
             const req = await this.approvalsService.createRequest({
                 type: 'SALES_RETURN',
                 payload: {
@@ -49,13 +71,24 @@ let CreditNotesService = class CreditNotesService {
             if (branchId && invoice.branchId && invoice.branchId !== branchId) {
                 throw new common_1.NotFoundException('Invoice not found');
             }
+            const priorReturns = await tx.creditNoteItem.findMany({
+                where: { creditNote: { invoiceId: invoice.id } },
+                select: { productId: true, batchId: true, returnedQty: true },
+            });
+            const priorByKey = new Map();
+            for (const r of priorReturns) {
+                const k = `${r.productId}::${r.batchId}`;
+                priorByKey.set(k, (priorByKey.get(k) ?? 0) + r.returnedQty);
+            }
             for (const item of dto.items) {
                 const invoiceItem = invoice.items.find((i) => i.productId === item.productId && i.batchId === item.batchId);
                 if (!invoiceItem) {
                     throw new common_1.BadRequestException(`Item ${item.productName} (batch ${item.batchNumber}) not found on invoice`);
                 }
-                if (item.returnedQty > invoiceItem.quantity) {
-                    throw new common_1.BadRequestException(`Cannot return ${item.returnedQty} of ${item.productName}; only ${invoiceItem.quantity} were sold`);
+                const alreadyReturned = priorByKey.get(`${item.productId}::${item.batchId}`) ?? 0;
+                const remaining = invoiceItem.quantity - alreadyReturned;
+                if (item.returnedQty > remaining) {
+                    throw new common_1.BadRequestException(`Cannot return ${item.returnedQty} of ${item.productName}: only ${remaining} unreturned (sold ${invoiceItem.quantity}, already returned ${alreadyReturned})`);
                 }
                 await tx.batch.update({
                     where: { id: item.batchId },
@@ -66,7 +99,7 @@ let CreditNotesService = class CreditNotesService {
                     data: { totalStock: { increment: item.returnedQty } },
                 });
             }
-            const creditNoteNo = `CN-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+            const creditNoteNo = await this.numbering.nextNumber(tx, 'CN', invoice.branchId ?? branchId ?? null);
             const settlementMode = dto.settlementMode ?? 'REFUND';
             const creditNote = await tx.creditNote.create({
                 data: {
@@ -83,6 +116,7 @@ let CreditNotesService = class CreditNotesService {
                     igst: dto.igst ?? 0,
                     totalAmount: dto.totalAmount,
                     settlementMode,
+                    settledAt: settlementMode === 'CREDIT' ? new Date() : null,
                     notes: dto.notes,
                     createdById: userId,
                     items: {
@@ -152,11 +186,49 @@ let CreditNotesService = class CreditNotesService {
         }
         return cn;
     }
+    async getReturnedQtyByInvoice(invoiceId, branchId) {
+        const invoice = await this.prisma.invoice.findUnique({
+            where: { id: invoiceId },
+            select: { id: true, branchId: true },
+        });
+        if (!invoice)
+            throw new common_1.NotFoundException('Invoice not found');
+        if (branchId && invoice.branchId && invoice.branchId !== branchId) {
+            throw new common_1.NotFoundException('Invoice not found');
+        }
+        const approved = await this.prisma.creditNoteItem.findMany({
+            where: { creditNote: { invoiceId } },
+            select: { productId: true, batchId: true, returnedQty: true },
+        });
+        const pending = await this.prisma.approvalRequest.findMany({
+            where: { type: 'SALES_RETURN', status: 'PENDING' },
+            select: { payload: true },
+        });
+        const totals = new Map();
+        for (const r of approved) {
+            const k = `${r.productId}::${r.batchId}`;
+            totals.set(k, (totals.get(k) ?? 0) + r.returnedQty);
+        }
+        for (const req of pending) {
+            const payload = req.payload;
+            if (payload?.invoiceId !== invoiceId)
+                continue;
+            for (const it of payload.items ?? []) {
+                const k = `${it.productId}::${it.batchId}`;
+                totals.set(k, (totals.get(k) ?? 0) + Number(it.returnedQty ?? 0));
+            }
+        }
+        return Array.from(totals.entries()).map(([key, alreadyReturned]) => {
+            const [productId, batchId] = key.split('::');
+            return { productId, batchId, alreadyReturned };
+        });
+    }
 };
 exports.CreditNotesService = CreditNotesService;
 exports.CreditNotesService = CreditNotesService = __decorate([
     (0, common_1.Injectable)(),
     __metadata("design:paramtypes", [prisma_service_1.PrismaService,
-        approvals_service_1.ApprovalsService])
+        approvals_service_1.ApprovalsService,
+        document_numbering_service_1.DocumentNumberingService])
 ], CreditNotesService);
 //# sourceMappingURL=credit-notes.service.js.map

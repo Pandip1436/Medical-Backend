@@ -84,7 +84,7 @@ export declare class SettingsController {
     updateSetting(key: string, value: any): Promise<{
         id: string;
         updatedAt: Date;
-        value: import("@prisma/client/runtime/library").JsonValue;
         key: string;
+        value: import("@prisma/client/runtime/library").JsonValue;
     }>;
 }

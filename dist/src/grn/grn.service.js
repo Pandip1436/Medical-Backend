@@ -12,15 +12,51 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.GrnService = void 0;
 const common_1 = require("@nestjs/common");
 const prisma_service_1 = require("../prisma/prisma.service");
+const document_numbering_service_1 = require("../common/services/document-numbering.service");
 let GrnService = class GrnService {
     prisma;
-    constructor(prisma) {
+    numbering;
+    constructor(prisma, numbering) {
         this.prisma = prisma;
+        this.numbering = numbering;
     }
     async create(createGrnDto, branchId) {
         const effectiveBranchId = branchId ?? createGrnDto.branchId;
         return this.prisma.$transaction(async (tx) => {
-            const grnNumber = `GRN-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+            const grnNumber = await this.numbering.nextNumber(tx, 'GRN', effectiveBranchId ?? null);
+            if (createGrnDto.poId) {
+                const po = await tx.purchaseOrder.findUnique({
+                    where: { id: createGrnDto.poId },
+                    include: { items: true },
+                });
+                if (!po)
+                    throw new common_1.BadRequestException('Linked Purchase Order not found');
+                const priorGrns = await tx.gRN.findMany({
+                    where: { poId: createGrnDto.poId },
+                    include: { items: true },
+                });
+                const priorByProduct = {};
+                for (const g of priorGrns) {
+                    for (const gi of g.items) {
+                        priorByProduct[gi.productId] =
+                            (priorByProduct[gi.productId] ?? 0) + gi.receivedQty + gi.freeQty;
+                    }
+                }
+                const requiredByProduct = {};
+                for (const pi of po.items)
+                    requiredByProduct[pi.productId] = pi.requiredQty;
+                for (const item of createGrnDto.items) {
+                    const required = requiredByProduct[item.productId];
+                    if (required === undefined)
+                        continue;
+                    const alreadyReceived = priorByProduct[item.productId] ?? 0;
+                    const remaining = Math.max(0, required - alreadyReceived);
+                    const incoming = item.receivedQty + item.freeQty;
+                    if (incoming > remaining) {
+                        throw new common_1.BadRequestException(`Cannot receive ${incoming} of ${item.productName}: only ${remaining} remaining on PO (ordered ${required}, already received ${alreadyReceived})`);
+                    }
+                }
+            }
             for (const item of createGrnDto.items) {
                 const addedStock = item.receivedQty + item.freeQty;
                 if (addedStock > 0) {
@@ -34,15 +70,15 @@ let GrnService = class GrnService {
                             mrp: item.mrp,
                             purchaseRate: item.purchaseRate,
                             supplierId: createGrnDto.supplierId,
-                        }
+                        },
                     });
                     await tx.product.update({
                         where: { id: item.productId },
                         data: {
                             totalStock: { increment: addedStock },
                             purchaseRate: item.purchaseRate,
-                            mrp: item.mrp
-                        }
+                            mrp: item.mrp,
+                        },
                     });
                 }
             }
@@ -61,7 +97,7 @@ let GrnService = class GrnService {
                     branchId: effectiveBranchId,
                     isReplacement,
                     items: {
-                        create: createGrnDto.items.map(item => ({
+                        create: createGrnDto.items.map((item) => ({
                             productId: item.productId,
                             productName: item.productName,
                             orderedQty: item.orderedQty,
@@ -72,16 +108,20 @@ let GrnService = class GrnService {
                             expiryDate: new Date(item.expiryDate),
                             purchaseRate: item.purchaseRate,
                             mrp: item.mrp,
-                            damageQty: item.damageQty
-                        }))
-                    }
+                            damageQty: item.damageQty,
+                        })),
+                    },
                 },
-                include: { items: true }
+                include: { items: true },
             });
             if (!isReplacement && createGrnDto.supplierInvoiceAmount > 0) {
                 await tx.supplier.update({
                     where: { id: createGrnDto.supplierId },
-                    data: { currentOutstanding: { increment: createGrnDto.supplierInvoiceAmount } },
+                    data: {
+                        currentOutstanding: {
+                            increment: createGrnDto.supplierInvoiceAmount,
+                        },
+                    },
                 });
             }
             if (createGrnDto.poId) {
@@ -97,7 +137,10 @@ let GrnService = class GrnService {
                     const receivedByProduct = {};
                     for (const g of allGrns) {
                         for (const gi of g.items) {
-                            receivedByProduct[gi.productId] = (receivedByProduct[gi.productId] ?? 0) + gi.receivedQty + gi.freeQty;
+                            receivedByProduct[gi.productId] =
+                                (receivedByProduct[gi.productId] ?? 0) +
+                                    gi.receivedQty +
+                                    gi.freeQty;
                         }
                     }
                     for (const pi of po.items) {
@@ -112,14 +155,16 @@ let GrnService = class GrnService {
                     const allFulfilled = po.items.every((pi) => (receivedByProduct[pi.productId] ?? 0) >= pi.requiredQty);
                     await tx.purchaseOrder.update({
                         where: { id: createGrnDto.poId },
-                        data: { status: allFulfilled ? 'FULLY_RECEIVED' : 'PARTIALLY_RECEIVED' },
+                        data: {
+                            status: allFulfilled ? 'FULLY_RECEIVED' : 'PARTIALLY_RECEIVED',
+                        },
                     });
                 }
             }
             return grn;
         });
     }
-    findAll(query, branchId) {
+    async findAll(query, branchId, page, pageSize) {
         const where = {};
         if (branchId)
             where.branchId = branchId;
@@ -130,23 +175,45 @@ let GrnService = class GrnService {
                 { supplierInvoiceNo: { contains: query, mode: 'insensitive' } },
             ];
         }
-        return this.prisma.gRN.findMany({
-            where,
-            include: { items: true, purchaseReturns: { include: { items: true } } },
-            orderBy: { date: 'desc' },
-        });
+        const include = {
+            items: true,
+            purchaseReturns: { include: { items: true } },
+        };
+        const orderBy = {
+            date: 'desc',
+        };
+        if (!page || page < 1) {
+            return this.prisma.gRN.findMany({ where, include, orderBy });
+        }
+        const safeSize = Math.min(Math.max(pageSize ?? 20, 1), 200);
+        const [items, total] = await Promise.all([
+            this.prisma.gRN.findMany({
+                where,
+                include,
+                orderBy,
+                skip: (page - 1) * safeSize,
+                take: safeSize,
+            }),
+            this.prisma.gRN.count({ where }),
+        ]);
+        return { items, total, page, pageSize: safeSize };
     }
     async reverseShortDeliveryStockDeduction() {
         const allReturns = await this.prisma.purchaseReturn.findMany({
             include: { items: true },
         });
-        const shortReturns = allReturns.filter((pr) => /short.*delivery|short.*supply/i.test(pr.reason ?? ''));
+        const shortReturns = allReturns.filter((pr) => /short.*delivery|short.*supply/i.test(pr.reason ?? '') &&
+            !pr.stockReversedAt);
         let batchesFixed = 0;
         let productsFixed = 0;
         const fixed = [];
+        const skipped = allReturns.filter((pr) => /short.*delivery|short.*supply/i.test(pr.reason ?? '') &&
+            pr.stockReversedAt).length;
         for (const pr of shortReturns) {
             for (const item of pr.items) {
-                const batch = await this.prisma.batch.findUnique({ where: { id: item.batchId } });
+                const batch = await this.prisma.batch.findUnique({
+                    where: { id: item.batchId },
+                });
                 if (batch) {
                     await this.prisma.batch.update({
                         where: { id: item.batchId },
@@ -154,21 +221,36 @@ let GrnService = class GrnService {
                     });
                     batchesFixed++;
                 }
-                await this.prisma.product.update({
+                await this.prisma.product
+                    .update({
                     where: { id: item.productId },
                     data: { totalStock: { increment: item.returnedQty } },
-                }).catch(() => { });
+                })
+                    .catch(() => { });
                 productsFixed++;
             }
-            fixed.push({ debitNoteNo: pr.debitNoteNo, reason: pr.reason, items: pr.items.length });
+            await this.prisma.purchaseReturn.update({
+                where: { id: pr.id },
+                data: { stockReversedAt: new Date() },
+            });
+            fixed.push({
+                debitNoteNo: pr.debitNoteNo,
+                reason: pr.reason,
+                items: pr.items.length,
+            });
         }
+        const skipNote = skipped > 0 ? ` Skipped ${skipped} already-reversed debit note(s).` : '';
         return {
-            message: `Reversed stock deduction for ${shortReturns.length} short-delivery debit note(s). ${batchesFixed} batch updates, ${productsFixed} product stock updates.`,
+            message: `Reversed stock deduction for ${shortReturns.length} short-delivery debit note(s). ` +
+                `${batchesFixed} batch updates, ${productsFixed} product stock updates.${skipNote}`,
             fixed,
+            skipped,
         };
     }
     async backfillPoStatusWithDebitNotes() {
-        const pos = await this.prisma.purchaseOrder.findMany({ include: { items: true } });
+        const pos = await this.prisma.purchaseOrder.findMany({
+            include: { items: true },
+        });
         let updated = 0;
         for (const po of pos) {
             const allGrns = await this.prisma.gRN.findMany({
@@ -181,19 +263,27 @@ let GrnService = class GrnService {
             const debitedByProduct = {};
             for (const g of allGrns) {
                 for (const gi of g.items) {
-                    receivedByProduct[gi.productId] = (receivedByProduct[gi.productId] ?? 0) + gi.receivedQty + gi.freeQty;
+                    receivedByProduct[gi.productId] =
+                        (receivedByProduct[gi.productId] ?? 0) +
+                            gi.receivedQty +
+                            gi.freeQty;
                 }
                 for (const pr of g.purchaseReturns ?? []) {
                     if (/short|excess/i.test(pr.reason ?? '')) {
                         for (const pi of pr.items) {
-                            debitedByProduct[pi.productId] = (debitedByProduct[pi.productId] ?? 0) + pi.returnedQty;
+                            debitedByProduct[pi.productId] =
+                                (debitedByProduct[pi.productId] ?? 0) + pi.returnedQty;
                         }
                     }
                 }
             }
-            const allFulfilled = po.items.every((pi) => ((receivedByProduct[pi.productId] ?? 0) + (debitedByProduct[pi.productId] ?? 0)) >= pi.requiredQty);
+            const allFulfilled = po.items.every((pi) => (receivedByProduct[pi.productId] ?? 0) +
+                (debitedByProduct[pi.productId] ?? 0) >=
+                pi.requiredQty);
             const expected = allFulfilled ? 'FULLY_RECEIVED' : 'PARTIALLY_RECEIVED';
-            if (po.status !== expected && po.status !== 'CLOSED' && po.status !== 'DRAFT') {
+            if (po.status !== expected &&
+                po.status !== 'CLOSED' &&
+                po.status !== 'DRAFT') {
                 await this.prisma.purchaseOrder.update({
                     where: { id: po.id },
                     data: { status: expected },
@@ -201,7 +291,9 @@ let GrnService = class GrnService {
                 updated++;
             }
         }
-        return { message: `PO status backfill (with debit notes) complete. ${updated} POs updated.` };
+        return {
+            message: `PO status backfill (with debit notes) complete. ${updated} POs updated.`,
+        };
     }
     async backfillSupplierOutstanding() {
         const suppliers = await this.prisma.supplier.findMany();
@@ -224,7 +316,9 @@ let GrnService = class GrnService {
                 updated++;
             }
         }
-        return { message: `Supplier outstanding backfill complete. ${updated} suppliers updated.` };
+        return {
+            message: `Supplier outstanding backfill complete. ${updated} suppliers updated.`,
+        };
     }
     async backfillGrnOrderedQty() {
         const pos = await this.prisma.purchaseOrder.findMany({
@@ -256,7 +350,8 @@ let GrnService = class GrnService {
                         });
                         updated++;
                     }
-                    cumulativeReceived[gi.productId] = alreadyReceived + gi.receivedQty + gi.freeQty;
+                    cumulativeReceived[gi.productId] =
+                        alreadyReceived + gi.receivedQty + gi.freeQty;
                 }
             }
         }
@@ -277,7 +372,10 @@ let GrnService = class GrnService {
             const receivedByProduct = {};
             for (const g of allGrns) {
                 for (const gi of g.items) {
-                    receivedByProduct[gi.productId] = (receivedByProduct[gi.productId] ?? 0) + gi.receivedQty + gi.freeQty;
+                    receivedByProduct[gi.productId] =
+                        (receivedByProduct[gi.productId] ?? 0) +
+                            gi.receivedQty +
+                            gi.freeQty;
                 }
             }
             for (const pi of po.items) {
@@ -291,8 +389,12 @@ let GrnService = class GrnService {
                 }
             }
             const allFulfilled = po.items.every((pi) => (receivedByProduct[pi.productId] ?? 0) >= pi.requiredQty);
-            const expectedStatus = allFulfilled ? 'FULLY_RECEIVED' : 'PARTIALLY_RECEIVED';
-            if (po.status !== expectedStatus && po.status !== 'CLOSED' && po.status !== 'DRAFT') {
+            const expectedStatus = allFulfilled
+                ? 'FULLY_RECEIVED'
+                : 'PARTIALLY_RECEIVED';
+            if (po.status !== expectedStatus &&
+                po.status !== 'CLOSED' &&
+                po.status !== 'DRAFT') {
                 await this.prisma.purchaseOrder.update({
                     where: { id: po.id },
                     data: { status: expectedStatus },
@@ -304,7 +406,7 @@ let GrnService = class GrnService {
     async findOne(id, branchId) {
         const grn = await this.prisma.gRN.findUnique({
             where: { id },
-            include: { items: true }
+            include: { items: true },
         });
         if (!grn)
             throw new common_1.NotFoundException('GRN not found');
@@ -317,6 +419,7 @@ let GrnService = class GrnService {
 exports.GrnService = GrnService;
 exports.GrnService = GrnService = __decorate([
     (0, common_1.Injectable)(),
-    __metadata("design:paramtypes", [prisma_service_1.PrismaService])
+    __metadata("design:paramtypes", [prisma_service_1.PrismaService,
+        document_numbering_service_1.DocumentNumberingService])
 ], GrnService);
 //# sourceMappingURL=grn.service.js.map

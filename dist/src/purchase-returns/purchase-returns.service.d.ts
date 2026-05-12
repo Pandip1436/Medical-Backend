@@ -1,21 +1,24 @@
+import { Prisma, PurchaseReturnStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { ApprovalsService } from '../approvals/approvals.service';
+import { DocumentNumberingService } from '../common/services/document-numbering.service';
 import { CreatePurchaseReturnDto } from './dto/create-purchase-return.dto';
 export declare class PurchaseReturnsService {
     private readonly prisma;
     private readonly approvalsService;
-    constructor(prisma: PrismaService, approvalsService: ApprovalsService);
+    private readonly numbering;
+    constructor(prisma: PrismaService, approvalsService: ApprovalsService, numbering: DocumentNumberingService);
     create(dto: CreatePurchaseReturnDto, userId: string, userBranchId?: string, userRole?: string): Promise<({
         items: {
             id: string;
-            purchaseRate: import("@prisma/client/runtime/library").Decimal;
+            purchaseRate: Prisma.Decimal;
             productId: string;
             productName: string;
             batchNumber: string;
             expiryDate: Date;
             batchId: string;
-            gstPercent: import("@prisma/client/runtime/library").Decimal;
-            amount: import("@prisma/client/runtime/library").Decimal;
+            gstPercent: Prisma.Decimal;
+            amount: Prisma.Decimal;
             returnedQty: number;
             purchaseReturnId: string;
         }[];
@@ -29,47 +32,48 @@ export declare class PurchaseReturnsService {
         supplierId: string;
         supplierName: string;
         reason: string;
-        subtotal: import("@prisma/client/runtime/library").Decimal;
-        cgst: import("@prisma/client/runtime/library").Decimal;
-        sgst: import("@prisma/client/runtime/library").Decimal;
-        igst: import("@prisma/client/runtime/library").Decimal;
-        totalAmount: import("@prisma/client/runtime/library").Decimal;
+        subtotal: Prisma.Decimal;
+        cgst: Prisma.Decimal;
+        sgst: Prisma.Decimal;
+        igst: Prisma.Decimal;
+        totalAmount: Prisma.Decimal;
         status: import(".prisma/client").$Enums.PurchaseReturnStatus;
         settlementMode: import(".prisma/client").$Enums.PurchaseReturnSettlement;
         replacementGrnId: string | null;
         notes: string | null;
         createdById: string;
+        stockReversedAt: Date | null;
     }) | {
         approvalRequested: boolean;
         approvalRequestId: string;
     }>;
     private recomputePoStatus;
-    findAll(query?: string, branchId?: string): import(".prisma/client").Prisma.PrismaPromise<({
+    findAll(query?: string, branchId?: string): Prisma.PrismaPromise<({
         grn: {
             id: string;
             branchId: string | null;
             date: Date;
             supplierId: string;
             supplierName: string;
-            totalAmount: import("@prisma/client/runtime/library").Decimal;
+            totalAmount: Prisma.Decimal;
             status: import(".prisma/client").$Enums.GRNStatus;
             grnNumber: string;
             poId: string | null;
             supplierInvoiceNo: string;
             supplierInvoiceDate: Date;
-            supplierInvoiceAmount: import("@prisma/client/runtime/library").Decimal;
+            supplierInvoiceAmount: Prisma.Decimal;
             isReplacement: boolean;
         } | null;
         items: {
             id: string;
-            purchaseRate: import("@prisma/client/runtime/library").Decimal;
+            purchaseRate: Prisma.Decimal;
             productId: string;
             productName: string;
             batchNumber: string;
             expiryDate: Date;
             batchId: string;
-            gstPercent: import("@prisma/client/runtime/library").Decimal;
-            amount: import("@prisma/client/runtime/library").Decimal;
+            gstPercent: Prisma.Decimal;
+            amount: Prisma.Decimal;
             returnedQty: number;
             purchaseReturnId: string;
         }[];
@@ -83,16 +87,17 @@ export declare class PurchaseReturnsService {
         supplierId: string;
         supplierName: string;
         reason: string;
-        subtotal: import("@prisma/client/runtime/library").Decimal;
-        cgst: import("@prisma/client/runtime/library").Decimal;
-        sgst: import("@prisma/client/runtime/library").Decimal;
-        igst: import("@prisma/client/runtime/library").Decimal;
-        totalAmount: import("@prisma/client/runtime/library").Decimal;
+        subtotal: Prisma.Decimal;
+        cgst: Prisma.Decimal;
+        sgst: Prisma.Decimal;
+        igst: Prisma.Decimal;
+        totalAmount: Prisma.Decimal;
         status: import(".prisma/client").$Enums.PurchaseReturnStatus;
         settlementMode: import(".prisma/client").$Enums.PurchaseReturnSettlement;
         replacementGrnId: string | null;
         notes: string | null;
         createdById: string;
+        stockReversedAt: Date | null;
     })[]>;
     findOne(id: string, branchId?: string): Promise<{
         grn: {
@@ -101,13 +106,13 @@ export declare class PurchaseReturnsService {
             date: Date;
             supplierId: string;
             supplierName: string;
-            totalAmount: import("@prisma/client/runtime/library").Decimal;
+            totalAmount: Prisma.Decimal;
             status: import(".prisma/client").$Enums.GRNStatus;
             grnNumber: string;
             poId: string | null;
             supplierInvoiceNo: string;
             supplierInvoiceDate: Date;
-            supplierInvoiceAmount: import("@prisma/client/runtime/library").Decimal;
+            supplierInvoiceAmount: Prisma.Decimal;
             isReplacement: boolean;
         } | null;
         supplier: {
@@ -123,18 +128,18 @@ export declare class PurchaseReturnsService {
             contactPerson: string;
             paymentTerms: import(".prisma/client").$Enums.PaymentTerms;
             bankDetails: string | null;
-            currentOutstanding: import("@prisma/client/runtime/library").Decimal;
+            currentOutstanding: Prisma.Decimal;
         };
         items: {
             id: string;
-            purchaseRate: import("@prisma/client/runtime/library").Decimal;
+            purchaseRate: Prisma.Decimal;
             productId: string;
             productName: string;
             batchNumber: string;
             expiryDate: Date;
             batchId: string;
-            gstPercent: import("@prisma/client/runtime/library").Decimal;
-            amount: import("@prisma/client/runtime/library").Decimal;
+            gstPercent: Prisma.Decimal;
+            amount: Prisma.Decimal;
             returnedQty: number;
             purchaseReturnId: string;
         }[];
@@ -148,18 +153,19 @@ export declare class PurchaseReturnsService {
         supplierId: string;
         supplierName: string;
         reason: string;
-        subtotal: import("@prisma/client/runtime/library").Decimal;
-        cgst: import("@prisma/client/runtime/library").Decimal;
-        sgst: import("@prisma/client/runtime/library").Decimal;
-        igst: import("@prisma/client/runtime/library").Decimal;
-        totalAmount: import("@prisma/client/runtime/library").Decimal;
+        subtotal: Prisma.Decimal;
+        cgst: Prisma.Decimal;
+        sgst: Prisma.Decimal;
+        igst: Prisma.Decimal;
+        totalAmount: Prisma.Decimal;
         status: import(".prisma/client").$Enums.PurchaseReturnStatus;
         settlementMode: import(".prisma/client").$Enums.PurchaseReturnSettlement;
         replacementGrnId: string | null;
         notes: string | null;
         createdById: string;
+        stockReversedAt: Date | null;
     }>;
-    updateStatus(id: string, status: any, branchId?: string): Promise<{
+    updateStatus(id: string, status: PurchaseReturnStatus, branchId?: string): Promise<{
         id: string;
         branchId: string | null;
         createdAt: Date;
@@ -169,28 +175,29 @@ export declare class PurchaseReturnsService {
         supplierId: string;
         supplierName: string;
         reason: string;
-        subtotal: import("@prisma/client/runtime/library").Decimal;
-        cgst: import("@prisma/client/runtime/library").Decimal;
-        sgst: import("@prisma/client/runtime/library").Decimal;
-        igst: import("@prisma/client/runtime/library").Decimal;
-        totalAmount: import("@prisma/client/runtime/library").Decimal;
+        subtotal: Prisma.Decimal;
+        cgst: Prisma.Decimal;
+        sgst: Prisma.Decimal;
+        igst: Prisma.Decimal;
+        totalAmount: Prisma.Decimal;
         status: import(".prisma/client").$Enums.PurchaseReturnStatus;
         settlementMode: import(".prisma/client").$Enums.PurchaseReturnSettlement;
         replacementGrnId: string | null;
         notes: string | null;
         createdById: string;
+        stockReversedAt: Date | null;
     }>;
     linkReplacementGrn(id: string, replacementGrnId: string, branchId?: string): Promise<{
         items: {
             id: string;
-            purchaseRate: import("@prisma/client/runtime/library").Decimal;
+            purchaseRate: Prisma.Decimal;
             productId: string;
             productName: string;
             batchNumber: string;
             expiryDate: Date;
             batchId: string;
-            gstPercent: import("@prisma/client/runtime/library").Decimal;
-            amount: import("@prisma/client/runtime/library").Decimal;
+            gstPercent: Prisma.Decimal;
+            amount: Prisma.Decimal;
             returnedQty: number;
             purchaseReturnId: string;
         }[];
@@ -204,15 +211,16 @@ export declare class PurchaseReturnsService {
         supplierId: string;
         supplierName: string;
         reason: string;
-        subtotal: import("@prisma/client/runtime/library").Decimal;
-        cgst: import("@prisma/client/runtime/library").Decimal;
-        sgst: import("@prisma/client/runtime/library").Decimal;
-        igst: import("@prisma/client/runtime/library").Decimal;
-        totalAmount: import("@prisma/client/runtime/library").Decimal;
+        subtotal: Prisma.Decimal;
+        cgst: Prisma.Decimal;
+        sgst: Prisma.Decimal;
+        igst: Prisma.Decimal;
+        totalAmount: Prisma.Decimal;
         status: import(".prisma/client").$Enums.PurchaseReturnStatus;
         settlementMode: import(".prisma/client").$Enums.PurchaseReturnSettlement;
         replacementGrnId: string | null;
         notes: string | null;
         createdById: string;
+        stockReversedAt: Date | null;
     }>;
 }

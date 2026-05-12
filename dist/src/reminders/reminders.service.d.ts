@@ -3,6 +3,8 @@ import { CreateReminderDto, UpdateReminderDto, CreateContactLogDto } from './dto
 export declare class RemindersService {
     private prisma;
     constructor(prisma: PrismaService);
+    private validateDayOfMonth;
+    private assertOwnedByBranch;
     findAll(branchId?: string): Promise<({
         customer: {
             id: string;
@@ -78,7 +80,7 @@ export declare class RemindersService {
         title: string;
         dayOfMonth: number;
     }>;
-    update(id: string, dto: UpdateReminderDto): Promise<{
+    update(id: string, dto: UpdateReminderDto, branchId?: string): Promise<{
         customer: {
             id: string;
             email: string | null;
@@ -103,7 +105,7 @@ export declare class RemindersService {
         title: string;
         dayOfMonth: number;
     }>;
-    remove(id: string): Promise<{
+    remove(id: string, branchId?: string): Promise<{
         id: string;
         branchId: string | null;
         createdAt: Date;
@@ -113,14 +115,14 @@ export declare class RemindersService {
         title: string;
         dayOfMonth: number;
     }>;
-    addContactLog(reminderId: string, dto: CreateContactLogDto): Promise<{
+    addContactLog(reminderId: string, dto: CreateContactLogDto, branchId?: string): Promise<{
         id: string;
         status: import(".prisma/client").$Enums.ReminderContactStatus;
         notes: string | null;
         contactedAt: Date;
         reminderId: string;
     }>;
-    getContactLogs(reminderId: string): Promise<{
+    getContactLogs(reminderId: string, branchId?: string): Promise<{
         id: string;
         status: import(".prisma/client").$Enums.ReminderContactStatus;
         notes: string | null;

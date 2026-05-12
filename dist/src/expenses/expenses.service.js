@@ -12,6 +12,11 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.ExpensesService = void 0;
 const common_1 = require("@nestjs/common");
 const prisma_service_1 = require("../prisma/prisma.service");
+function normalizePaymentMode(mode) {
+    if (!mode)
+        return undefined;
+    return mode.trim().toUpperCase();
+}
 let ExpensesService = class ExpensesService {
     prisma;
     constructor(prisma) {
@@ -24,7 +29,7 @@ let ExpensesService = class ExpensesService {
                 category: dto.category,
                 description: dto.description,
                 amount: dto.amount,
-                paymentMode: dto.paymentMode,
+                paymentMode: normalizePaymentMode(dto.paymentMode) ?? 'CASH',
                 receiptImage: dto.receiptImage,
                 branchId: branchId ?? dto.branchId,
             },
@@ -68,7 +73,7 @@ let ExpensesService = class ExpensesService {
                 ...(dto.category && { category: dto.category }),
                 ...(dto.description && { description: dto.description }),
                 ...(dto.amount !== undefined && { amount: dto.amount }),
-                ...(dto.paymentMode && { paymentMode: dto.paymentMode }),
+                ...(dto.paymentMode && { paymentMode: normalizePaymentMode(dto.paymentMode) }),
                 ...(dto.receiptImage !== undefined && { receiptImage: dto.receiptImage }),
             },
         });

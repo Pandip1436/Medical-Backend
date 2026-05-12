@@ -51,6 +51,18 @@ export class SuppliersController {
     });
   }
 
+  @Post('bulk')
+  @Roles('ADMIN', 'INVENTORY_MANAGER')
+  @ApiOperation({ summary: 'Bulk create suppliers' })
+  bulkCreate(
+    @Body() suppliers: CreateSupplierDto[],
+    @Request() req: AuthenticatedRequest,
+    @Query('branchId') qBranchId?: string,
+  ) {
+    const effectiveBranchId = req.user.branchId ?? qBranchId ?? undefined;
+    return this.suppliersService.bulkCreate(suppliers, effectiveBranchId);
+  }
+
   @Get()
   @Roles('ADMIN', 'INVENTORY_MANAGER', 'PHARMACIST', 'ACCOUNTANT')
   @ApiOperation({

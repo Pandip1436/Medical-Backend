@@ -27,31 +27,35 @@ let CustomersController = class CustomersController {
         this.customersService = customersService;
     }
     create(createCustomerDto, req, branchId) {
-        const effectiveBranchId = req.user.branchId ?? branchId;
+        const effectiveBranchId = req.user.branchId ?? branchId ?? undefined;
         return this.customersService.create({ ...createCustomerDto, branchId: effectiveBranchId }, { userId: req.user.userId, role: req.user.role });
     }
+    bulkCreate(customers, req, branchId) {
+        const effectiveBranchId = req.user.branchId ?? branchId ?? undefined;
+        return this.customersService.bulkCreate(customers, effectiveBranchId);
+    }
     findAll(req, q, branchId) {
-        const effectiveBranchId = req.user.branchId ?? branchId;
+        const effectiveBranchId = req.user.branchId ?? branchId ?? undefined;
         return this.customersService.findAll(q, effectiveBranchId);
     }
     getOutstanding(req, branchId) {
-        const effectiveBranchId = req.user.branchId ?? branchId;
+        const effectiveBranchId = req.user.branchId ?? branchId ?? undefined;
         return this.customersService.getOutstanding(effectiveBranchId);
     }
     findOne(id, req) {
-        return this.customersService.findOne(id, req.user.branchId);
+        return this.customersService.findOne(id, req.user.branchId ?? undefined);
     }
     update(id, updateCustomerDto, req) {
-        return this.customersService.update(id, updateCustomerDto, req.user.branchId);
+        return this.customersService.update(id, updateCustomerDto, req.user.branchId ?? undefined);
     }
     recordPayment(id, body, req) {
-        return this.customersService.recordPayment(id, body.amount, body.paymentMode, body.referenceNumber, req.user.branchId);
+        return this.customersService.recordPayment(id, body.amount, body.paymentMode, body.referenceNumber, req.user.branchId ?? undefined);
     }
     getPaymentHistory(id, req) {
-        return this.customersService.getPaymentHistory(id, req.user.branchId);
+        return this.customersService.getPaymentHistory(id, req.user.branchId ?? undefined);
     }
     remove(id, req) {
-        return this.customersService.remove(id, req.user.branchId);
+        return this.customersService.remove(id, req.user.branchId ?? undefined);
     }
 };
 exports.CustomersController = CustomersController;
@@ -67,9 +71,22 @@ __decorate([
     __metadata("design:returntype", void 0)
 ], CustomersController.prototype, "create", null);
 __decorate([
+    (0, common_1.Post)('bulk'),
+    (0, roles_decorator_1.Roles)('ADMIN', 'PHARMACIST'),
+    (0, swagger_1.ApiOperation)({ summary: 'Bulk create customers' }),
+    __param(0, (0, common_1.Body)()),
+    __param(1, (0, common_1.Request)()),
+    __param(2, (0, common_1.Query)('branchId')),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Array, Object, String]),
+    __metadata("design:returntype", void 0)
+], CustomersController.prototype, "bulkCreate", null);
+__decorate([
     (0, common_1.Get)(),
     (0, roles_decorator_1.Roles)('ADMIN', 'PHARMACIST', 'ACCOUNTANT', 'SALESPERSON', 'INVENTORY_MANAGER'),
-    (0, swagger_1.ApiOperation)({ summary: 'Get all customers for a branch or search by name/phone' }),
+    (0, swagger_1.ApiOperation)({
+        summary: 'Get all customers for a branch or search by name/phone',
+    }),
     (0, swagger_1.ApiQuery)({ name: 'q', required: false }),
     (0, swagger_1.ApiQuery)({ name: 'branchId', required: false }),
     __param(0, (0, common_1.Request)()),
@@ -81,8 +98,10 @@ __decorate([
 ], CustomersController.prototype, "findAll", null);
 __decorate([
     (0, common_1.Get)('outstanding'),
-    (0, roles_decorator_1.Roles)('ADMIN', 'PHARMACIST', 'ACCOUNTANT', 'SALESPERSON'),
-    (0, swagger_1.ApiOperation)({ summary: 'Get live outstanding balances computed from invoices' }),
+    (0, roles_decorator_1.Roles)('ADMIN', 'PHARMACIST', 'ACCOUNTANT'),
+    (0, swagger_1.ApiOperation)({
+        summary: 'Get live outstanding balances computed from invoices',
+    }),
     __param(0, (0, common_1.Request)()),
     __param(1, (0, common_1.Query)('branchId')),
     __metadata("design:type", Function),
@@ -92,7 +111,9 @@ __decorate([
 __decorate([
     (0, common_1.Get)(':id'),
     (0, roles_decorator_1.Roles)('ADMIN', 'PHARMACIST', 'ACCOUNTANT', 'SALESPERSON', 'INVENTORY_MANAGER'),
-    (0, swagger_1.ApiOperation)({ summary: 'Get customer details including prescriptions and recent invoices' }),
+    (0, swagger_1.ApiOperation)({
+        summary: 'Get customer details including prescriptions and recent invoices',
+    }),
     __param(0, (0, common_1.Param)('id')),
     __param(1, (0, common_1.Request)()),
     __metadata("design:type", Function),
@@ -113,7 +134,9 @@ __decorate([
 __decorate([
     (0, common_1.Post)(':id/payment'),
     (0, roles_decorator_1.Roles)('ADMIN', 'PHARMACIST', 'ACCOUNTANT'),
-    (0, swagger_1.ApiOperation)({ summary: 'Record a payment against customer outstanding balance (FIFO allocation)' }),
+    (0, swagger_1.ApiOperation)({
+        summary: 'Record a payment against customer outstanding balance (FIFO allocation)',
+    }),
     __param(0, (0, common_1.Param)('id')),
     __param(1, (0, common_1.Body)()),
     __param(2, (0, common_1.Request)()),

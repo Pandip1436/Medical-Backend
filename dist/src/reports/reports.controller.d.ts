@@ -301,11 +301,21 @@ export declare class ReportsController {
             totalTax: number;
         };
     }>;
+    getMonthlyProfitLoss(req: any, year?: string, branchId?: string): Promise<{
+        year: number;
+        chartData: {
+            month: string;
+            revenue: number;
+            profit: number;
+        }[];
+    }>;
     getCashBook(req: any, from?: string, to?: string, branchId?: string): Promise<{
         period: {
             from: Date;
             to: Date;
         };
+        openingBalance: number;
+        closingBalance: number;
         tableData: ({
             balance: number;
             date: Date;
@@ -374,6 +384,7 @@ export declare class ReportsController {
             creditLimit: import("@prisma/client/runtime/library").Decimal;
             loyaltyPoints: number;
             dlNumber: string | null;
+            registrationNumber: string | null;
         };
         tableData: {
             balance: number;

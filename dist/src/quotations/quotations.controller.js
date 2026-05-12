@@ -24,26 +24,37 @@ let QuotationsController = class QuotationsController {
     constructor(quotationsService) {
         this.quotationsService = quotationsService;
     }
-    create(dto) {
-        return this.quotationsService.create(dto);
+    create(dto, req, branchId) {
+        const effectiveBranchId = req.user.branchId ?? branchId ?? undefined;
+        return this.quotationsService.create(dto, effectiveBranchId);
     }
-    findAll(q, fromDate, toDate, status, amountMin, amountMax) {
-        return this.quotationsService.findAll({ q, fromDate, toDate, status, amountMin, amountMax });
+    findAll(req, q, fromDate, toDate, status, amountMin, amountMax, branchId) {
+        const effectiveBranchId = req.user.branchId ?? branchId ?? undefined;
+        return this.quotationsService.findAll({
+            q,
+            fromDate,
+            toDate,
+            status,
+            amountMin,
+            amountMax,
+            branchId: effectiveBranchId,
+        });
     }
-    getStats() {
-        return this.quotationsService.getStats();
+    getStats(req, branchId) {
+        const effectiveBranchId = req.user.branchId ?? branchId ?? undefined;
+        return this.quotationsService.getStats(effectiveBranchId);
     }
-    findOne(id) {
-        return this.quotationsService.findOne(id);
+    findOne(id, req) {
+        return this.quotationsService.findOne(id, req.user.branchId ?? undefined);
     }
-    update(id, data) {
-        return this.quotationsService.update(id, data);
+    update(id, data, req) {
+        return this.quotationsService.update(id, data, req.user.branchId ?? undefined);
     }
-    updateStatus(id, status) {
-        return this.quotationsService.updateStatus(id, status);
+    updateStatus(id, status, req) {
+        return this.quotationsService.updateStatus(id, status, req.user.branchId ?? undefined);
     }
-    remove(id) {
-        return this.quotationsService.remove(id);
+    remove(id, req) {
+        return this.quotationsService.remove(id, req.user.branchId ?? undefined);
     }
 };
 exports.QuotationsController = QuotationsController;
@@ -51,36 +62,43 @@ __decorate([
     (0, common_1.Post)(),
     (0, roles_decorator_1.Roles)('ADMIN', 'PHARMACIST'),
     __param(0, (0, common_1.Body)()),
+    __param(1, (0, common_1.Request)()),
+    __param(2, (0, common_1.Query)('branchId')),
     __metadata("design:type", Function),
-    __metadata("design:paramtypes", [create_quotation_dto_1.CreateQuotationDto]),
+    __metadata("design:paramtypes", [create_quotation_dto_1.CreateQuotationDto, Object, String]),
     __metadata("design:returntype", void 0)
 ], QuotationsController.prototype, "create", null);
 __decorate([
     (0, common_1.Get)(),
     (0, roles_decorator_1.Roles)('ADMIN', 'PHARMACIST', 'ACCOUNTANT'),
-    __param(0, (0, common_1.Query)('q')),
-    __param(1, (0, common_1.Query)('fromDate')),
-    __param(2, (0, common_1.Query)('toDate')),
-    __param(3, (0, common_1.Query)('status')),
-    __param(4, (0, common_1.Query)('amountMin')),
-    __param(5, (0, common_1.Query)('amountMax')),
+    __param(0, (0, common_1.Request)()),
+    __param(1, (0, common_1.Query)('q')),
+    __param(2, (0, common_1.Query)('fromDate')),
+    __param(3, (0, common_1.Query)('toDate')),
+    __param(4, (0, common_1.Query)('status')),
+    __param(5, (0, common_1.Query)('amountMin')),
+    __param(6, (0, common_1.Query)('amountMax')),
+    __param(7, (0, common_1.Query)('branchId')),
     __metadata("design:type", Function),
-    __metadata("design:paramtypes", [String, String, String, String, Number, Number]),
+    __metadata("design:paramtypes", [Object, String, String, String, String, Number, Number, String]),
     __metadata("design:returntype", void 0)
 ], QuotationsController.prototype, "findAll", null);
 __decorate([
     (0, common_1.Get)('stats'),
     (0, roles_decorator_1.Roles)('ADMIN', 'PHARMACIST', 'ACCOUNTANT'),
+    __param(0, (0, common_1.Request)()),
+    __param(1, (0, common_1.Query)('branchId')),
     __metadata("design:type", Function),
-    __metadata("design:paramtypes", []),
+    __metadata("design:paramtypes", [Object, String]),
     __metadata("design:returntype", void 0)
 ], QuotationsController.prototype, "getStats", null);
 __decorate([
     (0, common_1.Get)(':id'),
     (0, roles_decorator_1.Roles)('ADMIN', 'PHARMACIST', 'ACCOUNTANT'),
     __param(0, (0, common_1.Param)('id')),
+    __param(1, (0, common_1.Request)()),
     __metadata("design:type", Function),
-    __metadata("design:paramtypes", [String]),
+    __metadata("design:paramtypes", [String, Object]),
     __metadata("design:returntype", void 0)
 ], QuotationsController.prototype, "findOne", null);
 __decorate([
@@ -88,8 +106,9 @@ __decorate([
     (0, roles_decorator_1.Roles)('ADMIN', 'PHARMACIST'),
     __param(0, (0, common_1.Param)('id')),
     __param(1, (0, common_1.Body)()),
+    __param(2, (0, common_1.Request)()),
     __metadata("design:type", Function),
-    __metadata("design:paramtypes", [String, Object]),
+    __metadata("design:paramtypes", [String, Object, Object]),
     __metadata("design:returntype", void 0)
 ], QuotationsController.prototype, "update", null);
 __decorate([
@@ -97,16 +116,18 @@ __decorate([
     (0, roles_decorator_1.Roles)('ADMIN', 'PHARMACIST'),
     __param(0, (0, common_1.Param)('id')),
     __param(1, (0, common_1.Body)('status')),
+    __param(2, (0, common_1.Request)()),
     __metadata("design:type", Function),
-    __metadata("design:paramtypes", [String, String]),
+    __metadata("design:paramtypes", [String, String, Object]),
     __metadata("design:returntype", void 0)
 ], QuotationsController.prototype, "updateStatus", null);
 __decorate([
     (0, common_1.Delete)(':id'),
     (0, roles_decorator_1.Roles)('ADMIN', 'PHARMACIST'),
     __param(0, (0, common_1.Param)('id')),
+    __param(1, (0, common_1.Request)()),
     __metadata("design:type", Function),
-    __metadata("design:paramtypes", [String]),
+    __metadata("design:paramtypes", [String, Object]),
     __metadata("design:returntype", void 0)
 ], QuotationsController.prototype, "remove", null);
 exports.QuotationsController = QuotationsController = __decorate([

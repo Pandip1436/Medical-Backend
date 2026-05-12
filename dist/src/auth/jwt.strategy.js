@@ -8,6 +8,7 @@ var __decorate = (this && this.__decorate) || function (decorators, target, key,
 var __metadata = (this && this.__metadata) || function (k, v) {
     if (typeof Reflect === "object" && typeof Reflect.metadata === "function") return Reflect.metadata(k, v);
 };
+var JwtStrategy_1;
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.JwtStrategy = void 0;
 const passport_jwt_1 = require("passport-jwt");
@@ -15,7 +16,10 @@ const passport_1 = require("@nestjs/passport");
 const common_1 = require("@nestjs/common");
 const prisma_service_1 = require("../prisma/prisma.service");
 let JwtStrategy = class JwtStrategy extends (0, passport_1.PassportStrategy)(passport_jwt_1.Strategy) {
+    static { JwtStrategy_1 = this; }
     prisma;
+    cache = new Map();
+    static TTL_MS = 30_000;
     constructor(prisma) {
         const secret = process.env.JWT_SECRET;
         if (!secret)
@@ -28,17 +32,40 @@ let JwtStrategy = class JwtStrategy extends (0, passport_1.PassportStrategy)(pas
         this.prisma = prisma;
     }
     async validate(payload) {
-        const user = await this.prisma.user.findUnique({
-            where: { id: payload.sub },
-        });
+        const userId = payload.sub;
+        const now = Date.now();
+        const cached = this.cache.get(userId);
+        if (cached && cached.expiresAt > now) {
+            if (!cached.isActive) {
+                throw new common_1.UnauthorizedException('User is not active or deleted');
+            }
+            return {
+                userId,
+                email: payload.email,
+                role: payload.role,
+                branchId: cached.branchId,
+            };
+        }
+        const user = await this.prisma.user.findUnique({ where: { id: userId } });
         if (!user || !user.isActive) {
+            this.cache.delete(userId);
             throw new common_1.UnauthorizedException('User is not active or deleted');
         }
-        return { userId: payload.sub, email: payload.email, role: payload.role, branchId: user.branchId ?? null };
+        this.cache.set(userId, {
+            isActive: user.isActive,
+            branchId: user.branchId ?? null,
+            expiresAt: now + JwtStrategy_1.TTL_MS,
+        });
+        return {
+            userId,
+            email: payload.email,
+            role: payload.role,
+            branchId: user.branchId ?? null,
+        };
     }
 };
 exports.JwtStrategy = JwtStrategy;
-exports.JwtStrategy = JwtStrategy = __decorate([
+exports.JwtStrategy = JwtStrategy = JwtStrategy_1 = __decorate([
     (0, common_1.Injectable)(),
     __metadata("design:paramtypes", [prisma_service_1.PrismaService])
 ], JwtStrategy);

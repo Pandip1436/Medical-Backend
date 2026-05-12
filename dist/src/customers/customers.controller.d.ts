@@ -1,10 +1,11 @@
 import { CustomersService } from './customers.service';
 import { CreateCustomerDto } from './dto/create-customer.dto';
 import { UpdateCustomerDto } from './dto/update-customer.dto';
+import type { AuthenticatedRequest } from '../common/types/authenticated-request';
 export declare class CustomersController {
     private readonly customersService;
     constructor(customersService: CustomersService);
-    create(createCustomerDto: CreateCustomerDto, req: any, branchId?: string): Promise<{
+    create(createCustomerDto: CreateCustomerDto, req: AuthenticatedRequest, branchId?: string): Promise<{
         id: string;
         email: string | null;
         name: string;
@@ -22,11 +23,17 @@ export declare class CustomersController {
         creditLimit: import("@prisma/client/runtime/library").Decimal;
         loyaltyPoints: number;
         dlNumber: string | null;
+        registrationNumber: string | null;
     } | {
         approvalRequested: boolean;
         approvalRequestId: string;
     }>;
-    findAll(req: any, q?: string, branchId?: string): Promise<{
+    bulkCreate(customers: CreateCustomerDto[], req: AuthenticatedRequest, branchId?: string): Promise<{
+        createdCount: number;
+        skippedCount: number;
+        errors: string[];
+    }>;
+    findAll(req: AuthenticatedRequest, q?: string, branchId?: string): Promise<{
         pendingCreditCount: number;
         id: string;
         email: string | null;
@@ -45,8 +52,9 @@ export declare class CustomersController {
         creditLimit: import("@prisma/client/runtime/library").Decimal;
         loyaltyPoints: number;
         dlNumber: string | null;
+        registrationNumber: string | null;
     }[]>;
-    getOutstanding(req: any, branchId?: string): Promise<{
+    getOutstanding(req: AuthenticatedRequest, branchId?: string): Promise<{
         total: number;
         rows: {
             customerId: string | null;
@@ -60,7 +68,7 @@ export declare class CustomersController {
             invoiceCount: number;
         }[];
     }>;
-    findOne(id: string, req: any): Promise<{
+    findOne(id: string, req: AuthenticatedRequest): Promise<{
         invoices: {
             id: string;
             branchId: string | null;
@@ -119,8 +127,9 @@ export declare class CustomersController {
         creditLimit: import("@prisma/client/runtime/library").Decimal;
         loyaltyPoints: number;
         dlNumber: string | null;
+        registrationNumber: string | null;
     }>;
-    update(id: string, updateCustomerDto: UpdateCustomerDto, req: any): Promise<{
+    update(id: string, updateCustomerDto: UpdateCustomerDto, req: AuthenticatedRequest): Promise<{
         id: string;
         email: string | null;
         name: string;
@@ -138,12 +147,13 @@ export declare class CustomersController {
         creditLimit: import("@prisma/client/runtime/library").Decimal;
         loyaltyPoints: number;
         dlNumber: string | null;
+        registrationNumber: string | null;
     }>;
     recordPayment(id: string, body: {
         amount: number;
         paymentMode: string;
         referenceNumber?: string;
-    }, req: any): Promise<{
+    }, req: AuthenticatedRequest): Promise<{
         receiptNumber: string;
         customerId: string;
         amountRecorded: number;
@@ -154,7 +164,7 @@ export declare class CustomersController {
         }[];
         newOutstanding: number;
     }>;
-    getPaymentHistory(id: string, req: any): Promise<{
+    getPaymentHistory(id: string, req: AuthenticatedRequest): Promise<{
         id: string;
         branchId: string | null;
         createdAt: Date;
@@ -166,7 +176,7 @@ export declare class CustomersController {
         receiptNumber: string;
         referenceNumber: string | null;
     }[]>;
-    remove(id: string, req: any): Promise<{
+    remove(id: string, req: AuthenticatedRequest): Promise<{
         id: string;
         email: string | null;
         name: string;
@@ -184,5 +194,6 @@ export declare class CustomersController {
         creditLimit: import("@prisma/client/runtime/library").Decimal;
         loyaltyPoints: number;
         dlNumber: string | null;
+        registrationNumber: string | null;
     }>;
 }

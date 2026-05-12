@@ -1,6 +1,7 @@
 import { ProductsService } from './products.service';
 import { CreateProductDto } from './dto/create-product.dto';
 import { UpdateProductDto } from './dto/update-product.dto';
+import { AdjustStockDto, BulkAdjustStockDto } from './dto/adjust-stock.dto';
 export declare class ProductsController {
     private readonly productsService;
     constructor(productsService: ProductsService);
@@ -38,6 +39,16 @@ export declare class ProductsController {
         totalStock: number;
         categoryId: string | null;
     }>;
+    bulkCreate(products: any[], req: any, branchId?: string): Promise<{
+        createdCount: number;
+        skippedCount: number;
+        errors: string[];
+    }>;
+    bulkUpdateHsn(items: any[], req: any, branchId?: string): Promise<{
+        updatedCount: number;
+        skippedCount: number;
+        errors: string[];
+    }>;
     findAll(req: any, q?: string, categoryId?: string, schedule?: string, skip?: string, take?: string, branchId?: string, status?: string): Promise<({
         batches: {
             id: string;
@@ -55,6 +66,7 @@ export declare class ProductsController {
             id: string;
             name: string;
             isActive: boolean;
+            branchId: string | null;
             createdAt: Date;
             description: string | null;
             color: string | null;
@@ -106,6 +118,7 @@ export declare class ProductsController {
                 id: string;
                 name: string;
                 isActive: boolean;
+                branchId: string | null;
                 createdAt: Date;
                 description: string | null;
                 color: string | null;
@@ -152,6 +165,7 @@ export declare class ProductsController {
                 id: string;
                 name: string;
                 isActive: boolean;
+                branchId: string | null;
                 createdAt: Date;
                 description: string | null;
                 color: string | null;
@@ -224,6 +238,7 @@ export declare class ProductsController {
             id: string;
             name: string;
             isActive: boolean;
+            branchId: string | null;
             createdAt: Date;
             description: string | null;
             color: string | null;
@@ -316,15 +331,9 @@ export declare class ProductsController {
         totalStock: number;
         categoryId: string | null;
     }>;
-    bulkAdjust(body: {
-        items: {
-            productId: string;
-            batchId: string;
-            adjustedQty: number;
-            reason: string;
-        }[];
-    }, req: any): Promise<{
+    bulkAdjust(body: BulkAdjustStockDto, req: any): Promise<{
         success: boolean;
+        adjustmentNo: string;
         adjusted: number;
         items: {
             productId: string;
@@ -334,18 +343,29 @@ export declare class ProductsController {
             diff: number;
             reason: string;
         }[];
+    } | {
+        approvalRequested: boolean;
+        approvalRequestId: string;
+        totalValue: number;
+        threshold: number;
     }>;
-    adjust(id: string, batchId: string, body: {
-        adjustedQty: number;
-        reason: string;
-        notes?: string;
-    }, req: any): Promise<{
+    adjust(id: string, batchId: string, body: AdjustStockDto, req: any): Promise<{
         success: boolean;
-        batchId: string;
-        previousQty: number;
-        newQty: number;
-        diff: number;
-        reason: string;
+        adjustmentNo: string;
+        adjusted: number;
+        items: {
+            productId: string;
+            batchId: string;
+            previousQty: number;
+            newQty: number;
+            diff: number;
+            reason: string;
+        }[];
+    } | {
+        approvalRequested: boolean;
+        approvalRequestId: string;
+        totalValue: number;
+        threshold: number;
     }>;
     toggleActive(id: string, req: any): Promise<{
         id: string;

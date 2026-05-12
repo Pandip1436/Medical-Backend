@@ -217,6 +217,14 @@ export declare class ReportsService {
             totalTax: number;
         };
     }>;
+    getMonthlyProfitLoss(year?: number, branchId?: string): Promise<{
+        year: number;
+        chartData: {
+            month: string;
+            revenue: number;
+            profit: number;
+        }[];
+    }>;
     getGstr1Summary(query: PeriodQuery & {
         branchId?: string;
     }): Promise<{
@@ -296,6 +304,8 @@ export declare class ReportsService {
             from: Date;
             to: Date;
         };
+        openingBalance: number;
+        closingBalance: number;
         tableData: ({
             balance: number;
             date: Date;
@@ -316,7 +326,9 @@ export declare class ReportsService {
             value: string;
         }[];
     }>;
-    getCustomerLedger(customerId: string, query: PeriodQuery): Promise<{
+    getCustomerLedger(customerId: string, query: PeriodQuery & {
+        branchId?: string;
+    }): Promise<{
         customer: null;
         tableData: never[];
         kpis: never[];
@@ -339,6 +351,7 @@ export declare class ReportsService {
             creditLimit: import("@prisma/client/runtime/library").Decimal;
             loyaltyPoints: number;
             dlNumber: string | null;
+            registrationNumber: string | null;
         };
         tableData: {
             balance: number;
@@ -353,7 +366,9 @@ export declare class ReportsService {
             value: string;
         }[];
     }>;
-    getSupplierLedger(supplierId: string, query: PeriodQuery): Promise<{
+    getSupplierLedger(supplierId: string, query: PeriodQuery & {
+        branchId?: string;
+    }): Promise<{
         supplier: null;
         tableData: never[];
         kpis: never[];

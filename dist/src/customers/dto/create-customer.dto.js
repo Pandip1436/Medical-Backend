@@ -23,6 +23,7 @@ class CreateCustomerDto {
     creditLimit;
     gstin;
     dlNumber;
+    registrationNumber;
     notes;
     referredBy;
 }
@@ -78,6 +79,11 @@ __decorate([
     (0, class_validator_1.IsOptional)(),
     __metadata("design:type", String)
 ], CreateCustomerDto.prototype, "dlNumber", void 0);
+__decorate([
+    (0, class_validator_1.IsString)(),
+    (0, class_validator_1.IsOptional)(),
+    __metadata("design:type", String)
+], CreateCustomerDto.prototype, "registrationNumber", void 0);
 __decorate([
     (0, class_validator_1.IsString)(),
     (0, class_validator_1.IsOptional)(),

@@ -47,6 +47,30 @@ export class ProductsController {
     return this.productsService.create({ ...createProductDto, branchId: effectiveBranchId });
   }
 
+  @Post('bulk')
+  @Roles('ADMIN', 'INVENTORY_MANAGER')
+  @ApiOperation({ summary: 'Bulk create products from JSON' })
+  bulkCreate(
+    @Body() products: any[],
+    @Request() req: any,
+    @Query('branchId') branchId?: string,
+  ) {
+    const effectiveBranchId = req.user.branchId ?? branchId;
+    return this.productsService.bulkCreate(products, effectiveBranchId);
+  }
+
+  @Post('bulk-hsn')
+  @Roles('ADMIN', 'INVENTORY_MANAGER')
+  @ApiOperation({ summary: 'Bulk update products HSN and GST from JSON' })
+  bulkUpdateHsn(
+    @Body() items: any[],
+    @Request() req: any,
+    @Query('branchId') branchId?: string,
+  ) {
+    const effectiveBranchId = req.user.branchId ?? branchId;
+    return this.productsService.bulkUpdateHsn(items, effectiveBranchId);
+  }
+
   @Get()
   @Roles('ADMIN', 'PHARMACIST', 'INVENTORY_MANAGER', 'ACCOUNTANT', 'SALESPERSON')
   @ApiOperation({ summary: 'Get all products for a branch (paginated when skip/take provided)' })

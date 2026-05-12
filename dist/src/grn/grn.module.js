@@ -16,7 +16,7 @@ exports.GrnModule = GrnModule;
 exports.GrnModule = GrnModule = __decorate([
     (0, common_1.Module)({
         providers: [grn_service_1.GrnService],
-        controllers: [grn_controller_1.GrnController]
+        controllers: [grn_controller_1.GrnController],
     })
 ], GrnModule);
 //# sourceMappingURL=grn.module.js.map

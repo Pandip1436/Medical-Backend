@@ -10,6 +10,7 @@ export declare class CreateCustomerDto {
     creditLimit?: number;
     gstin?: string;
     dlNumber?: string;
+    registrationNumber?: string;
     notes?: string;
     referredBy?: string;
 }

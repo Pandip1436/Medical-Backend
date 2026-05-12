@@ -16,7 +16,7 @@ exports.PurchaseOrdersModule = PurchaseOrdersModule;
 exports.PurchaseOrdersModule = PurchaseOrdersModule = __decorate([
     (0, common_1.Module)({
         providers: [purchase_orders_service_1.PurchaseOrdersService],
-        controllers: [purchase_orders_controller_1.PurchaseOrdersController]
+        controllers: [purchase_orders_controller_1.PurchaseOrdersController],
     })
 ], PurchaseOrdersModule);
 //# sourceMappingURL=purchase-orders.module.js.map

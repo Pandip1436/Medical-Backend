@@ -20,9 +20,39 @@ let CustomersService = class CustomersService {
         this.prisma = prisma;
         this.approvalsService = approvalsService;
     }
+    normalizePhone(phone) {
+        if (!phone)
+            return '';
+        return phone.replace(/\D/g, '');
+    }
+    async assertUniquePhone(phone, branchId, excludeId) {
+        const normalized = this.normalizePhone(phone);
+        if (!normalized)
+            return;
+        const branchScope = branchId
+            ? [{ branchId }, { branchId: null }]
+            : [{ branchId: null }];
+        const last10 = normalized.slice(-10);
+        const candidates = await this.prisma.customer.findFirst({
+            where: {
+                AND: [
+                    { phone: { contains: last10 } },
+                    { OR: branchScope },
+                    ...(excludeId ? [{ id: { not: excludeId } }] : []),
+                ],
+            },
+            select: { id: true, name: true, phone: true },
+        });
+        if (candidates && this.normalizePhone(candidates.phone) === normalized) {
+            throw new common_1.ConflictException(`Phone ${phone} is already used by customer "${candidates.name}". Search and edit that record instead of creating a duplicate.`);
+        }
+    }
     async create(createCustomerDto, user) {
+        const normalizedPhone = this.normalizePhone(createCustomerDto.phone);
+        const dto = { ...createCustomerDto, phone: normalizedPhone };
+        await this.assertUniquePhone(dto.phone, dto.branchId ?? null);
         if (user?.role === 'PHARMACIST') {
-            const { branchId, ...payload } = createCustomerDto;
+            const { branchId, ...payload } = dto;
             const req = await this.approvalsService.createRequest({
                 type: 'NEW_CUSTOMER',
                 payload: payload,
@@ -31,7 +61,50 @@ let CustomersService = class CustomersService {
             });
             return { approvalRequested: true, approvalRequestId: req.id };
         }
-        return this.prisma.customer.create({ data: createCustomerDto });
+        return this.prisma.customer.create({ data: dto });
+    }
+    async bulkCreate(customers, branchId) {
+        let createdCount = 0;
+        let skippedCount = 0;
+        const errors = [];
+        const branchScope = branchId ? [{ branchId }, { branchId: null }] : [{ branchId: null }];
+        const existingCustomers = await this.prisma.customer.findMany({
+            where: { OR: branchScope },
+            select: { phone: true }
+        });
+        const existingPhones = new Set(existingCustomers.map(c => this.normalizePhone(c.phone)).filter(Boolean));
+        const toCreate = [];
+        for (const [index, c] of customers.entries()) {
+            try {
+                const normalizedPhone = this.normalizePhone(c.phone);
+                if (normalizedPhone) {
+                    const last10 = normalizedPhone.slice(-10);
+                    const isDup = Array.from(existingPhones).some(p => p.endsWith(last10));
+                    if (isDup) {
+                        throw new common_1.ConflictException(`Phone ending in ${last10} already exists.`);
+                    }
+                }
+                if (normalizedPhone)
+                    existingPhones.add(normalizedPhone);
+                toCreate.push({
+                    ...c,
+                    phone: normalizedPhone,
+                    branchId: branchId ?? null,
+                });
+            }
+            catch (err) {
+                skippedCount++;
+                errors.push(`Row ${index + 1} (${c.name}): ${err.message}`);
+            }
+        }
+        if (toCreate.length > 0) {
+            await this.prisma.customer.createMany({
+                data: toCreate,
+                skipDuplicates: true,
+            });
+            createdCount = toCreate.length;
+        }
+        return { createdCount, skippedCount, errors };
     }
     async findAll(query, branchId) {
         const where = {};
@@ -74,11 +147,32 @@ let CustomersService = class CustomersService {
         return customer;
     }
     async update(id, updateCustomerDto, branchId) {
-        await this.findOne(id, branchId);
-        return this.prisma.customer.update({ where: { id }, data: updateCustomerDto });
+        const existing = await this.findOne(id, branchId);
+        const data = { ...updateCustomerDto };
+        if (data.phone !== undefined) {
+            const normalized = this.normalizePhone(data.phone);
+            if (normalized !== this.normalizePhone(existing.phone)) {
+                await this.assertUniquePhone(normalized, existing.branchId ?? null, id);
+            }
+            data.phone = normalized;
+        }
+        return this.prisma.customer.update({ where: { id }, data });
     }
     async remove(id, branchId) {
-        await this.findOne(id, branchId);
+        const customer = await this.findOne(id, branchId);
+        const openInvoiceCount = await this.prisma.invoice.count({
+            where: {
+                customerId: id,
+                status: { notIn: ['PAID', 'RETURNED', 'CANCELLED'] },
+            },
+        });
+        if (openInvoiceCount > 0) {
+            throw new common_1.BadRequestException(`Cannot delete "${customer.name}" — they have ${openInvoiceCount} open invoice(s). Settle or cancel those first, or set the customer inactive instead.`);
+        }
+        const outstanding = Number(customer.currentOutstanding ?? 0);
+        if (outstanding > 0) {
+            throw new common_1.BadRequestException(`Cannot delete "${customer.name}" — outstanding balance is ₹${outstanding.toFixed(2)}. Reconcile the ledger first.`);
+        }
         return this.prisma.customer.delete({ where: { id } });
     }
     async getOutstanding(branchId) {

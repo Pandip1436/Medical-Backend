@@ -12,47 +12,53 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.QuotationsService = void 0;
 const common_1 = require("@nestjs/common");
 const prisma_service_1 = require("../prisma/prisma.service");
+const document_numbering_service_1 = require("../common/services/document-numbering.service");
 let QuotationsService = class QuotationsService {
     prisma;
-    constructor(prisma) {
+    numbering;
+    constructor(prisma, numbering) {
         this.prisma = prisma;
+        this.numbering = numbering;
     }
-    async create(dto) {
-        const count = await this.prisma.quotation.count();
-        const seq = count + 1;
-        const quotationNumber = `HS/25-26/QTN/${String(seq).padStart(5, '0')}`;
-        return this.prisma.quotation.create({
-            data: {
-                quotationNumber,
-                customerId: dto.customerId || null,
-                customerName: dto.customerName,
-                subtotal: dto.subtotal,
-                cgst: dto.cgst,
-                sgst: dto.sgst,
-                total: dto.total,
-                validUntil: dto.validUntil ? new Date(dto.validUntil) : null,
-                notes: dto.notes,
-                status: 'DRAFT',
-                items: {
-                    create: dto.items.map(item => ({
-                        productId: item.productId || null,
-                        productName: item.productName,
-                        batchId: item.batchId || null,
-                        batchNumber: item.batchNumber || null,
-                        quantity: item.quantity,
-                        mrp: item.mrp || 0,
-                        rate: item.rate,
-                        discountPercent: item.discountPercent || 0,
-                        gstPercent: item.gstPercent || 0,
-                        amount: item.amount,
-                    })),
+    async create(dto, branchId) {
+        return this.prisma.$transaction(async (tx) => {
+            const quotationNumber = await this.numbering.nextNumber(tx, 'QTN', branchId ?? null);
+            return tx.quotation.create({
+                data: {
+                    quotationNumber,
+                    branchId,
+                    customerId: dto.customerId || null,
+                    customerName: dto.customerName,
+                    subtotal: dto.subtotal,
+                    cgst: dto.cgst,
+                    sgst: dto.sgst,
+                    total: dto.total,
+                    validUntil: dto.validUntil ? new Date(dto.validUntil) : null,
+                    notes: dto.notes,
+                    status: 'DRAFT',
+                    items: {
+                        create: dto.items.map((item) => ({
+                            productId: item.productId || null,
+                            productName: item.productName,
+                            batchId: item.batchId || null,
+                            batchNumber: item.batchNumber || null,
+                            quantity: item.quantity,
+                            mrp: item.mrp || 0,
+                            rate: item.rate,
+                            discountPercent: item.discountPercent || 0,
+                            gstPercent: item.gstPercent || 0,
+                            amount: item.amount,
+                        })),
+                    },
                 },
-            },
-            include: { items: true },
+                include: { items: true },
+            });
         });
     }
     async findAll(filters) {
         const where = {};
+        if (filters.branchId)
+            where.branchId = filters.branchId;
         if (filters.q) {
             where.OR = [
                 { quotationNumber: { contains: filters.q, mode: 'insensitive' } },
@@ -60,23 +66,25 @@ let QuotationsService = class QuotationsService {
             ];
         }
         if (filters.fromDate || filters.toDate) {
-            where.date = {};
+            const dateFilter = {};
             if (filters.fromDate)
-                where.date.gte = new Date(filters.fromDate);
+                dateFilter.gte = new Date(filters.fromDate);
             if (filters.toDate) {
                 const toDate = new Date(filters.toDate);
                 toDate.setHours(23, 59, 59, 999);
-                where.date.lte = toDate;
+                dateFilter.lte = toDate;
             }
+            where.date = dateFilter;
         }
         if (filters.status)
             where.status = filters.status;
         if (filters.amountMin !== undefined || filters.amountMax !== undefined) {
-            where.total = {};
+            const totalFilter = {};
             if (filters.amountMin !== undefined)
-                where.total.gte = filters.amountMin;
+                totalFilter.gte = filters.amountMin;
             if (filters.amountMax !== undefined)
-                where.total.lte = filters.amountMax;
+                totalFilter.lte = filters.amountMax;
+            where.total = totalFilter;
         }
         return this.prisma.quotation.findMany({
             where,
@@ -84,29 +92,38 @@ let QuotationsService = class QuotationsService {
             include: { items: true },
         });
     }
-    async findOne(id) {
+    async findOne(id, branchId) {
         const quotation = await this.prisma.quotation.findUnique({
             where: { id },
             include: { items: true, customer: true },
         });
         if (!quotation)
             throw new common_1.NotFoundException('Quotation not found');
+        if (branchId && quotation.branchId && quotation.branchId !== branchId) {
+            throw new common_1.NotFoundException('Quotation not found');
+        }
         return quotation;
     }
-    async update(id, data) {
+    async update(id, data, branchId) {
         const existing = await this.prisma.quotation.findUnique({ where: { id } });
         if (!existing)
             throw new common_1.NotFoundException('Quotation not found');
+        if (branchId && existing.branchId && existing.branchId !== branchId) {
+            throw new common_1.NotFoundException('Quotation not found');
+        }
         return this.prisma.quotation.update({
             where: { id },
             data,
             include: { items: true },
         });
     }
-    async updateStatus(id, status) {
+    async updateStatus(id, status, branchId) {
         const quotation = await this.prisma.quotation.findUnique({ where: { id } });
         if (!quotation)
             throw new common_1.NotFoundException('Quotation not found');
+        if (branchId && quotation.branchId && quotation.branchId !== branchId) {
+            throw new common_1.NotFoundException('Quotation not found');
+        }
         const validTransitions = {
             DRAFT: ['SENT', 'ACCEPTED', 'REJECTED'],
             SENT: ['ACCEPTED', 'REJECTED'],
@@ -124,29 +141,39 @@ let QuotationsService = class QuotationsService {
             include: { items: true },
         });
     }
-    async remove(id) {
+    async remove(id, branchId) {
         const quotation = await this.prisma.quotation.findUnique({ where: { id } });
         if (!quotation)
             throw new common_1.NotFoundException('Quotation not found');
+        if (branchId && quotation.branchId && quotation.branchId !== branchId) {
+            throw new common_1.NotFoundException('Quotation not found');
+        }
         if (quotation.status === 'CONVERTED') {
             throw new common_1.BadRequestException('Cannot delete a converted quotation');
         }
         return this.prisma.quotation.delete({ where: { id } });
     }
-    async getStats() {
+    async getStats(branchId) {
+        const branchWhere = branchId ? { branchId } : {};
         const [all, accepted, pending, rejected] = await Promise.all([
-            this.prisma.quotation.aggregate({ _sum: { total: true }, _count: { _all: true } }),
             this.prisma.quotation.aggregate({
-                where: { status: { in: ['ACCEPTED', 'CONVERTED'] } },
+                where: branchWhere,
                 _sum: { total: true },
                 _count: { _all: true },
             }),
             this.prisma.quotation.aggregate({
-                where: { status: { in: ['DRAFT', 'SENT'] } },
+                where: { ...branchWhere, status: { in: ['ACCEPTED', 'CONVERTED'] } },
                 _sum: { total: true },
                 _count: { _all: true },
             }),
-            this.prisma.quotation.count({ where: { status: 'REJECTED' } }),
+            this.prisma.quotation.aggregate({
+                where: { ...branchWhere, status: { in: ['DRAFT', 'SENT'] } },
+                _sum: { total: true },
+                _count: { _all: true },
+            }),
+            this.prisma.quotation.count({
+                where: { ...branchWhere, status: 'REJECTED' },
+            }),
         ]);
         return {
             total: Number(all._sum?.total || 0),
@@ -162,6 +189,7 @@ let QuotationsService = class QuotationsService {
 exports.QuotationsService = QuotationsService;
 exports.QuotationsService = QuotationsService = __decorate([
     (0, common_1.Injectable)(),
-    __metadata("design:paramtypes", [prisma_service_1.PrismaService])
+    __metadata("design:paramtypes", [prisma_service_1.PrismaService,
+        document_numbering_service_1.DocumentNumberingService])
 ], QuotationsService);
 //# sourceMappingURL=quotations.service.js.map

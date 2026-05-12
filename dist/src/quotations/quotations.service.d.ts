@@ -1,37 +1,41 @@
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { DocumentNumberingService } from '../common/services/document-numbering.service';
 import { CreateQuotationDto } from './dto/create-quotation.dto';
 export declare class QuotationsService {
     private readonly prisma;
-    constructor(prisma: PrismaService);
-    create(dto: CreateQuotationDto): Promise<{
+    private readonly numbering;
+    constructor(prisma: PrismaService, numbering: DocumentNumberingService);
+    create(dto: CreateQuotationDto, branchId?: string): Promise<{
         items: {
             id: string;
-            mrp: import("@prisma/client/runtime/library").Decimal;
+            mrp: Prisma.Decimal;
             productId: string | null;
             productName: string;
             batchNumber: string | null;
             quantity: number;
             batchId: string | null;
-            rate: import("@prisma/client/runtime/library").Decimal;
-            discountPercent: import("@prisma/client/runtime/library").Decimal;
-            gstPercent: import("@prisma/client/runtime/library").Decimal;
-            amount: import("@prisma/client/runtime/library").Decimal;
+            rate: Prisma.Decimal;
+            discountPercent: Prisma.Decimal;
+            gstPercent: Prisma.Decimal;
+            amount: Prisma.Decimal;
             quotationId: string;
         }[];
     } & {
         id: string;
+        branchId: string | null;
         createdAt: Date;
         date: Date;
-        subtotal: import("@prisma/client/runtime/library").Decimal;
-        cgst: import("@prisma/client/runtime/library").Decimal;
-        sgst: import("@prisma/client/runtime/library").Decimal;
+        subtotal: Prisma.Decimal;
+        cgst: Prisma.Decimal;
+        sgst: Prisma.Decimal;
         status: import(".prisma/client").$Enums.QuotationStatus;
         notes: string | null;
         updatedAt: Date;
         customerName: string;
         customerId: string | null;
         validUntil: Date | null;
-        total: import("@prisma/client/runtime/library").Decimal;
+        total: Prisma.Decimal;
         quotationNumber: string;
     }>;
     findAll(filters: {
@@ -41,50 +45,52 @@ export declare class QuotationsService {
         status?: string;
         amountMin?: number;
         amountMax?: number;
+        branchId?: string;
     }): Promise<({
         items: {
             id: string;
-            mrp: import("@prisma/client/runtime/library").Decimal;
+            mrp: Prisma.Decimal;
             productId: string | null;
             productName: string;
             batchNumber: string | null;
             quantity: number;
             batchId: string | null;
-            rate: import("@prisma/client/runtime/library").Decimal;
-            discountPercent: import("@prisma/client/runtime/library").Decimal;
-            gstPercent: import("@prisma/client/runtime/library").Decimal;
-            amount: import("@prisma/client/runtime/library").Decimal;
+            rate: Prisma.Decimal;
+            discountPercent: Prisma.Decimal;
+            gstPercent: Prisma.Decimal;
+            amount: Prisma.Decimal;
             quotationId: string;
         }[];
     } & {
         id: string;
+        branchId: string | null;
         createdAt: Date;
         date: Date;
-        subtotal: import("@prisma/client/runtime/library").Decimal;
-        cgst: import("@prisma/client/runtime/library").Decimal;
-        sgst: import("@prisma/client/runtime/library").Decimal;
+        subtotal: Prisma.Decimal;
+        cgst: Prisma.Decimal;
+        sgst: Prisma.Decimal;
         status: import(".prisma/client").$Enums.QuotationStatus;
         notes: string | null;
         updatedAt: Date;
         customerName: string;
         customerId: string | null;
         validUntil: Date | null;
-        total: import("@prisma/client/runtime/library").Decimal;
+        total: Prisma.Decimal;
         quotationNumber: string;
     })[]>;
-    findOne(id: string): Promise<{
+    findOne(id: string, branchId?: string): Promise<{
         items: {
             id: string;
-            mrp: import("@prisma/client/runtime/library").Decimal;
+            mrp: Prisma.Decimal;
             productId: string | null;
             productName: string;
             batchNumber: string | null;
             quantity: number;
             batchId: string | null;
-            rate: import("@prisma/client/runtime/library").Decimal;
-            discountPercent: import("@prisma/client/runtime/library").Decimal;
-            gstPercent: import("@prisma/client/runtime/library").Decimal;
-            amount: import("@prisma/client/runtime/library").Decimal;
+            rate: Prisma.Decimal;
+            discountPercent: Prisma.Decimal;
+            gstPercent: Prisma.Decimal;
+            amount: Prisma.Decimal;
             quotationId: string;
         }[];
         customer: {
@@ -97,110 +103,115 @@ export declare class QuotationsService {
             notes: string | null;
             address: string | null;
             gstin: string | null;
-            currentOutstanding: import("@prisma/client/runtime/library").Decimal;
+            currentOutstanding: Prisma.Decimal;
             alternatePhone: string | null;
             type: import(".prisma/client").$Enums.CustomerType;
             doctorRef: string | null;
             referredBy: string | null;
-            creditLimit: import("@prisma/client/runtime/library").Decimal;
+            creditLimit: Prisma.Decimal;
             loyaltyPoints: number;
             dlNumber: string | null;
+            registrationNumber: string | null;
         } | null;
     } & {
         id: string;
+        branchId: string | null;
         createdAt: Date;
         date: Date;
-        subtotal: import("@prisma/client/runtime/library").Decimal;
-        cgst: import("@prisma/client/runtime/library").Decimal;
-        sgst: import("@prisma/client/runtime/library").Decimal;
+        subtotal: Prisma.Decimal;
+        cgst: Prisma.Decimal;
+        sgst: Prisma.Decimal;
         status: import(".prisma/client").$Enums.QuotationStatus;
         notes: string | null;
         updatedAt: Date;
         customerName: string;
         customerId: string | null;
         validUntil: Date | null;
-        total: import("@prisma/client/runtime/library").Decimal;
+        total: Prisma.Decimal;
         quotationNumber: string;
     }>;
-    update(id: string, data: any): Promise<{
+    update(id: string, data: Prisma.QuotationUpdateInput, branchId?: string): Promise<{
         items: {
             id: string;
-            mrp: import("@prisma/client/runtime/library").Decimal;
+            mrp: Prisma.Decimal;
             productId: string | null;
             productName: string;
             batchNumber: string | null;
             quantity: number;
             batchId: string | null;
-            rate: import("@prisma/client/runtime/library").Decimal;
-            discountPercent: import("@prisma/client/runtime/library").Decimal;
-            gstPercent: import("@prisma/client/runtime/library").Decimal;
-            amount: import("@prisma/client/runtime/library").Decimal;
+            rate: Prisma.Decimal;
+            discountPercent: Prisma.Decimal;
+            gstPercent: Prisma.Decimal;
+            amount: Prisma.Decimal;
             quotationId: string;
         }[];
     } & {
         id: string;
+        branchId: string | null;
         createdAt: Date;
         date: Date;
-        subtotal: import("@prisma/client/runtime/library").Decimal;
-        cgst: import("@prisma/client/runtime/library").Decimal;
-        sgst: import("@prisma/client/runtime/library").Decimal;
+        subtotal: Prisma.Decimal;
+        cgst: Prisma.Decimal;
+        sgst: Prisma.Decimal;
         status: import(".prisma/client").$Enums.QuotationStatus;
         notes: string | null;
         updatedAt: Date;
         customerName: string;
         customerId: string | null;
         validUntil: Date | null;
-        total: import("@prisma/client/runtime/library").Decimal;
+        total: Prisma.Decimal;
         quotationNumber: string;
     }>;
-    updateStatus(id: string, status: string): Promise<{
+    updateStatus(id: string, status: string, branchId?: string): Promise<{
         items: {
             id: string;
-            mrp: import("@prisma/client/runtime/library").Decimal;
+            mrp: Prisma.Decimal;
             productId: string | null;
             productName: string;
             batchNumber: string | null;
             quantity: number;
             batchId: string | null;
-            rate: import("@prisma/client/runtime/library").Decimal;
-            discountPercent: import("@prisma/client/runtime/library").Decimal;
-            gstPercent: import("@prisma/client/runtime/library").Decimal;
-            amount: import("@prisma/client/runtime/library").Decimal;
+            rate: Prisma.Decimal;
+            discountPercent: Prisma.Decimal;
+            gstPercent: Prisma.Decimal;
+            amount: Prisma.Decimal;
             quotationId: string;
         }[];
     } & {
         id: string;
+        branchId: string | null;
         createdAt: Date;
         date: Date;
-        subtotal: import("@prisma/client/runtime/library").Decimal;
-        cgst: import("@prisma/client/runtime/library").Decimal;
-        sgst: import("@prisma/client/runtime/library").Decimal;
+        subtotal: Prisma.Decimal;
+        cgst: Prisma.Decimal;
+        sgst: Prisma.Decimal;
         status: import(".prisma/client").$Enums.QuotationStatus;
         notes: string | null;
         updatedAt: Date;
         customerName: string;
         customerId: string | null;
         validUntil: Date | null;
-        total: import("@prisma/client/runtime/library").Decimal;
+        total: Prisma.Decimal;
         quotationNumber: string;
     }>;
-    remove(id: string): Promise<{
+    remove(id: string, branchId?: string): Promise<{
         id: string;
+        branchId: string | null;
         createdAt: Date;
         date: Date;
-        subtotal: import("@prisma/client/runtime/library").Decimal;
-        cgst: import("@prisma/client/runtime/library").Decimal;
-        sgst: import("@prisma/client/runtime/library").Decimal;
+        subtotal: Prisma.Decimal;
+        cgst: Prisma.Decimal;
+        sgst: Prisma.Decimal;
         status: import(".prisma/client").$Enums.QuotationStatus;
         notes: string | null;
         updatedAt: Date;
         customerName: string;
         customerId: string | null;
         validUntil: Date | null;
-        total: import("@prisma/client/runtime/library").Decimal;
+        total: Prisma.Decimal;
         quotationNumber: string;
     }>;
-    getStats(): Promise<{
+    getStats(branchId?: string): Promise<{
         total: number;
         totalCount: number;
         acceptedTotal: number;

@@ -19,6 +19,7 @@ const multer_1 = require("multer");
 const products_service_1 = require("./products.service");
 const create_product_dto_1 = require("./dto/create-product.dto");
 const update_product_dto_1 = require("./dto/update-product.dto");
+const adjust_stock_dto_1 = require("./dto/adjust-stock.dto");
 const swagger_1 = require("@nestjs/swagger");
 const jwt_auth_guard_1 = require("../common/guards/jwt-auth.guard");
 const roles_guard_1 = require("../common/guards/roles.guard");
@@ -40,6 +41,14 @@ let ProductsController = class ProductsController {
     create(createProductDto, req, branchId) {
         const effectiveBranchId = req.user.branchId ?? branchId;
         return this.productsService.create({ ...createProductDto, branchId: effectiveBranchId });
+    }
+    bulkCreate(products, req, branchId) {
+        const effectiveBranchId = req.user.branchId ?? branchId;
+        return this.productsService.bulkCreate(products, effectiveBranchId);
+    }
+    bulkUpdateHsn(items, req, branchId) {
+        const effectiveBranchId = req.user.branchId ?? branchId;
+        return this.productsService.bulkUpdateHsn(items, effectiveBranchId);
     }
     findAll(req, q, categoryId, schedule, skip, take, branchId, status) {
         const effectiveBranchId = req.user.branchId ?? branchId;
@@ -66,12 +75,20 @@ let ProductsController = class ProductsController {
         return this.productsService.update(id, updateProductDto, req.user.branchId);
     }
     bulkAdjust(body, req) {
-        const user = { userId: req.user.userId, name: req.user.name ?? req.user.email ?? 'Unknown' };
-        return this.productsService.bulkAdjustStock(body.items, req.user.branchId, user);
+        const user = {
+            userId: req.user.userId,
+            name: req.user.name ?? req.user.email ?? 'Unknown',
+            role: req.user.role,
+        };
+        return this.productsService.submitBulkAdjustment(body.items, req.user.branchId, user);
     }
     adjust(id, batchId, body, req) {
-        const user = { userId: req.user.userId, name: req.user.name ?? req.user.email ?? 'Unknown' };
-        return this.productsService.adjustBatchStock(id, batchId, body, req.user.branchId, user);
+        const user = {
+            userId: req.user.userId,
+            name: req.user.name ?? req.user.email ?? 'Unknown',
+            role: req.user.role,
+        };
+        return this.productsService.submitBulkAdjustment([{ productId: id, batchId, adjustedQty: body.adjustedQty, reason: body.reason }], req.user.branchId, user);
     }
     toggleActive(id, req) {
         return this.productsService.toggleActive(id, req.user.branchId);
@@ -113,6 +130,28 @@ __decorate([
     __metadata("design:returntype", void 0)
 ], ProductsController.prototype, "create", null);
 __decorate([
+    (0, common_1.Post)('bulk'),
+    (0, roles_decorator_1.Roles)('ADMIN', 'INVENTORY_MANAGER'),
+    (0, swagger_1.ApiOperation)({ summary: 'Bulk create products from JSON' }),
+    __param(0, (0, common_1.Body)()),
+    __param(1, (0, common_1.Request)()),
+    __param(2, (0, common_1.Query)('branchId')),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Array, Object, String]),
+    __metadata("design:returntype", void 0)
+], ProductsController.prototype, "bulkCreate", null);
+__decorate([
+    (0, common_1.Post)('bulk-hsn'),
+    (0, roles_decorator_1.Roles)('ADMIN', 'INVENTORY_MANAGER'),
+    (0, swagger_1.ApiOperation)({ summary: 'Bulk update products HSN and GST from JSON' }),
+    __param(0, (0, common_1.Body)()),
+    __param(1, (0, common_1.Request)()),
+    __param(2, (0, common_1.Query)('branchId')),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Array, Object, String]),
+    __metadata("design:returntype", void 0)
+], ProductsController.prototype, "bulkUpdateHsn", null);
+__decorate([
     (0, common_1.Get)(),
     (0, roles_decorator_1.Roles)('ADMIN', 'PHARMACIST', 'INVENTORY_MANAGER', 'ACCOUNTANT', 'SALESPERSON'),
     (0, swagger_1.ApiOperation)({ summary: 'Get all products for a branch (paginated when skip/take provided)' }),
@@ -137,7 +176,7 @@ __decorate([
 ], ProductsController.prototype, "findAll", null);
 __decorate([
     (0, common_1.Get)(':id/history'),
-    (0, roles_decorator_1.Roles)('ADMIN', 'PHARMACIST', 'INVENTORY_MANAGER', 'ACCOUNTANT', 'SALESPERSON'),
+    (0, roles_decorator_1.Roles)('ADMIN', 'PHARMACIST', 'INVENTORY_MANAGER', 'ACCOUNTANT'),
     (0, swagger_1.ApiOperation)({ summary: 'Get full sales and purchase history for a product' }),
     (0, swagger_1.ApiQuery)({ name: 'skip', required: false }),
     (0, swagger_1.ApiQuery)({ name: 'take', required: false }),
@@ -173,23 +212,23 @@ __decorate([
 __decorate([
     (0, common_1.Post)('bulk-adjust'),
     (0, roles_decorator_1.Roles)('ADMIN', 'INVENTORY_MANAGER'),
-    (0, swagger_1.ApiOperation)({ summary: 'Atomically adjust stock for multiple batches in one transaction' }),
+    (0, swagger_1.ApiOperation)({ summary: 'Submit a stock adjustment for multiple batches; queues approval if total impact exceeds threshold for non-admin users' }),
     __param(0, (0, common_1.Body)()),
     __param(1, (0, common_1.Request)()),
     __metadata("design:type", Function),
-    __metadata("design:paramtypes", [Object, Object]),
+    __metadata("design:paramtypes", [adjust_stock_dto_1.BulkAdjustStockDto, Object]),
     __metadata("design:returntype", void 0)
 ], ProductsController.prototype, "bulkAdjust", null);
 __decorate([
     (0, common_1.Patch)(':id/batches/:batchId/adjust'),
     (0, roles_decorator_1.Roles)('ADMIN', 'INVENTORY_MANAGER'),
-    (0, swagger_1.ApiOperation)({ summary: 'Adjust stock quantity for a specific batch' }),
+    (0, swagger_1.ApiOperation)({ summary: 'Adjust stock for a specific batch; queues approval for non-admin if value exceeds threshold' }),
     __param(0, (0, common_1.Param)('id')),
     __param(1, (0, common_1.Param)('batchId')),
     __param(2, (0, common_1.Body)()),
     __param(3, (0, common_1.Request)()),
     __metadata("design:type", Function),
-    __metadata("design:paramtypes", [String, String, Object, Object]),
+    __metadata("design:paramtypes", [String, String, adjust_stock_dto_1.AdjustStockDto, Object]),
     __metadata("design:returntype", void 0)
 ], ProductsController.prototype, "adjust", null);
 __decorate([

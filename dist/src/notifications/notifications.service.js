@@ -13,6 +13,12 @@ exports.NotificationsService = void 0;
 const common_1 = require("@nestjs/common");
 const prisma_service_1 = require("../prisma/prisma.service");
 const create_notification_dto_1 = require("./dto/create-notification.dto");
+const DEDUP_WINDOW_HOURS = Number(process.env.NOTIFICATION_DEDUP_WINDOW_HOURS ?? 24);
+function dedupSince() {
+    const d = new Date();
+    d.setHours(d.getHours() - DEDUP_WINDOW_HOURS);
+    return d;
+}
 let NotificationsService = class NotificationsService {
     prisma;
     constructor(prisma) {
@@ -70,8 +76,8 @@ let NotificationsService = class NotificationsService {
             const existing = await this.prisma.notification.findFirst({
                 where: {
                     type: create_notification_dto_1.NotificationType.LOW_STOCK,
-                    isRead: false,
                     message: { contains: `[productId:${p.id}]` },
+                    createdAt: { gte: dedupSince() },
                 },
             });
             if (!existing) {
@@ -121,8 +127,8 @@ let NotificationsService = class NotificationsService {
             const existing = await this.prisma.notification.findFirst({
                 where: {
                     type: create_notification_dto_1.NotificationType.EXPIRY,
-                    isRead: false,
                     message: { contains: `[batchId:${b.id}]` },
+                    createdAt: { gte: dedupSince() },
                 },
             });
             if (!existing) {
@@ -196,8 +202,8 @@ let NotificationsService = class NotificationsService {
             const existing = await this.prisma.notification.findFirst({
                 where: {
                     type: create_notification_dto_1.NotificationType.PAYMENT_DUE,
-                    isRead: false,
                     message: { contains: `[invoiceId:${inv.id}]` },
+                    createdAt: { gte: dedupSince() },
                 },
             });
             if (!existing) {

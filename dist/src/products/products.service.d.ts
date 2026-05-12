@@ -1,10 +1,15 @@
 import { PrismaService } from '../prisma/prisma.service';
+import { ApprovalsService } from '../approvals/approvals.service';
+import { DocumentNumberingService } from '../common/services/document-numbering.service';
 import { Prisma } from '@prisma/client';
 import { CreateProductDto } from './dto/create-product.dto';
 import { UpdateProductDto } from './dto/update-product.dto';
 export declare class ProductsService {
     private readonly prisma;
-    constructor(prisma: PrismaService);
+    private readonly approvalsService;
+    private readonly numbering;
+    constructor(prisma: PrismaService, approvalsService: ApprovalsService, numbering: DocumentNumberingService);
+    private assertUniqueName;
     create(createProductDto: CreateProductDto & {
         branchId?: string;
     }): Promise<{
@@ -35,6 +40,16 @@ export declare class ProductsService {
         barcode: string | null;
         totalStock: number;
         categoryId: string | null;
+    }>;
+    bulkCreate(products: any[], branchId?: string): Promise<{
+        createdCount: number;
+        skippedCount: number;
+        errors: string[];
+    }>;
+    bulkUpdateHsn(items: any[], branchId?: string): Promise<{
+        updatedCount: number;
+        skippedCount: number;
+        errors: string[];
     }>;
     toggleActive(id: string, branchId?: string): Promise<{
         id: string;
@@ -91,6 +106,7 @@ export declare class ProductsService {
             id: string;
             name: string;
             isActive: boolean;
+            branchId: string | null;
             createdAt: Date;
             description: string | null;
             color: string | null;
@@ -142,6 +158,7 @@ export declare class ProductsService {
                 id: string;
                 name: string;
                 isActive: boolean;
+                branchId: string | null;
                 createdAt: Date;
                 description: string | null;
                 color: string | null;
@@ -195,6 +212,7 @@ export declare class ProductsService {
             id: string;
             name: string;
             isActive: boolean;
+            branchId: string | null;
             createdAt: Date;
             description: string | null;
             color: string | null;
@@ -330,6 +348,7 @@ export declare class ProductsService {
         name: string;
     }): Promise<{
         success: boolean;
+        adjustmentNo: string;
         batchId: string;
         previousQty: number;
         newQty: number;
@@ -349,6 +368,7 @@ export declare class ProductsService {
                 id: string;
                 name: string;
                 isActive: boolean;
+                branchId: string | null;
                 createdAt: Date;
                 description: string | null;
                 color: string | null;
@@ -414,6 +434,7 @@ export declare class ProductsService {
         name: string;
     }): Promise<{
         success: boolean;
+        adjustmentNo: string;
         adjusted: number;
         items: {
             productId: string;
@@ -423,5 +444,37 @@ export declare class ProductsService {
             diff: number;
             reason: string;
         }[];
+    }>;
+    estimateAdjustmentValue(items: {
+        productId: string;
+        batchId: string;
+        adjustedQty: number;
+    }[], branchId?: string): Promise<number>;
+    submitBulkAdjustment(items: {
+        productId: string;
+        batchId: string;
+        adjustedQty: number;
+        reason: string;
+    }[], branchId: string | undefined, user: {
+        userId: string;
+        name: string;
+        role: string;
+    }): Promise<{
+        success: boolean;
+        adjustmentNo: string;
+        adjusted: number;
+        items: {
+            productId: string;
+            batchId: string;
+            previousQty: number;
+            newQty: number;
+            diff: number;
+            reason: string;
+        }[];
+    } | {
+        approvalRequested: boolean;
+        approvalRequestId: string;
+        totalValue: number;
+        threshold: number;
     }>;
 }

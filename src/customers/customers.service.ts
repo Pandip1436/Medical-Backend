@@ -90,6 +90,57 @@ export class CustomersService {
     return this.prisma.customer.create({ data: dto });
   }
 
+  async bulkCreate(customers: CreateCustomerDto[], branchId?: string) {
+    let createdCount = 0;
+    let skippedCount = 0;
+    const errors: string[] = [];
+
+    // Pre-fetch existing phones for this branch to validate in memory
+    const branchScope = branchId ? [{ branchId }, { branchId: null }] : [{ branchId: null }];
+    const existingCustomers = await this.prisma.customer.findMany({
+      where: { OR: branchScope },
+      select: { phone: true }
+    });
+
+    const existingPhones = new Set(existingCustomers.map(c => this.normalizePhone(c.phone)).filter(Boolean));
+    const toCreate = [];
+
+    for (const [index, c] of customers.entries()) {
+      try {
+        const normalizedPhone = this.normalizePhone(c.phone);
+        
+        if (normalizedPhone) {
+          const last10 = normalizedPhone.slice(-10);
+          const isDup = Array.from(existingPhones).some(p => p.endsWith(last10));
+          if (isDup) {
+             throw new ConflictException(`Phone ending in ${last10} already exists.`);
+          }
+        }
+        
+        if (normalizedPhone) existingPhones.add(normalizedPhone);
+        
+        toCreate.push({
+          ...c,
+          phone: normalizedPhone,
+          branchId: branchId ?? null,
+        });
+      } catch (err: any) {
+        skippedCount++;
+        errors.push(`Row ${index + 1} (${c.name}): ${err.message}`);
+      }
+    }
+
+    if (toCreate.length > 0) {
+      await this.prisma.customer.createMany({
+        data: toCreate,
+        skipDuplicates: true,
+      });
+      createdCount = toCreate.length;
+    }
+
+    return { createdCount, skippedCount, errors };
+  }
+
   async findAll(query?: string, branchId?: string) {
     const where: any = {};
     if (branchId) where.branchId = branchId;

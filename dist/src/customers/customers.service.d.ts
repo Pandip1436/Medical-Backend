@@ -6,6 +6,8 @@ export declare class CustomersService {
     private readonly prisma;
     private readonly approvalsService;
     constructor(prisma: PrismaService, approvalsService: ApprovalsService);
+    private normalizePhone;
+    private assertUniquePhone;
     create(createCustomerDto: CreateCustomerDto & {
         branchId?: string;
     }, user?: {
@@ -29,9 +31,15 @@ export declare class CustomersService {
         creditLimit: import("@prisma/client/runtime/library").Decimal;
         loyaltyPoints: number;
         dlNumber: string | null;
+        registrationNumber: string | null;
     } | {
         approvalRequested: boolean;
         approvalRequestId: string;
+    }>;
+    bulkCreate(customers: CreateCustomerDto[], branchId?: string): Promise<{
+        createdCount: number;
+        skippedCount: number;
+        errors: string[];
     }>;
     findAll(query?: string, branchId?: string): Promise<{
         pendingCreditCount: number;
@@ -52,6 +60,7 @@ export declare class CustomersService {
         creditLimit: import("@prisma/client/runtime/library").Decimal;
         loyaltyPoints: number;
         dlNumber: string | null;
+        registrationNumber: string | null;
     }[]>;
     findOne(id: string, branchId?: string): Promise<{
         invoices: {
@@ -112,6 +121,7 @@ export declare class CustomersService {
         creditLimit: import("@prisma/client/runtime/library").Decimal;
         loyaltyPoints: number;
         dlNumber: string | null;
+        registrationNumber: string | null;
     }>;
     update(id: string, updateCustomerDto: UpdateCustomerDto, branchId?: string): Promise<{
         id: string;
@@ -131,6 +141,7 @@ export declare class CustomersService {
         creditLimit: import("@prisma/client/runtime/library").Decimal;
         loyaltyPoints: number;
         dlNumber: string | null;
+        registrationNumber: string | null;
     }>;
     remove(id: string, branchId?: string): Promise<{
         id: string;
@@ -150,6 +161,7 @@ export declare class CustomersService {
         creditLimit: import("@prisma/client/runtime/library").Decimal;
         loyaltyPoints: number;
         dlNumber: string | null;
+        registrationNumber: string | null;
     }>;
     getOutstanding(branchId?: string): Promise<{
         total: number;

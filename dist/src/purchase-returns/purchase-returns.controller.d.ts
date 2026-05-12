@@ -1,9 +1,11 @@
 import { PurchaseReturnsService } from './purchase-returns.service';
 import { CreatePurchaseReturnDto } from './dto/create-purchase-return.dto';
+import { PurchaseReturnStatus } from '@prisma/client';
+import type { AuthenticatedRequest } from '../common/types/authenticated-request';
 export declare class PurchaseReturnsController {
     private readonly purchaseReturnsService;
     constructor(purchaseReturnsService: PurchaseReturnsService);
-    create(dto: CreatePurchaseReturnDto, req: any): Promise<({
+    create(dto: CreatePurchaseReturnDto, req: AuthenticatedRequest): Promise<({
         items: {
             id: string;
             purchaseRate: import("@prisma/client/runtime/library").Decimal;
@@ -37,11 +39,12 @@ export declare class PurchaseReturnsController {
         replacementGrnId: string | null;
         notes: string | null;
         createdById: string;
+        stockReversedAt: Date | null;
     }) | {
         approvalRequested: boolean;
         approvalRequestId: string;
     }>;
-    findAll(req: any, q?: string, branchId?: string): import(".prisma/client").Prisma.PrismaPromise<({
+    findAll(req: AuthenticatedRequest, q?: string, branchId?: string): import(".prisma/client").Prisma.PrismaPromise<({
         grn: {
             id: string;
             branchId: string | null;
@@ -90,8 +93,9 @@ export declare class PurchaseReturnsController {
         replacementGrnId: string | null;
         notes: string | null;
         createdById: string;
+        stockReversedAt: Date | null;
     })[]>;
-    findOne(id: string, req: any): Promise<{
+    findOne(id: string, req: AuthenticatedRequest): Promise<{
         grn: {
             id: string;
             branchId: string | null;
@@ -155,8 +159,9 @@ export declare class PurchaseReturnsController {
         replacementGrnId: string | null;
         notes: string | null;
         createdById: string;
+        stockReversedAt: Date | null;
     }>;
-    updateStatus(id: string, status: any, req: any): Promise<{
+    updateStatus(id: string, status: PurchaseReturnStatus, req: AuthenticatedRequest): Promise<{
         id: string;
         branchId: string | null;
         createdAt: Date;
@@ -176,8 +181,9 @@ export declare class PurchaseReturnsController {
         replacementGrnId: string | null;
         notes: string | null;
         createdById: string;
+        stockReversedAt: Date | null;
     }>;
-    linkReplacement(id: string, replacementGrnId: string, req: any): Promise<{
+    linkReplacement(id: string, replacementGrnId: string, req: AuthenticatedRequest): Promise<{
         items: {
             id: string;
             purchaseRate: import("@prisma/client/runtime/library").Decimal;
@@ -211,5 +217,6 @@ export declare class PurchaseReturnsController {
         replacementGrnId: string | null;
         notes: string | null;
         createdById: string;
+        stockReversedAt: Date | null;
     }>;
 }

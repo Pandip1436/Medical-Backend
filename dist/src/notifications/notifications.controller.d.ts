@@ -1,9 +1,10 @@
 import { NotificationsService } from './notifications.service';
 import { CreateNotificationDto } from './dto/create-notification.dto';
+import type { AuthenticatedRequest } from '../common/types/authenticated-request';
 export declare class NotificationsController {
     private readonly service;
     constructor(service: NotificationsService);
-    findAll(req: any, queryBranchId?: string, unread?: string): Promise<{
+    findAll(req: AuthenticatedRequest, queryBranchId?: string, unread?: string): Promise<{
         id: string;
         branchId: string | null;
         createdAt: Date;
@@ -13,7 +14,7 @@ export declare class NotificationsController {
         isRead: boolean;
         actionUrl: string | null;
     }[]>;
-    create(dto: CreateNotificationDto, req: any, queryBranchId?: string): Promise<{
+    create(dto: CreateNotificationDto, req: AuthenticatedRequest, queryBranchId?: string): Promise<{
         id: string;
         branchId: string | null;
         createdAt: Date;
@@ -33,7 +34,7 @@ export declare class NotificationsController {
         isRead: boolean;
         actionUrl: string | null;
     }>;
-    markAllAsRead(req: any, queryBranchId?: string): Promise<import(".prisma/client").Prisma.BatchPayload>;
+    markAllAsRead(req: AuthenticatedRequest, queryBranchId?: string): Promise<import(".prisma/client").Prisma.BatchPayload>;
     remove(id: string): Promise<{
         id: string;
         branchId: string | null;
@@ -44,17 +45,17 @@ export declare class NotificationsController {
         isRead: boolean;
         actionUrl: string | null;
     }>;
-    clearAll(req: any, queryBranchId?: string): Promise<import(".prisma/client").Prisma.BatchPayload>;
-    generateLowStock(req: any, queryBranchId?: string): Promise<{
+    clearAll(req: AuthenticatedRequest, queryBranchId?: string): Promise<import(".prisma/client").Prisma.BatchPayload>;
+    generateLowStock(req: AuthenticatedRequest, queryBranchId?: string): Promise<{
         created: number;
     }>;
-    generateExpiry(req: any, queryBranchId?: string, days?: string): Promise<{
+    generateExpiry(req: AuthenticatedRequest, queryBranchId?: string, days?: string): Promise<{
         created: number;
     }>;
-    generatePaymentDue(req: any, queryBranchId?: string): Promise<{
+    generatePaymentDue(req: AuthenticatedRequest, queryBranchId?: string): Promise<{
         created: number;
     }>;
-    generateAll(req: any, queryBranchId?: string): Promise<{
+    generateAll(req: AuthenticatedRequest, queryBranchId?: string): Promise<{
         lowStock: {
             created: number;
         };

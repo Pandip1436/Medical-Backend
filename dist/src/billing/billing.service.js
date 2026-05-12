@@ -13,14 +13,105 @@ exports.BillingService = void 0;
 const common_1 = require("@nestjs/common");
 const prisma_service_1 = require("../prisma/prisma.service");
 const approvals_service_1 = require("../approvals/approvals.service");
+const document_numbering_service_1 = require("../common/services/document-numbering.service");
 let BillingService = class BillingService {
     prisma;
     approvalsService;
-    constructor(prisma, approvalsService) {
+    numbering;
+    constructor(prisma, approvalsService, numbering) {
         this.prisma = prisma;
         this.approvalsService = approvalsService;
+        this.numbering = numbering;
+    }
+    async assertPrescriptionForScheduledItems(tx, items, customerId, billingType) {
+        if (!items.length)
+            return;
+        if (billingType && billingType.toUpperCase() === 'WHOLESALE')
+            return;
+        const productIds = items.map((i) => i.productId);
+        const products = await tx.product.findMany({
+            where: { id: { in: productIds } },
+            select: { id: true, name: true, schedule: true },
+        });
+        const scheduledProducts = products.filter((p) => p.schedule === 'H' || p.schedule === 'H1' || p.schedule === 'X');
+        if (scheduledProducts.length === 0)
+            return;
+        if (!customerId) {
+            const names = scheduledProducts.map((p) => p.name).join(', ');
+            throw new common_1.BadRequestException(`Schedule H/H1/X drugs (${names}) cannot be sold to a walk-in customer — record the customer and their prescription first.`);
+        }
+        const activeRx = await tx.prescription.findFirst({
+            where: {
+                customerId,
+                isActive: true,
+                OR: [{ validUntil: null }, { validUntil: { gte: new Date() } }],
+            },
+            select: { id: true },
+        });
+        if (!activeRx) {
+            const names = scheduledProducts.map((p) => p.name).join(', ');
+            throw new common_1.BadRequestException(`Cannot dispense ${names} — customer has no active, non-expired prescription on file.`);
+        }
+    }
+    async deductStockForItem(tx, item, branchId) {
+        const batch = await tx.batch.findUnique({ where: { id: item.batchId } });
+        if (!batch) {
+            throw new common_1.NotFoundException(`Batch ${item.batchNumber} for product ${item.productName} not found`);
+        }
+        const expiry = new Date(batch.expiryDate);
+        expiry.setHours(23, 59, 59, 999);
+        if (expiry < new Date()) {
+            throw new common_1.BadRequestException(`Cannot sell ${item.productName} from batch ${item.batchNumber}: expired on ${new Date(batch.expiryDate).toLocaleDateString('en-IN')}`);
+        }
+        if (batch.quantity < item.quantity) {
+            throw new common_1.BadRequestException(`Insufficient stock for ${item.productName} in batch ${item.batchNumber}. Available: ${batch.quantity}`);
+        }
+        await tx.batch.update({
+            where: { id: batch.id },
+            data: { quantity: batch.quantity - item.quantity },
+        });
+        const updatedProduct = await tx.product.update({
+            where: { id: item.productId },
+            data: { totalStock: { decrement: item.quantity } },
+            select: {
+                id: true,
+                name: true,
+                totalStock: true,
+                minStock: true,
+                branchId: true,
+            },
+        });
+        const isLow = updatedProduct.totalStock <= 0 ||
+            (updatedProduct.minStock > 0 &&
+                updatedProduct.totalStock <= updatedProduct.minStock);
+        if (isLow) {
+            const dedupSince = new Date();
+            dedupSince.setHours(dedupSince.getHours() - 24);
+            const alreadyNotified = await tx.notification.findFirst({
+                where: {
+                    type: 'LOW_STOCK',
+                    message: { contains: `[productId:${updatedProduct.id}]` },
+                    createdAt: { gte: dedupSince },
+                },
+            });
+            if (!alreadyNotified) {
+                const stockLabel = updatedProduct.totalStock <= 0
+                    ? 'is out of stock'
+                    : `has only ${updatedProduct.totalStock} units left (min: ${updatedProduct.minStock})`;
+                await tx.notification.create({
+                    data: {
+                        type: 'LOW_STOCK',
+                        title: 'Low Stock Alert',
+                        message: `${updatedProduct.name} ${stockLabel}. [productId:${updatedProduct.id}]`,
+                        actionUrl: '/inventory/products',
+                        branchId: updatedProduct.branchId ?? branchId ?? null,
+                    },
+                });
+            }
+        }
     }
     async create(createInvoiceDto, userId, branchId, userRole) {
+        const maxPendingCredit = Number(process.env.MAX_PENDING_CREDIT ?? 3);
         return this.prisma.$transaction(async (tx) => {
             if (createInvoiceDto.type === 'INVOICE' &&
                 createInvoiceDto.paymentMode === 'CREDIT' &&
@@ -31,9 +122,9 @@ let BillingService = class BillingService {
                         status: { in: ['CREDIT', 'PARTIAL'] },
                     },
                 });
-                if (pendingCount >= 3) {
+                if (pendingCount >= maxPendingCredit) {
                     if (userRole === 'PHARMACIST') {
-                        const invoiceNumber = `INV-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+                        const invoiceNumber = await this.numbering.nextNumber(tx, 'INV', branchId ?? null);
                         const draftInvoice = await tx.invoice.create({
                             data: {
                                 invoiceNumber,
@@ -88,53 +179,11 @@ let BillingService = class BillingService {
                 }
             }
             const isQuotation = createInvoiceDto.type === 'QUOTATION';
-            const prefix = isQuotation ? 'QT' : 'INV';
-            const invoiceNumber = `${prefix}-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+            const invoiceNumber = await this.numbering.nextNumber(tx, isQuotation ? 'QTN' : 'INV', branchId ?? null);
             if (!isQuotation) {
+                await this.assertPrescriptionForScheduledItems(tx, createInvoiceDto.items, createInvoiceDto.customerId ?? null, createInvoiceDto.billingType);
                 for (const item of createInvoiceDto.items) {
-                    const batch = await tx.batch.findUnique({
-                        where: { id: item.batchId }
-                    });
-                    if (!batch) {
-                        throw new common_1.NotFoundException(`Batch ${item.batchNumber} for product ${item.productName} not found`);
-                    }
-                    if (batch.quantity < item.quantity) {
-                        throw new common_1.BadRequestException(`Insufficient stock for ${item.productName} in batch ${item.batchNumber}. Available: ${batch.quantity}`);
-                    }
-                    await tx.batch.update({
-                        where: { id: batch.id },
-                        data: { quantity: batch.quantity - item.quantity }
-                    });
-                    const updatedProduct = await tx.product.update({
-                        where: { id: item.productId },
-                        data: { totalStock: { decrement: item.quantity } },
-                        select: { id: true, name: true, totalStock: true, minStock: true, branchId: true },
-                    });
-                    const isLow = updatedProduct.totalStock <= 0 ||
-                        (updatedProduct.minStock > 0 && updatedProduct.totalStock <= updatedProduct.minStock);
-                    if (isLow) {
-                        const alreadyNotified = await tx.notification.findFirst({
-                            where: {
-                                type: 'LOW_STOCK',
-                                isRead: false,
-                                message: { contains: `[productId:${updatedProduct.id}]` },
-                            },
-                        });
-                        if (!alreadyNotified) {
-                            const stockLabel = updatedProduct.totalStock <= 0
-                                ? 'is out of stock'
-                                : `has only ${updatedProduct.totalStock} units left (min: ${updatedProduct.minStock})`;
-                            await tx.notification.create({
-                                data: {
-                                    type: 'LOW_STOCK',
-                                    title: 'Low Stock Alert',
-                                    message: `${updatedProduct.name} ${stockLabel}. [productId:${updatedProduct.id}]`,
-                                    actionUrl: '/inventory/products',
-                                    branchId: updatedProduct.branchId ?? branchId ?? null,
-                                },
-                            });
-                        }
-                    }
+                    await this.deductStockForItem(tx, item, branchId);
                 }
             }
             const invoice = await tx.invoice.create({
@@ -249,20 +298,35 @@ let BillingService = class BillingService {
         return invoice;
     }
     async convertToInvoice(id, branchId) {
-        const quotation = await this.prisma.invoice.findUnique({ where: { id } });
-        if (!quotation)
-            throw new common_1.NotFoundException('Quotation not found');
-        if (branchId && quotation.branchId && quotation.branchId !== branchId) {
-            throw new common_1.NotFoundException('Quotation not found');
-        }
-        if (quotation.type !== 'QUOTATION') {
-            throw new common_1.BadRequestException('Only QUOTATION type records can be converted');
-        }
-        const invoiceNumber = `INV-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
-        return this.prisma.invoice.update({
-            where: { id },
-            data: { type: 'INVOICE', invoiceNumber, status: 'PAID' },
-            include: { items: true },
+        return this.prisma.$transaction(async (tx) => {
+            const quotation = await tx.invoice.findUnique({
+                where: { id },
+                include: { items: true },
+            });
+            if (!quotation)
+                throw new common_1.NotFoundException('Quotation not found');
+            if (branchId && quotation.branchId && quotation.branchId !== branchId) {
+                throw new common_1.NotFoundException('Quotation not found');
+            }
+            if (quotation.type !== 'QUOTATION') {
+                throw new common_1.BadRequestException('Only QUOTATION type records can be converted');
+            }
+            await this.assertPrescriptionForScheduledItems(tx, quotation.items.map((i) => ({ productId: i.productId, productName: i.productName })), quotation.customerId ?? null, quotation.billingType);
+            for (const item of quotation.items) {
+                await this.deductStockForItem(tx, {
+                    productId: item.productId,
+                    productName: item.productName,
+                    batchId: item.batchId,
+                    batchNumber: item.batchNumber,
+                    quantity: item.quantity,
+                }, branchId);
+            }
+            const invoiceNumber = await this.numbering.nextNumber(tx, 'INV', branchId ?? null);
+            return tx.invoice.update({
+                where: { id },
+                data: { type: 'INVOICE', invoiceNumber, status: 'PAID' },
+                include: { items: true },
+            });
         });
     }
     async collectPayment(id, amountReceived, paymentMode, branchId) {
@@ -297,7 +361,7 @@ let BillingService = class BillingService {
                     where: { id: invoice.customerId },
                     data: { currentOutstanding: { decrement: amountReceived } },
                 });
-                const receiptNumber = `RCT-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+                const receiptNumber = await this.numbering.nextNumber(tx, 'RCPT', invoice.branchId ?? branchId ?? null);
                 await tx.payment.create({
                     data: {
                         receiptNumber,
@@ -327,6 +391,11 @@ let BillingService = class BillingService {
             throw new common_1.NotFoundException('Invoice not found');
         if (branchId && invoice.branchId && invoice.branchId !== branchId) {
             throw new common_1.NotFoundException('Invoice not found');
+        }
+        const deletable = invoice.status === 'CANCELLED'
+            || (invoice.type === 'QUOTATION' && invoice.status === 'DRAFT');
+        if (!deletable) {
+            throw new common_1.BadRequestException(`Cannot delete invoice ${invoice.invoiceNumber} (status: ${invoice.status}). Cancel it first; deletion is reserved for cancelled invoices and unconverted quotations.`);
         }
         return this.prisma.invoice.delete({ where: { id } });
     }
@@ -437,6 +506,7 @@ exports.BillingService = BillingService;
 exports.BillingService = BillingService = __decorate([
     (0, common_1.Injectable)(),
     __metadata("design:paramtypes", [prisma_service_1.PrismaService,
-        approvals_service_1.ApprovalsService])
+        approvals_service_1.ApprovalsService,
+        document_numbering_service_1.DocumentNumberingService])
 ], BillingService);
 //# sourceMappingURL=billing.service.js.map

@@ -40,10 +40,10 @@ let ApprovalsController = class ApprovalsController {
         return this.approvalsService.findOne(id);
     }
     approve(id, body, req) {
-        return this.approvalsService.approve(id, req.user.userId, body.reviewNote);
+        return this.approvalsService.approve(id, req.user.userId, body.reviewNote, req.user.branchId);
     }
     reject(id, body, req) {
-        return this.approvalsService.reject(id, req.user.userId, body.reviewNote);
+        return this.approvalsService.reject(id, req.user.userId, body.reviewNote, req.user.branchId);
     }
 };
 exports.ApprovalsController = ApprovalsController;

@@ -87,6 +87,64 @@ export class SuppliersService {
     return this.prisma.supplier.create({ data: dto });
   }
 
+  async bulkCreate(suppliers: CreateSupplierDto[], branchId?: string) {
+    let createdCount = 0;
+    let skippedCount = 0;
+    const errors: string[] = [];
+
+    // Pre-fetch existing for this branch to validate in memory
+    const branchScope = branchId ? [{ branchId }, { branchId: null }] : [{ branchId: null }];
+    const existingSuppliers = await this.prisma.supplier.findMany({
+      where: { OR: branchScope },
+      select: { gstin: true, phone: true }
+    });
+
+    const existingGstins = new Set(existingSuppliers.map(s => s.gstin).filter(Boolean));
+    const existingPhones = new Set(existingSuppliers.map(s => this.normalizePhone(s.phone)).filter(Boolean));
+
+    const toCreate = [];
+
+    for (const [index, s] of suppliers.entries()) {
+      try {
+        const normalizedPhone = this.normalizePhone(s.phone);
+        
+        if (s.gstin && existingGstins.has(s.gstin)) {
+          throw new ConflictException(`GSTIN ${s.gstin} already exists.`);
+        }
+        
+        if (normalizedPhone) {
+          const last10 = normalizedPhone.slice(-10);
+          const isDup = Array.from(existingPhones).some(p => p.endsWith(last10));
+          if (isDup) {
+             throw new ConflictException(`Phone ending in ${last10} already exists.`);
+          }
+        }
+        
+        if (s.gstin) existingGstins.add(s.gstin);
+        if (normalizedPhone) existingPhones.add(normalizedPhone);
+        
+        toCreate.push({
+          ...s,
+          phone: normalizedPhone,
+          branchId: branchId ?? null,
+        });
+      } catch (err: any) {
+        skippedCount++;
+        errors.push(`Row ${index + 1} (${s.name}): ${err.message}`);
+      }
+    }
+
+    if (toCreate.length > 0) {
+      await this.prisma.supplier.createMany({
+        data: toCreate,
+        skipDuplicates: true,
+      });
+      createdCount = toCreate.length;
+    }
+
+    return { createdCount, skippedCount, errors };
+  }
+
   findAll(query?: string, branchId?: string) {
     const conditions: Prisma.SupplierWhereInput[] = [];
 

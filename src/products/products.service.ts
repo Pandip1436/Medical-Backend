@@ -45,6 +45,168 @@ export class ProductsService {
     });
   }
 
+  async bulkCreate(products: any[], branchId?: string) {
+    let createdCount = 0;
+    let skippedCount = 0;
+    const errors: string[] = [];
+
+    const branchScope = branchId ? [{ branchId }, { branchId: null }] : [{ branchId: null }];
+    
+    // 1. Resolve Categories
+    const allCategories = await this.prisma.category.findMany({
+      where: { OR: branchScope },
+      select: { id: true, name: true }
+    });
+    const categoryByName = new Map(allCategories.map(c => [c.name.toLowerCase().trim(), c.id]));
+    
+    // 2. Pre-fetch existing products to prevent duplicates
+    const existingProducts = await this.prisma.product.findMany({
+      where: { OR: branchScope },
+      select: { name: true }
+    });
+    const existingNames = new Set(existingProducts.map(p => p.name.toLowerCase().trim()));
+
+    const toCreate = [];
+
+    // Process rows
+    for (const [index, row] of products.entries()) {
+      try {
+        const name = row.name?.trim();
+        if (!name) throw new Error('Missing name');
+        
+        const lowerName = name.toLowerCase();
+        if (existingNames.has(lowerName)) {
+           skippedCount++;
+           continue; // Gracefully skip duplicates
+        }
+        
+        // Handle dynamic category creation
+        let categoryId = row.categoryId;
+        if (!categoryId && row.categoryName) {
+           const cName = row.categoryName.trim();
+           const lowerCName = cName.toLowerCase();
+           if (categoryByName.has(lowerCName)) {
+              categoryId = categoryByName.get(lowerCName);
+           } else {
+              // Create category on the fly
+              const newCat = await this.prisma.category.create({
+                 data: { name: cName, branchId }
+              });
+              categoryByName.set(lowerCName, newCat.id);
+              categoryId = newCat.id;
+           }
+        }
+        
+        existingNames.add(lowerName); // prevent duplicates within the same batch
+        
+        toCreate.push({
+            name: row.name,
+            genericName: row.genericName || 'Unknown',
+            saltComposition: row.saltComposition || undefined,
+            manufacturer: row.manufacturer || 'Unknown',
+            categoryId,
+            subCategory: row.subCategory || undefined,
+            packSize: row.packSize || '1',
+            unitOfMeasure: row.unitOfMeasure || 'NOS',
+            schedule: row.schedule || 'NONE',
+            hsnCode: row.hsnCode || '0000',
+            isNarcotic: !!row.isNarcotic,
+            storageCondition: row.storageCondition || 'ROOM_TEMP',
+            mrp: parseFloat(row.mrp) || 0,
+            purchaseRate: parseFloat(row.purchaseRate) || 0,
+            sellingRate: parseFloat(row.sellingRate) || parseFloat(row.mrp) || 0,
+            wholesaleRate: parseFloat(row.wholesaleRate) || parseFloat(row.mrp) || 0,
+            gstRate: parseFloat(row.gstRate) || 0,
+            minStock: parseInt(row.minStock) || 10,
+            maxStock: parseInt(row.maxStock) || 100,
+            reorderQty: parseInt(row.reorderQty) || 10,
+            rackLocation: row.rackLocation || 'General',
+            barcode: row.barcode || undefined,
+            branchId: branchId || undefined,
+        });
+
+      } catch (err: any) {
+        skippedCount++;
+        errors.push(`Row ${index + 1} (${row.name || '?'}): ${err.message}`);
+      }
+    }
+
+    if (toCreate.length > 0) {
+      await this.prisma.product.createMany({
+        data: toCreate as any,
+        skipDuplicates: true,
+      });
+      createdCount = toCreate.length;
+    }
+
+    return { createdCount, skippedCount, errors };
+  }
+
+  async bulkUpdateHsn(items: any[], branchId?: string) {
+    let updatedCount = 0;
+    let skippedCount = 0;
+    const errors: string[] = [];
+
+    const branchScope = branchId ? [{ branchId }, { branchId: null }] : [{ branchId: null }];
+    
+    // Pre-fetch all products for matching
+    const existingProducts = await this.prisma.product.findMany({
+      where: { OR: branchScope },
+      select: { id: true, name: true }
+    });
+    
+    const productMap = new Map(existingProducts.map(p => [p.name.toLowerCase().trim(), p.id]));
+    const updates = [];
+
+    for (const [index, row] of items.entries()) {
+      try {
+        const name = row.name?.trim();
+        if (!name) throw new Error('Missing name');
+        
+        const lowerName = name.toLowerCase();
+        const productId = productMap.get(lowerName);
+        
+        if (!productId) {
+           skippedCount++;
+           errors.push(`Row ${index + 1} (${name}): Product not found`);
+           continue;
+        }
+
+        const hsnCode = String(row.hsnCode || '').trim() || undefined;
+        const gstRate = parseFloat(row.gstRate);
+        
+        if (!hsnCode && isNaN(gstRate)) {
+           skippedCount++;
+           continue;
+        }
+
+        updates.push(
+           this.prisma.product.update({
+             where: { id: productId },
+             data: {
+               ...(hsnCode ? { hsnCode } : {}),
+               ...(!isNaN(gstRate) ? { gstRate } : {})
+             }
+           })
+        );
+        updatedCount++;
+      } catch (err: any) {
+        skippedCount++;
+        errors.push(`Row ${index + 1} (${row.name || '?'}): ${err.message}`);
+      }
+    }
+
+    if (updates.length > 0) {
+      // Chunking transactions to avoid query limits
+      const chunkSize = 500;
+      for (let i = 0; i < updates.length; i += chunkSize) {
+        await this.prisma.$transaction(updates.slice(i, i + chunkSize));
+      }
+    }
+
+    return { updatedCount, skippedCount, errors };
+  }
+
   async toggleActive(id: string, branchId?: string) {
     const product = await this.findOne(id, branchId);
     return this.prisma.product.update({

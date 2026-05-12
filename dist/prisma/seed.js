@@ -215,7 +215,11 @@ async function main() {
         { name: 'OTC', description: 'Over the counter medicines', color: '#F59E0B' },
         { name: 'SURGICAL', description: 'Surgical supplies and equipment', color: '#EF4444' },
     ];
-    const seededCats = await Promise.all(categoryDefs.map(c => prisma.category.upsert({ where: { name: c.name }, update: {}, create: c })));
+    const seededCats = await Promise.all(categoryDefs.map(c => prisma.category.upsert({
+        where: { name_branchId: { name: c.name, branchId: null } },
+        update: {},
+        create: c,
+    })));
     const catId = (name) => seededCats.find(c => c.name === name).id;
     const hqProductDefs = [
         { id: 'PRD-HQ-001', name: 'Torsemide 20mg Tab', generic: 'Torsemide', manufacturer: 'Cipla Ltd', cat: 'NEPHROLOGY', sub: 'Diuretics', pack: '10x10', uom: 'Strip', sched: client_1.Schedule.H, hsn: '30049099', storage: client_1.StorageCondition.ROOM_TEMP, mrp: 85, pr: 52, sr: 78, wr: 68, gst: 12, min: 100, max: 1000, reorder: 200, rack: 'A1-01', barcode: 'HQ-8901234560011', branchId: hq.id },

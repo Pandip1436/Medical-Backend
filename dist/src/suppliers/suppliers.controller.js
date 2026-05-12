@@ -27,21 +27,28 @@ let SuppliersController = class SuppliersController {
         this.suppliersService = suppliersService;
     }
     create(createSupplierDto, req, qBranchId) {
-        const effectiveBranchId = req.user.branchId ?? createSupplierDto.branchId ?? qBranchId;
-        return this.suppliersService.create({ ...createSupplierDto, branchId: effectiveBranchId });
+        const effectiveBranchId = req.user.branchId ?? createSupplierDto.branchId ?? qBranchId ?? undefined;
+        return this.suppliersService.create({
+            ...createSupplierDto,
+            branchId: effectiveBranchId,
+        });
+    }
+    bulkCreate(suppliers, req, qBranchId) {
+        const effectiveBranchId = req.user.branchId ?? qBranchId ?? undefined;
+        return this.suppliersService.bulkCreate(suppliers, effectiveBranchId);
     }
     findAll(req, q, branchId) {
-        const effectiveBranchId = req.user.branchId ?? branchId;
+        const effectiveBranchId = req.user.branchId ?? branchId ?? undefined;
         return this.suppliersService.findAll(q, effectiveBranchId);
     }
     findOne(id, req) {
-        return this.suppliersService.findOne(id, req.user.branchId);
+        return this.suppliersService.findOne(id, req.user.branchId ?? undefined);
     }
     update(id, updateSupplierDto, req) {
-        return this.suppliersService.update(id, updateSupplierDto, req.user.branchId);
+        return this.suppliersService.update(id, updateSupplierDto, req.user.branchId ?? undefined);
     }
     remove(id, req) {
-        return this.suppliersService.remove(id, req.user.branchId);
+        return this.suppliersService.remove(id, req.user.branchId ?? undefined);
     }
 };
 exports.SuppliersController = SuppliersController;
@@ -57,9 +64,22 @@ __decorate([
     __metadata("design:returntype", void 0)
 ], SuppliersController.prototype, "create", null);
 __decorate([
+    (0, common_1.Post)('bulk'),
+    (0, roles_decorator_1.Roles)('ADMIN', 'INVENTORY_MANAGER'),
+    (0, swagger_1.ApiOperation)({ summary: 'Bulk create suppliers' }),
+    __param(0, (0, common_1.Body)()),
+    __param(1, (0, common_1.Request)()),
+    __param(2, (0, common_1.Query)('branchId')),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Array, Object, String]),
+    __metadata("design:returntype", void 0)
+], SuppliersController.prototype, "bulkCreate", null);
+__decorate([
     (0, common_1.Get)(),
     (0, roles_decorator_1.Roles)('ADMIN', 'INVENTORY_MANAGER', 'PHARMACIST', 'ACCOUNTANT'),
-    (0, swagger_1.ApiOperation)({ summary: 'Get all suppliers for a branch or search by name/gstin' }),
+    (0, swagger_1.ApiOperation)({
+        summary: 'Get all suppliers for a branch or search by name/gstin',
+    }),
     (0, swagger_1.ApiQuery)({ name: 'q', required: false }),
     (0, swagger_1.ApiQuery)({ name: 'branchId', required: false }),
     __param(0, (0, common_1.Request)()),

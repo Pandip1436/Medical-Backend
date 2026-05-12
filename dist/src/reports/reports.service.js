@@ -424,10 +424,24 @@ let ReportsService = class ReportsService {
     async getProfitLoss(query) {
         const { from, to } = this.resolvePeriod(query);
         const bFilter = this.branchFilter(query.branchId);
+        const invoiceWhere = {
+            date: { gte: from, lte: to },
+            type: 'INVOICE',
+            status: { notIn: ['DRAFT', 'CANCELLED'] },
+            ...bFilter,
+        };
         const invoices = await this.prisma.invoice.findMany({
-            where: { date: { gte: from, lte: to }, ...bFilter },
+            where: invoiceWhere,
             include: { items: true },
         });
+        const batchIds = Array.from(new Set(invoices.flatMap((inv) => inv.items.map((it) => it.batchId).filter(Boolean))));
+        const batches = batchIds.length
+            ? await this.prisma.batch.findMany({
+                where: { id: { in: batchIds } },
+                select: { id: true, purchaseRate: true },
+            })
+            : [];
+        const purchaseRateByBatchId = new Map(batches.map((b) => [b.id, Number(b.purchaseRate ?? 0)]));
         const creditNotes = await this.prisma.creditNote.aggregate({
             where: { date: { gte: from, lte: to }, ...bFilter },
             _sum: { totalAmount: true },
@@ -448,7 +462,11 @@ let ReportsService = class ReportsService {
         const totalTax = invoices.reduce((s, inv) => s + Number(inv.cgst) + Number(inv.sgst) + Number(inv.igst), 0);
         const salesReturn = Number(creditNotes._sum.totalAmount ?? 0);
         const netSales = grossSales - salesReturn;
-        const costOfGoods = invoices.reduce((s, inv) => s + inv.items.reduce((si, it) => si + Number(it.rate) * 0.7 * it.quantity, 0), 0);
+        const costOfGoods = invoices.reduce((s, inv) => s +
+            inv.items.reduce((si, it) => {
+                const cost = purchaseRateByBatchId.get(it.batchId) ?? 0;
+                return si + cost * Number(it.quantity);
+            }, 0), 0);
         const grossPurchases = Number(purchases._sum.totalAmount ?? 0);
         const purchaseReturn = Number(purchaseReturns._sum.totalAmount ?? 0);
         const opex = Number(expenses._sum.amount ?? 0);
@@ -476,6 +494,22 @@ let ReportsService = class ReportsService {
             ],
             extras: { grossPurchases, purchaseReturn, totalTax },
         };
+    }
+    async getMonthlyProfitLoss(year, branchId) {
+        const targetYear = year ?? new Date().getFullYear();
+        const months = Array.from({ length: 12 }, (_, i) => i);
+        const results = await Promise.all(months.map(async (m) => {
+            const from = new Date(targetYear, m, 1).toISOString().slice(0, 10);
+            const to = new Date(targetYear, m + 1, 0).toISOString().slice(0, 10);
+            const pl = await this.getProfitLoss({ from, to, branchId });
+            const find = (label) => Number(pl.lineItems.find((li) => li.label === label)?.amount ?? 0);
+            return {
+                month: new Date(targetYear, m, 1).toLocaleString('en-IN', { month: 'short' }),
+                revenue: find('Net Sales'),
+                profit: find('Net Profit'),
+            };
+        }));
+        return { year: targetYear, chartData: results };
     }
     async getGstr1Summary(query) {
         const { from, to } = this.resolvePeriod(query);
@@ -609,7 +643,11 @@ let ReportsService = class ReportsService {
             },
         });
         const cashExpenses = await this.prisma.expense.findMany({
-            where: { date: { gte: from, lte: to }, paymentMode: { in: ['CASH', 'cash'] }, ...bFilter },
+            where: {
+                date: { gte: from, lte: to },
+                paymentMode: { equals: 'CASH', mode: 'insensitive' },
+                ...bFilter,
+            },
             orderBy: { date: 'asc' },
         });
         const receipts = cashInvoices.map((inv) => ({
@@ -629,18 +667,42 @@ let ReportsService = class ReportsService {
         const totalReceipts = receipts.reduce((s, r) => s + r.amount, 0);
         const totalPayments = payments.reduce((s, p) => s + p.amount, 0);
         const entries = [...receipts, ...payments].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
-        let running = 0;
+        const [priorReceipts, priorPayments] = await Promise.all([
+            this.prisma.invoice.aggregate({
+                where: {
+                    date: { lt: from },
+                    paymentMode: { in: ['CASH', 'SPLIT'] },
+                    ...bFilter,
+                },
+                _sum: { amountPaid: true },
+            }),
+            this.prisma.expense.aggregate({
+                where: {
+                    date: { lt: from },
+                    paymentMode: { equals: 'CASH', mode: 'insensitive' },
+                    ...bFilter,
+                },
+                _sum: { amount: true },
+            }),
+        ]);
+        const openingBalance = Number(priorReceipts._sum.amountPaid ?? 0) -
+            Number(priorPayments._sum.amount ?? 0);
+        let running = openingBalance;
         const ledger = entries.map((e) => {
             running += e.type === 'RECEIPT' ? e.amount : -e.amount;
             return { ...e, balance: running };
         });
+        const closingBalance = openingBalance + totalReceipts - totalPayments;
         return {
             period: { from, to },
+            openingBalance,
+            closingBalance,
             tableData: ledger,
             kpis: [
+                { label: 'Opening Balance', value: this.inr(openingBalance) },
                 { label: 'Total Receipts', value: this.inr(totalReceipts) },
                 { label: 'Total Payments', value: this.inr(totalPayments) },
-                { label: 'Net Cash Flow', value: this.inr(totalReceipts - totalPayments) },
+                { label: 'Closing Balance', value: this.inr(closingBalance) },
             ],
         };
     }
@@ -650,8 +712,11 @@ let ReportsService = class ReportsService {
         const customer = await this.prisma.customer.findUnique({ where: { id: customerId } });
         if (!customer)
             return { customer: null, tableData: [], kpis: [] };
+        if (query.branchId && customer.branchId && customer.branchId !== query.branchId) {
+            return { customer: null, tableData: [], kpis: [] };
+        }
         const invoices = await this.prisma.invoice.findMany({
-            where: { customerId, date: { gte: from, lte: to } },
+            where: { customerId, date: { gte: from, lte: to }, ...bFilter },
             orderBy: { date: 'asc' },
             select: {
                 id: true,
@@ -663,7 +728,7 @@ let ReportsService = class ReportsService {
             },
         });
         const creditNotes = await this.prisma.creditNote.findMany({
-            where: { customerId, date: { gte: from, lte: to } },
+            where: { customerId, date: { gte: from, lte: to }, ...bFilter },
             orderBy: { date: 'asc' },
         });
         const entries = [];
@@ -719,18 +784,21 @@ let ReportsService = class ReportsService {
         const supplier = await this.prisma.supplier.findUnique({ where: { id: supplierId } });
         if (!supplier)
             return { supplier: null, tableData: [], kpis: [] };
+        if (query.branchId && supplier.branchId && supplier.branchId !== query.branchId) {
+            return { supplier: null, tableData: [], kpis: [] };
+        }
         const orders = await this.prisma.purchaseOrder.findMany({
-            where: { supplierId, date: { gte: from, lte: to } },
+            where: { supplierId, date: { gte: from, lte: to }, ...bFilter },
             orderBy: { date: 'asc' },
             select: { id: true, date: true, totalAmount: true, status: true, poNumber: true },
         });
         const grns = await this.prisma.gRN.findMany({
-            where: { supplierId, date: { gte: from, lte: to } },
+            where: { supplierId, date: { gte: from, lte: to }, ...bFilter },
             orderBy: { date: 'asc' },
             select: { id: true, date: true, totalAmount: true, grnNumber: true },
         });
         const purchaseReturns = await this.prisma.purchaseReturn.findMany({
-            where: { supplierId, createdAt: { gte: from, lte: to } },
+            where: { supplierId, createdAt: { gte: from, lte: to }, ...bFilter },
             orderBy: { createdAt: 'asc' },
             select: { id: true, createdAt: true, totalAmount: true, debitNoteNo: true },
         });

@@ -83,6 +83,7 @@ model Customer {
   loyaltyPoints      Int            @default(0)
   gstin              String?
   dlNumber           String?
+  registrationNumber String?   // For DOCTOR type: Medical Council Reg. No.
   notes              String?
   branchId           String?
   branch             Branch?        @relation(fields: [branchId], references: [id])

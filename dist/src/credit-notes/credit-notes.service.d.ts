@@ -1,10 +1,12 @@
 import { PrismaService } from '../prisma/prisma.service';
 import { ApprovalsService } from '../approvals/approvals.service';
+import { DocumentNumberingService } from '../common/services/document-numbering.service';
 import { CreateCreditNoteDto } from './dto/create-credit-note.dto';
 export declare class CreditNotesService {
     private readonly prisma;
     private readonly approvalsService;
-    constructor(prisma: PrismaService, approvalsService: ApprovalsService);
+    private readonly numbering;
+    constructor(prisma: PrismaService, approvalsService: ApprovalsService, numbering: DocumentNumberingService);
     create(dto: CreateCreditNoteDto, userId: string, branchId?: string, userRole?: string): Promise<({
         items: {
             id: string;
@@ -37,6 +39,7 @@ export declare class CreditNotesService {
         customerName: string;
         customerId: string | null;
         creditNoteNo: string;
+        settledAt: Date | null;
         invoiceId: string;
     }) | {
         approvalRequested: boolean;
@@ -60,6 +63,7 @@ export declare class CreditNotesService {
         customerName: string;
         customerId: string | null;
         creditNoteNo: string;
+        settledAt: Date | null;
         invoiceId: string;
     }[]>;
     findOne(id: string, branchId?: string): Promise<{
@@ -123,6 +127,12 @@ export declare class CreditNotesService {
         customerName: string;
         customerId: string | null;
         creditNoteNo: string;
+        settledAt: Date | null;
         invoiceId: string;
     }>;
+    getReturnedQtyByInvoice(invoiceId: string, branchId?: string): Promise<{
+        productId: string;
+        batchId: string;
+        alreadyReturned: number;
+    }[]>;
 }

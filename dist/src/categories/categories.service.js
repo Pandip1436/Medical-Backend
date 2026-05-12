@@ -17,46 +17,65 @@ let CategoriesService = class CategoriesService {
     constructor(prisma) {
         this.prisma = prisma;
     }
-    async create(dto) {
-        const existing = await this.prisma.category.findUnique({ where: { name: dto.name } });
-        if (existing)
-            throw new common_1.ConflictException(`Category "${dto.name}" already exists`);
-        return this.prisma.category.create({ data: dto });
+    branchScope(branchId) {
+        if (!branchId)
+            return {};
+        return { OR: [{ branchId }, { branchId: null }] };
     }
-    async findAll() {
+    async assertNameAvailable(name, branchId, ignoreId) {
+        const existing = await this.prisma.category.findFirst({
+            where: {
+                name: { equals: name, mode: 'insensitive' },
+                branchId: branchId ?? null,
+                ...(ignoreId ? { NOT: { id: ignoreId } } : {}),
+            },
+        });
+        if (existing) {
+            throw new common_1.ConflictException(`Category "${name}" already exists in this branch`);
+        }
+    }
+    async create(dto, branchId) {
+        await this.assertNameAvailable(dto.name, branchId);
+        return this.prisma.category.create({
+            data: { ...dto, branchId: branchId ?? null },
+        });
+    }
+    async findAll(branchId) {
         const categories = await this.prisma.category.findMany({
+            where: this.branchScope(branchId),
             orderBy: { name: 'asc' },
             include: { _count: { select: { products: true } } },
         });
         return categories.map((c) => ({ ...c, productCount: c._count.products }));
     }
-    async findOne(id) {
+    async findOne(id, branchId) {
         const category = await this.prisma.category.findUnique({
             where: { id },
             include: { _count: { select: { products: true } } },
         });
         if (!category)
             throw new common_1.NotFoundException('Category not found');
+        if (branchId && category.branchId && category.branchId !== branchId) {
+            throw new common_1.NotFoundException('Category not found');
+        }
         return { ...category, productCount: category._count.products };
     }
-    async update(id, dto) {
-        await this.findOne(id);
+    async update(id, dto, branchId) {
+        await this.findOne(id, branchId);
         if (dto.name) {
-            const existing = await this.prisma.category.findUnique({ where: { name: dto.name } });
-            if (existing && existing.id !== id)
-                throw new common_1.ConflictException(`Category "${dto.name}" already exists`);
+            await this.assertNameAvailable(dto.name, branchId, id);
         }
         return this.prisma.category.update({ where: { id }, data: dto });
     }
-    async remove(id) {
-        const category = await this.findOne(id);
+    async remove(id, branchId) {
+        const category = await this.findOne(id, branchId);
         if (category.productCount > 0) {
             throw new common_1.BadRequestException(`Cannot delete category "${category.name}" — it has ${category.productCount} product(s) assigned`);
         }
         return this.prisma.category.delete({ where: { id } });
     }
-    async exportCsv() {
-        const categories = await this.findAll();
+    async exportCsv(branchId) {
+        const categories = await this.findAll(branchId);
         const header = 'name,description,color,isActive,productCount';
         const rows = categories.map((c) => [
             `"${c.name}"`,
@@ -67,7 +86,7 @@ let CategoriesService = class CategoriesService {
         ].join(','));
         return [header, ...rows].join('\n');
     }
-    async importCsv(buffer) {
+    async importCsv(buffer, branchId) {
         const text = buffer.toString('utf-8');
         const lines = text.split(/\r?\n/).filter((l) => l.trim());
         if (lines.length < 2)
@@ -87,7 +106,12 @@ let CategoriesService = class CategoriesService {
                 continue;
             }
             try {
-                const existing = await this.prisma.category.findUnique({ where: { name: row['name'] } });
+                const existing = await this.prisma.category.findFirst({
+                    where: {
+                        name: { equals: row['name'], mode: 'insensitive' },
+                        branchId: branchId ?? null,
+                    },
+                });
                 if (existing) {
                     skipped++;
                     continue;
@@ -98,6 +122,7 @@ let CategoriesService = class CategoriesService {
                         description: row['description'] || undefined,
                         color: row['color'] || undefined,
                         isActive: row['isactive'] !== 'false',
+                        branchId: branchId ?? null,
                     },
                 });
                 created++;

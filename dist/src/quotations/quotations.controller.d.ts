@@ -1,9 +1,10 @@
 import { QuotationsService } from './quotations.service';
 import { CreateQuotationDto } from './dto/create-quotation.dto';
+import type { AuthenticatedRequest } from '../common/types/authenticated-request';
 export declare class QuotationsController {
     private readonly quotationsService;
     constructor(quotationsService: QuotationsService);
-    create(dto: CreateQuotationDto): Promise<{
+    create(dto: CreateQuotationDto, req: AuthenticatedRequest, branchId?: string): Promise<{
         items: {
             id: string;
             mrp: import("@prisma/client/runtime/library").Decimal;
@@ -20,6 +21,7 @@ export declare class QuotationsController {
         }[];
     } & {
         id: string;
+        branchId: string | null;
         createdAt: Date;
         date: Date;
         subtotal: import("@prisma/client/runtime/library").Decimal;
@@ -34,7 +36,7 @@ export declare class QuotationsController {
         total: import("@prisma/client/runtime/library").Decimal;
         quotationNumber: string;
     }>;
-    findAll(q?: string, fromDate?: string, toDate?: string, status?: string, amountMin?: number, amountMax?: number): Promise<({
+    findAll(req: AuthenticatedRequest, q?: string, fromDate?: string, toDate?: string, status?: string, amountMin?: number, amountMax?: number, branchId?: string): Promise<({
         items: {
             id: string;
             mrp: import("@prisma/client/runtime/library").Decimal;
@@ -51,6 +53,7 @@ export declare class QuotationsController {
         }[];
     } & {
         id: string;
+        branchId: string | null;
         createdAt: Date;
         date: Date;
         subtotal: import("@prisma/client/runtime/library").Decimal;
@@ -65,7 +68,7 @@ export declare class QuotationsController {
         total: import("@prisma/client/runtime/library").Decimal;
         quotationNumber: string;
     })[]>;
-    getStats(): Promise<{
+    getStats(req: AuthenticatedRequest, branchId?: string): Promise<{
         total: number;
         totalCount: number;
         acceptedTotal: number;
@@ -74,7 +77,7 @@ export declare class QuotationsController {
         pendingCount: number;
         rejectedCount: number;
     }>;
-    findOne(id: string): Promise<{
+    findOne(id: string, req: AuthenticatedRequest): Promise<{
         items: {
             id: string;
             mrp: import("@prisma/client/runtime/library").Decimal;
@@ -107,9 +110,11 @@ export declare class QuotationsController {
             creditLimit: import("@prisma/client/runtime/library").Decimal;
             loyaltyPoints: number;
             dlNumber: string | null;
+            registrationNumber: string | null;
         } | null;
     } & {
         id: string;
+        branchId: string | null;
         createdAt: Date;
         date: Date;
         subtotal: import("@prisma/client/runtime/library").Decimal;
@@ -124,7 +129,7 @@ export declare class QuotationsController {
         total: import("@prisma/client/runtime/library").Decimal;
         quotationNumber: string;
     }>;
-    update(id: string, data: any): Promise<{
+    update(id: string, data: Record<string, unknown>, req: AuthenticatedRequest): Promise<{
         items: {
             id: string;
             mrp: import("@prisma/client/runtime/library").Decimal;
@@ -141,6 +146,7 @@ export declare class QuotationsController {
         }[];
     } & {
         id: string;
+        branchId: string | null;
         createdAt: Date;
         date: Date;
         subtotal: import("@prisma/client/runtime/library").Decimal;
@@ -155,7 +161,7 @@ export declare class QuotationsController {
         total: import("@prisma/client/runtime/library").Decimal;
         quotationNumber: string;
     }>;
-    updateStatus(id: string, status: string): Promise<{
+    updateStatus(id: string, status: string, req: AuthenticatedRequest): Promise<{
         items: {
             id: string;
             mrp: import("@prisma/client/runtime/library").Decimal;
@@ -172,6 +178,7 @@ export declare class QuotationsController {
         }[];
     } & {
         id: string;
+        branchId: string | null;
         createdAt: Date;
         date: Date;
         subtotal: import("@prisma/client/runtime/library").Decimal;
@@ -186,8 +193,9 @@ export declare class QuotationsController {
         total: import("@prisma/client/runtime/library").Decimal;
         quotationNumber: string;
     }>;
-    remove(id: string): Promise<{
+    remove(id: string, req: AuthenticatedRequest): Promise<{
         id: string;
+        branchId: string | null;
         createdAt: Date;
         date: Date;
         subtotal: import("@prisma/client/runtime/library").Decimal;

@@ -1,12 +1,15 @@
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateSupplierDto } from './dto/create-supplier.dto';
 import { UpdateSupplierDto } from './dto/update-supplier.dto';
 export declare class SuppliersService {
     private readonly prisma;
     constructor(prisma: PrismaService);
+    private normalizePhone;
+    private assertNoDuplicate;
     create(createSupplierDto: CreateSupplierDto & {
         branchId?: string;
-    }): import(".prisma/client").Prisma.Prisma__SupplierClient<{
+    }): Promise<{
         id: string;
         email: string;
         name: string;
@@ -19,9 +22,14 @@ export declare class SuppliersService {
         contactPerson: string;
         paymentTerms: import(".prisma/client").$Enums.PaymentTerms;
         bankDetails: string | null;
-        currentOutstanding: import("@prisma/client/runtime/library").Decimal;
-    }, never, import("@prisma/client/runtime/library").DefaultArgs>;
-    findAll(query?: string, branchId?: string): import(".prisma/client").Prisma.PrismaPromise<{
+        currentOutstanding: Prisma.Decimal;
+    }>;
+    bulkCreate(suppliers: CreateSupplierDto[], branchId?: string): Promise<{
+        createdCount: number;
+        skippedCount: number;
+        errors: string[];
+    }>;
+    findAll(query?: string, branchId?: string): Prisma.PrismaPromise<{
         id: string;
         email: string;
         name: string;
@@ -34,7 +42,7 @@ export declare class SuppliersService {
         contactPerson: string;
         paymentTerms: import(".prisma/client").$Enums.PaymentTerms;
         bankDetails: string | null;
-        currentOutstanding: import("@prisma/client/runtime/library").Decimal;
+        currentOutstanding: Prisma.Decimal;
     }[]>;
     findOne(id: string, branchId?: string): Promise<{
         purchaseOrders: {
@@ -43,7 +51,7 @@ export declare class SuppliersService {
             date: Date;
             supplierId: string;
             supplierName: string;
-            totalAmount: import("@prisma/client/runtime/library").Decimal;
+            totalAmount: Prisma.Decimal;
             status: import(".prisma/client").$Enums.POStatus;
             poNumber: string;
             expectedDelivery: Date | null;
@@ -53,8 +61,8 @@ export declare class SuppliersService {
             id: string;
             createdAt: Date;
             supplierId: string;
-            mrp: import("@prisma/client/runtime/library").Decimal;
-            purchaseRate: import("@prisma/client/runtime/library").Decimal;
+            mrp: Prisma.Decimal;
+            purchaseRate: Prisma.Decimal;
             productId: string;
             batchNumber: string;
             mfgDate: Date;
@@ -74,7 +82,7 @@ export declare class SuppliersService {
         contactPerson: string;
         paymentTerms: import(".prisma/client").$Enums.PaymentTerms;
         bankDetails: string | null;
-        currentOutstanding: import("@prisma/client/runtime/library").Decimal;
+        currentOutstanding: Prisma.Decimal;
     }>;
     update(id: string, updateSupplierDto: UpdateSupplierDto, branchId?: string): Promise<{
         id: string;
@@ -89,7 +97,7 @@ export declare class SuppliersService {
         contactPerson: string;
         paymentTerms: import(".prisma/client").$Enums.PaymentTerms;
         bankDetails: string | null;
-        currentOutstanding: import("@prisma/client/runtime/library").Decimal;
+        currentOutstanding: Prisma.Decimal;
     }>;
     remove(id: string, branchId?: string): Promise<{
         id: string;
@@ -104,6 +112,6 @@ export declare class SuppliersService {
         contactPerson: string;
         paymentTerms: import(".prisma/client").$Enums.PaymentTerms;
         bankDetails: string | null;
-        currentOutstanding: import("@prisma/client/runtime/library").Decimal;
+        currentOutstanding: Prisma.Decimal;
     }>;
 }

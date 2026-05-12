@@ -3,7 +3,7 @@ import { CreateReminderDto, UpdateReminderDto, CreateContactLogDto } from './dto
 export declare class RemindersController {
     private readonly service;
     constructor(service: RemindersService);
-    findAll(branchId?: string): Promise<({
+    findAll(req: any): Promise<({
         customer: {
             id: string;
             email: string | null;
@@ -28,7 +28,7 @@ export declare class RemindersController {
         title: string;
         dayOfMonth: number;
     })[]>;
-    findDueToday(branchId?: string): Promise<({
+    findDueToday(req: any): Promise<({
         customer: {
             id: string;
             email: string | null;
@@ -53,7 +53,7 @@ export declare class RemindersController {
         title: string;
         dayOfMonth: number;
     })[]>;
-    create(dto: CreateReminderDto): Promise<{
+    create(dto: CreateReminderDto, req: any): Promise<{
         customer: {
             id: string;
             email: string | null;
@@ -78,7 +78,7 @@ export declare class RemindersController {
         title: string;
         dayOfMonth: number;
     }>;
-    update(id: string, dto: UpdateReminderDto): Promise<{
+    update(id: string, dto: UpdateReminderDto, req: any): Promise<{
         customer: {
             id: string;
             email: string | null;
@@ -103,7 +103,7 @@ export declare class RemindersController {
         title: string;
         dayOfMonth: number;
     }>;
-    remove(id: string): Promise<{
+    remove(id: string, req: any): Promise<{
         id: string;
         branchId: string | null;
         createdAt: Date;
@@ -113,14 +113,14 @@ export declare class RemindersController {
         title: string;
         dayOfMonth: number;
     }>;
-    addContactLog(id: string, dto: CreateContactLogDto): Promise<{
+    addContactLog(id: string, dto: CreateContactLogDto, req: any): Promise<{
         id: string;
         status: import(".prisma/client").$Enums.ReminderContactStatus;
         notes: string | null;
         contactedAt: Date;
         reminderId: string;
     }>;
-    getContactLogs(id: string): Promise<{
+    getContactLogs(id: string, req: any): Promise<{
         id: string;
         status: import(".prisma/client").$Enums.ReminderContactStatus;
         notes: string | null;

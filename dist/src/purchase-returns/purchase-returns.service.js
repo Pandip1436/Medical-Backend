@@ -13,12 +13,15 @@ exports.PurchaseReturnsService = void 0;
 const common_1 = require("@nestjs/common");
 const prisma_service_1 = require("../prisma/prisma.service");
 const approvals_service_1 = require("../approvals/approvals.service");
+const document_numbering_service_1 = require("../common/services/document-numbering.service");
 let PurchaseReturnsService = class PurchaseReturnsService {
     prisma;
     approvalsService;
-    constructor(prisma, approvalsService) {
+    numbering;
+    constructor(prisma, approvalsService, numbering) {
         this.prisma = prisma;
         this.approvalsService = approvalsService;
+        this.numbering = numbering;
     }
     async create(dto, userId, userBranchId, userRole) {
         if (userRole === 'PHARMACIST' || userRole === 'INVENTORY_MANAGER') {
@@ -33,7 +36,10 @@ let PurchaseReturnsService = class PurchaseReturnsService {
         return this.prisma.$transaction(async (tx) => {
             let branchId = userBranchId ?? null;
             if (dto.grnId) {
-                const grn = await tx.gRN.findUnique({ where: { id: dto.grnId }, select: { branchId: true } });
+                const grn = await tx.gRN.findUnique({
+                    where: { id: dto.grnId },
+                    select: { branchId: true },
+                });
                 if (grn) {
                     if (userBranchId && grn.branchId && grn.branchId !== userBranchId) {
                         throw new common_1.NotFoundException('GRN not found');
@@ -45,7 +51,9 @@ let PurchaseReturnsService = class PurchaseReturnsService {
             for (const item of dto.items) {
                 if (isShortDelivery)
                     continue;
-                const batch = await tx.batch.findUnique({ where: { id: item.batchId } });
+                const batch = await tx.batch.findUnique({
+                    where: { id: item.batchId },
+                });
                 if (!batch) {
                     throw new common_1.NotFoundException(`Batch ${item.batchNumber} for ${item.productName} not found`);
                 }
@@ -61,8 +69,11 @@ let PurchaseReturnsService = class PurchaseReturnsService {
                     data: { totalStock: { decrement: item.returnedQty } },
                 });
             }
-            const debitNoteNo = `DN-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+            const debitNoteNo = await this.numbering.nextNumber(tx, 'DN', branchId);
             const settlementMode = dto.settlementMode ?? 'REFUND';
+            const cleanedNotes = (dto.notes ?? '')
+                .replace(/^\s*Settlement(?: Preference)?:\s*[^\n;|]*[\s|;]*/i, '')
+                .trim() || undefined;
             const purchaseReturn = await tx.purchaseReturn.create({
                 data: {
                     debitNoteNo,
@@ -78,8 +89,9 @@ let PurchaseReturnsService = class PurchaseReturnsService {
                     totalAmount: dto.totalAmount,
                     status: dto.status ?? 'DRAFT',
                     settlementMode,
-                    notes: dto.notes,
+                    notes: cleanedNotes,
                     createdById: userId,
+                    stockReversedAt: isShortDelivery ? new Date() : null,
                     items: {
                         create: dto.items.map((it) => ({
                             productId: it.productId,
@@ -97,6 +109,14 @@ let PurchaseReturnsService = class PurchaseReturnsService {
                 include: { items: true },
             });
             if (settlementMode === 'ADJUST') {
+                const supplier = await tx.supplier.findUnique({
+                    where: { id: dto.supplierId },
+                    select: { currentOutstanding: true, name: true },
+                });
+                const currentOutstanding = Number(supplier?.currentOutstanding ?? 0);
+                if (Number(dto.totalAmount) > currentOutstanding + 0.01) {
+                    throw new common_1.BadRequestException(`ADJUST debit note (₹${Number(dto.totalAmount).toFixed(2)}) exceeds supplier "${supplier?.name}" outstanding (₹${currentOutstanding.toFixed(2)}). Use REFUND mode for the excess, or split into two notes.`);
+                }
                 await tx.supplier.update({
                     where: { id: dto.supplierId },
                     data: { currentOutstanding: { decrement: dto.totalAmount } },
@@ -133,17 +153,21 @@ let PurchaseReturnsService = class PurchaseReturnsService {
         const debitedByProduct = {};
         for (const g of allGrns) {
             for (const gi of g.items) {
-                receivedByProduct[gi.productId] = (receivedByProduct[gi.productId] ?? 0) + gi.receivedQty + gi.freeQty;
+                receivedByProduct[gi.productId] =
+                    (receivedByProduct[gi.productId] ?? 0) + gi.receivedQty + gi.freeQty;
             }
             for (const pr of g.purchaseReturns ?? []) {
                 if (/short|excess/i.test(pr.reason ?? '')) {
                     for (const pi of pr.items) {
-                        debitedByProduct[pi.productId] = (debitedByProduct[pi.productId] ?? 0) + pi.returnedQty;
+                        debitedByProduct[pi.productId] =
+                            (debitedByProduct[pi.productId] ?? 0) + pi.returnedQty;
                     }
                 }
             }
         }
-        const allFulfilled = po.items.every((pi) => ((receivedByProduct[pi.productId] ?? 0) + (debitedByProduct[pi.productId] ?? 0)) >= pi.requiredQty);
+        const allFulfilled = po.items.every((pi) => (receivedByProduct[pi.productId] ?? 0) +
+            (debitedByProduct[pi.productId] ?? 0) >=
+            pi.requiredQty);
         await tx.purchaseOrder.update({
             where: { id: poId },
             data: { status: allFulfilled ? 'FULLY_RECEIVED' : 'PARTIALLY_RECEIVED' },
@@ -163,7 +187,7 @@ let PurchaseReturnsService = class PurchaseReturnsService {
             where,
             orderBy: { date: 'desc' },
             take: 50,
-            include: { items: true, grn: true }
+            include: { items: true, grn: true },
         });
     }
     async findOne(id, branchId) {
@@ -203,6 +227,23 @@ let PurchaseReturnsService = class PurchaseReturnsService {
         if (pr.settlementMode !== 'REPLACEMENT') {
             throw new common_1.BadRequestException('This debit note does not use Replacement settlement');
         }
+        const replacementGrn = await this.prisma.gRN.findUnique({
+            where: { id: replacementGrnId },
+        });
+        if (!replacementGrn) {
+            throw new common_1.BadRequestException('Replacement GRN not found');
+        }
+        if (branchId &&
+            replacementGrn.branchId &&
+            replacementGrn.branchId !== branchId) {
+            throw new common_1.BadRequestException('Replacement GRN is not in this branch');
+        }
+        if (replacementGrn.supplierId !== pr.supplierId) {
+            throw new common_1.BadRequestException('Replacement GRN supplier does not match the debit note supplier');
+        }
+        if (!replacementGrn.isReplacement) {
+            throw new common_1.BadRequestException('Linked GRN is not flagged as a replacement receipt');
+        }
         return this.prisma.purchaseReturn.update({
             where: { id },
             data: {
@@ -217,6 +258,7 @@ exports.PurchaseReturnsService = PurchaseReturnsService;
 exports.PurchaseReturnsService = PurchaseReturnsService = __decorate([
     (0, common_1.Injectable)(),
     __metadata("design:paramtypes", [prisma_service_1.PrismaService,
-        approvals_service_1.ApprovalsService])
+        approvals_service_1.ApprovalsService,
+        document_numbering_service_1.DocumentNumberingService])
 ], PurchaseReturnsService);
 //# sourceMappingURL=purchase-returns.service.js.map

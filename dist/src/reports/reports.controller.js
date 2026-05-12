@@ -75,6 +75,9 @@ let ReportsController = class ReportsController {
     getProfitLoss(req, from, to, branchId) {
         return this.reportsService.getProfitLoss({ from, to, branchId: req.user.branchId ?? branchId });
     }
+    getMonthlyProfitLoss(req, year, branchId) {
+        return this.reportsService.getMonthlyProfitLoss(year ? Number(year) : undefined, req.user.branchId ?? branchId);
+    }
     getCashBook(req, from, to, branchId) {
         return this.reportsService.getCashBook({ from, to, branchId: req.user.branchId ?? branchId });
     }
@@ -318,6 +321,19 @@ __decorate([
     __metadata("design:paramtypes", [Object, String, String, String]),
     __metadata("design:returntype", void 0)
 ], ReportsController.prototype, "getProfitLoss", null);
+__decorate([
+    (0, common_1.Get)('financial/profit-loss/monthly'),
+    (0, roles_decorator_1.Roles)('ADMIN', 'ACCOUNTANT'),
+    (0, swagger_1.ApiOperation)({ summary: 'Monthly revenue + net profit for a year (drives the P&L trend chart)' }),
+    (0, swagger_1.ApiQuery)({ name: 'year', required: false }),
+    (0, swagger_1.ApiQuery)({ name: 'branchId', required: false }),
+    __param(0, (0, common_1.Request)()),
+    __param(1, (0, common_1.Query)('year')),
+    __param(2, (0, common_1.Query)('branchId')),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, String, String]),
+    __metadata("design:returntype", void 0)
+], ReportsController.prototype, "getMonthlyProfitLoss", null);
 __decorate([
     (0, common_1.Get)('financial/cash-book'),
     (0, roles_decorator_1.Roles)('ADMIN', 'ACCOUNTANT'),

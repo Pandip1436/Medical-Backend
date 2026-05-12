@@ -37,6 +37,7 @@ const categories_module_1 = require("./categories/categories.module");
 const notifications_module_1 = require("./notifications/notifications.module");
 const reminders_module_1 = require("./reminders/reminders.module");
 const approvals_module_1 = require("./approvals/approvals.module");
+const common_services_module_1 = require("./common/services/common-services.module");
 const serve_static_1 = require("@nestjs/serve-static");
 const path_1 = require("path");
 let AppModule = class AppModule {
@@ -52,6 +53,7 @@ exports.AppModule = AppModule = __decorate([
             }),
             auth_module_1.AuthModule,
             prisma_module_1.PrismaModule,
+            common_services_module_1.CommonServicesModule,
             users_module_1.UsersModule,
             customers_module_1.CustomersModule,
             suppliers_module_1.SuppliersModule,

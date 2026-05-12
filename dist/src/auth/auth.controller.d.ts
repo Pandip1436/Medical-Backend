@@ -1,6 +1,7 @@
 import { AuthService } from './auth.service';
 import { LoginDto } from './dto/login.dto';
 import { RegisterDto } from './dto/register.dto';
+import type { AuthenticatedRequest } from '../common/types/authenticated-request';
 export declare class AuthController {
     private readonly authService;
     constructor(authService: AuthService);
@@ -41,7 +42,7 @@ export declare class AuthController {
         };
         message: string;
     }>;
-    getProfile(req: any): Promise<{
+    getProfile(req: AuthenticatedRequest): Promise<{
         id: string;
         email: string;
         name: string;

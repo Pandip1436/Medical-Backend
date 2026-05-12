@@ -17,18 +17,118 @@ let SuppliersService = class SuppliersService {
     constructor(prisma) {
         this.prisma = prisma;
     }
-    create(createSupplierDto) {
-        return this.prisma.supplier.create({ data: createSupplierDto });
+    normalizePhone(phone) {
+        if (!phone)
+            return '';
+        return phone.replace(/\D/g, '');
+    }
+    async assertNoDuplicate(data, excludeId) {
+        const normalizedPhone = this.normalizePhone(data.phone);
+        const branchScope = data.branchId
+            ? [{ branchId: data.branchId }, { branchId: null }]
+            : [{ branchId: null }];
+        if (data.gstin) {
+            const gstinDup = await this.prisma.supplier.findFirst({
+                where: {
+                    AND: [
+                        { gstin: data.gstin },
+                        { OR: branchScope },
+                        ...(excludeId ? [{ id: { not: excludeId } }] : []),
+                    ],
+                },
+                select: { id: true, name: true },
+            });
+            if (gstinDup) {
+                throw new common_1.ConflictException(`Another supplier (${gstinDup.name}) already uses GSTIN ${data.gstin} in this branch.`);
+            }
+        }
+        if (normalizedPhone) {
+            const last10 = normalizedPhone.slice(-10);
+            const candidate = await this.prisma.supplier.findFirst({
+                where: {
+                    AND: [
+                        { phone: { contains: last10 } },
+                        { OR: branchScope },
+                        ...(excludeId ? [{ id: { not: excludeId } }] : []),
+                    ],
+                },
+                select: { id: true, name: true, phone: true },
+            });
+            if (candidate && this.normalizePhone(candidate.phone) === normalizedPhone) {
+                throw new common_1.ConflictException(`Another supplier (${candidate.name}) already uses this phone in this branch.`);
+            }
+        }
+    }
+    async create(createSupplierDto) {
+        const dto = {
+            ...createSupplierDto,
+            phone: this.normalizePhone(createSupplierDto.phone),
+        };
+        await this.assertNoDuplicate({
+            phone: dto.phone,
+            gstin: dto.gstin,
+            branchId: dto.branchId ?? null,
+        });
+        return this.prisma.supplier.create({ data: dto });
+    }
+    async bulkCreate(suppliers, branchId) {
+        let createdCount = 0;
+        let skippedCount = 0;
+        const errors = [];
+        const branchScope = branchId ? [{ branchId }, { branchId: null }] : [{ branchId: null }];
+        const existingSuppliers = await this.prisma.supplier.findMany({
+            where: { OR: branchScope },
+            select: { gstin: true, phone: true }
+        });
+        const existingGstins = new Set(existingSuppliers.map(s => s.gstin).filter(Boolean));
+        const existingPhones = new Set(existingSuppliers.map(s => this.normalizePhone(s.phone)).filter(Boolean));
+        const toCreate = [];
+        for (const [index, s] of suppliers.entries()) {
+            try {
+                const normalizedPhone = this.normalizePhone(s.phone);
+                if (s.gstin && existingGstins.has(s.gstin)) {
+                    throw new common_1.ConflictException(`GSTIN ${s.gstin} already exists.`);
+                }
+                if (normalizedPhone) {
+                    const last10 = normalizedPhone.slice(-10);
+                    const isDup = Array.from(existingPhones).some(p => p.endsWith(last10));
+                    if (isDup) {
+                        throw new common_1.ConflictException(`Phone ending in ${last10} already exists.`);
+                    }
+                }
+                if (s.gstin)
+                    existingGstins.add(s.gstin);
+                if (normalizedPhone)
+                    existingPhones.add(normalizedPhone);
+                toCreate.push({
+                    ...s,
+                    phone: normalizedPhone,
+                    branchId: branchId ?? null,
+                });
+            }
+            catch (err) {
+                skippedCount++;
+                errors.push(`Row ${index + 1} (${s.name}): ${err.message}`);
+            }
+        }
+        if (toCreate.length > 0) {
+            await this.prisma.supplier.createMany({
+                data: toCreate,
+                skipDuplicates: true,
+            });
+            createdCount = toCreate.length;
+        }
+        return { createdCount, skippedCount, errors };
     }
     findAll(query, branchId) {
-        const where = { AND: [] };
+        const conditions = [];
         if (branchId && branchId !== 'all') {
-            where.AND.push({
+            conditions.push({
                 OR: [{ branchId }, { branchId: null }],
             });
         }
         if (query) {
-            where.AND.push({
+            conditions.push({
                 OR: [
                     { name: { contains: query, mode: 'insensitive' } },
                     { gstin: { contains: query, mode: 'insensitive' } },
@@ -36,8 +136,7 @@ let SuppliersService = class SuppliersService {
                 ],
             });
         }
-        if (where.AND.length === 0)
-            delete where.AND;
+        const where = conditions.length > 0 ? { AND: conditions } : {};
         return this.prisma.supplier.findMany({ where });
     }
     async findOne(id, branchId) {
@@ -56,11 +155,47 @@ let SuppliersService = class SuppliersService {
         return supplier;
     }
     async update(id, updateSupplierDto, branchId) {
-        await this.findOne(id, branchId);
-        return this.prisma.supplier.update({ where: { id }, data: updateSupplierDto });
+        const existing = await this.findOne(id, branchId);
+        const data = { ...updateSupplierDto };
+        if (data.phone !== undefined) {
+            data.phone = this.normalizePhone(data.phone);
+        }
+        if (data.phone !== undefined || data.gstin !== undefined) {
+            await this.assertNoDuplicate({
+                phone: data.phone,
+                gstin: data.gstin,
+                branchId: existing.branchId,
+            }, id);
+        }
+        return this.prisma.supplier.update({
+            where: { id },
+            data,
+        });
     }
     async remove(id, branchId) {
-        await this.findOne(id, branchId);
+        const supplier = await this.findOne(id, branchId);
+        const [poCount, grnCount, prCount, batchCount] = await Promise.all([
+            this.prisma.purchaseOrder.count({ where: { supplierId: id } }),
+            this.prisma.gRN.count({ where: { supplierId: id } }),
+            this.prisma.purchaseReturn.count({ where: { supplierId: id } }),
+            this.prisma.batch.count({ where: { supplierId: id } }),
+        ]);
+        const blockers = [];
+        if (poCount)
+            blockers.push(`${poCount} purchase order(s)`);
+        if (grnCount)
+            blockers.push(`${grnCount} GRN(s)`);
+        if (prCount)
+            blockers.push(`${prCount} purchase return(s)`);
+        if (batchCount)
+            blockers.push(`${batchCount} batch(es)`);
+        if (blockers.length > 0) {
+            throw new common_1.BadRequestException(`Cannot delete "${supplier.name}" — they're referenced by ${blockers.join(', ')}. Set the supplier inactive instead.`);
+        }
+        const outstanding = Number(supplier.currentOutstanding ?? 0);
+        if (outstanding !== 0) {
+            throw new common_1.BadRequestException(`Cannot delete "${supplier.name}" — outstanding balance is ₹${outstanding.toFixed(2)}. Reconcile the ledger first.`);
+        }
         return this.prisma.supplier.delete({ where: { id } });
     }
 };

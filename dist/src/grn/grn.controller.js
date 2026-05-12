@@ -26,12 +26,14 @@ let GrnController = class GrnController {
         this.grnService = grnService;
     }
     create(createGrnDto, req, branchId) {
-        const effectiveBranchId = req.user.branchId ?? branchId;
+        const effectiveBranchId = req.user.branchId ?? branchId ?? undefined;
         return this.grnService.create(createGrnDto, effectiveBranchId);
     }
-    findAll(req, q, branchId) {
-        const effectiveBranchId = req.user.branchId ?? branchId;
-        return this.grnService.findAll(q, effectiveBranchId);
+    findAll(req, q, branchId, page, pageSize) {
+        const effectiveBranchId = req.user.branchId ?? branchId ?? undefined;
+        const pageNum = page ? Number(page) : undefined;
+        const pageSizeNum = pageSize ? Number(pageSize) : undefined;
+        return this.grnService.findAll(q, effectiveBranchId, pageNum, pageSizeNum);
     }
     backfill() {
         return this.grnService.backfillPoReceivedQty();
@@ -49,14 +51,16 @@ let GrnController = class GrnController {
         return this.grnService.reverseShortDeliveryStockDeduction();
     }
     findOne(id, req) {
-        return this.grnService.findOne(id, req.user.branchId);
+        return this.grnService.findOne(id, req.user.branchId ?? undefined);
     }
 };
 exports.GrnController = GrnController;
 __decorate([
     (0, common_1.Post)(),
     (0, roles_decorator_1.Roles)('ADMIN', 'INVENTORY_MANAGER'),
-    (0, swagger_1.ApiOperation)({ summary: 'Create a new Goods Receipt Note and spawn batches' }),
+    (0, swagger_1.ApiOperation)({
+        summary: 'Create a new Goods Receipt Note and spawn batches',
+    }),
     __param(0, (0, common_1.Body)()),
     __param(1, (0, common_1.Request)()),
     __param(2, (0, common_1.Query)('branchId')),
@@ -67,20 +71,40 @@ __decorate([
 __decorate([
     (0, common_1.Get)(),
     (0, roles_decorator_1.Roles)('ADMIN', 'INVENTORY_MANAGER', 'PHARMACIST', 'ACCOUNTANT'),
-    (0, swagger_1.ApiOperation)({ summary: 'List all GRNs or search' }),
+    (0, swagger_1.ApiOperation)({
+        summary: 'List all GRNs or search (paginated when ?page is set)',
+    }),
     (0, swagger_1.ApiQuery)({ name: 'branchId', required: false }),
-    (0, swagger_1.ApiQuery)({ name: 'q', required: false, description: 'Search term for GRN number or supplier' }),
+    (0, swagger_1.ApiQuery)({
+        name: 'q',
+        required: false,
+        description: 'Search term for GRN number or supplier',
+    }),
+    (0, swagger_1.ApiQuery)({
+        name: 'page',
+        required: false,
+        description: 'Page number (1-indexed). Omit for full list.',
+    }),
+    (0, swagger_1.ApiQuery)({
+        name: 'pageSize',
+        required: false,
+        description: 'Page size (default 20, max 200)',
+    }),
     __param(0, (0, common_1.Request)()),
     __param(1, (0, common_1.Query)('q')),
     __param(2, (0, common_1.Query)('branchId')),
+    __param(3, (0, common_1.Query)('page')),
+    __param(4, (0, common_1.Query)('pageSize')),
     __metadata("design:type", Function),
-    __metadata("design:paramtypes", [Object, String, String]),
+    __metadata("design:paramtypes", [Object, String, String, String, String]),
     __metadata("design:returntype", void 0)
 ], GrnController.prototype, "findAll", null);
 __decorate([
     (0, common_1.Get)('admin/backfill-po-qty'),
     (0, roles_decorator_1.Roles)('ADMIN'),
-    (0, swagger_1.ApiOperation)({ summary: 'Backfill PO receivedQty from existing GRNs (run once after migration)' }),
+    (0, swagger_1.ApiOperation)({
+        summary: 'Backfill PO receivedQty from existing GRNs (run once after migration)',
+    }),
     __metadata("design:type", Function),
     __metadata("design:paramtypes", []),
     __metadata("design:returntype", void 0)
@@ -88,7 +112,9 @@ __decorate([
 __decorate([
     (0, common_1.Get)('admin/backfill-grn-ordered-qty'),
     (0, roles_decorator_1.Roles)('ADMIN'),
-    (0, swagger_1.ApiOperation)({ summary: 'Backfill GRN orderedQty so supplementary GRNs reflect remaining qty at that delivery' }),
+    (0, swagger_1.ApiOperation)({
+        summary: 'Backfill GRN orderedQty so supplementary GRNs reflect remaining qty at that delivery',
+    }),
     __metadata("design:type", Function),
     __metadata("design:paramtypes", []),
     __metadata("design:returntype", void 0)
@@ -96,7 +122,9 @@ __decorate([
 __decorate([
     (0, common_1.Get)('admin/backfill-supplier-outstanding'),
     (0, roles_decorator_1.Roles)('ADMIN'),
-    (0, swagger_1.ApiOperation)({ summary: 'Backfill supplier currentOutstanding from existing GRNs and ADJUST debit notes' }),
+    (0, swagger_1.ApiOperation)({
+        summary: 'Backfill supplier currentOutstanding from existing GRNs and ADJUST debit notes',
+    }),
     __metadata("design:type", Function),
     __metadata("design:paramtypes", []),
     __metadata("design:returntype", void 0)
@@ -104,7 +132,9 @@ __decorate([
 __decorate([
     (0, common_1.Get)('admin/backfill-po-status-with-debit-notes'),
     (0, roles_decorator_1.Roles)('ADMIN'),
-    (0, swagger_1.ApiOperation)({ summary: 'Recompute PO status including short-delivery debit notes' }),
+    (0, swagger_1.ApiOperation)({
+        summary: 'Recompute PO status including short-delivery debit notes',
+    }),
     __metadata("design:type", Function),
     __metadata("design:paramtypes", []),
     __metadata("design:returntype", void 0)
@@ -112,7 +142,9 @@ __decorate([
 __decorate([
     (0, common_1.Get)('admin/reverse-short-delivery-stock'),
     (0, roles_decorator_1.Roles)('ADMIN'),
-    (0, swagger_1.ApiOperation)({ summary: 'Reverse wrongly-deducted stock for short-delivery debit notes' }),
+    (0, swagger_1.ApiOperation)({
+        summary: 'Reverse wrongly-deducted stock for short-delivery debit notes',
+    }),
     __metadata("design:type", Function),
     __metadata("design:paramtypes", []),
     __metadata("design:returntype", void 0)

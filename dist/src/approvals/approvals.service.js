@@ -12,10 +12,13 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.ApprovalsService = void 0;
 const common_1 = require("@nestjs/common");
 const prisma_service_1 = require("../prisma/prisma.service");
+const document_numbering_service_1 = require("../common/services/document-numbering.service");
 let ApprovalsService = class ApprovalsService {
     prisma;
-    constructor(prisma) {
+    numbering;
+    constructor(prisma, numbering) {
         this.prisma = prisma;
+        this.numbering = numbering;
     }
     async createRequest(opts) {
         const request = await this.prisma.approvalRequest.create({
@@ -67,12 +70,15 @@ let ApprovalsService = class ApprovalsService {
             },
         });
     }
-    async approve(id, reviewedById, reviewNote) {
+    async approve(id, reviewedById, reviewNote, reviewerBranchId) {
         const req = await this.prisma.approvalRequest.findUnique({ where: { id } });
         if (!req)
             throw new common_1.NotFoundException('Approval request not found');
         if (req.status !== 'PENDING')
             throw new common_1.BadRequestException('Request is no longer pending');
+        if (reviewerBranchId && req.branchId && reviewerBranchId !== req.branchId) {
+            throw new common_1.ForbiddenException('You cannot approve a request from a different branch');
+        }
         const updated = await this.prisma.approvalRequest.update({
             where: { id },
             data: { status: 'APPROVED', reviewedById, reviewedAt: new Date(), reviewNote: reviewNote ?? null },
@@ -89,12 +95,15 @@ let ApprovalsService = class ApprovalsService {
         });
         return updated;
     }
-    async reject(id, reviewedById, reviewNote) {
+    async reject(id, reviewedById, reviewNote, reviewerBranchId) {
         const req = await this.prisma.approvalRequest.findUnique({ where: { id } });
         if (!req)
             throw new common_1.NotFoundException('Approval request not found');
         if (req.status !== 'PENDING')
             throw new common_1.BadRequestException('Request is no longer pending');
+        if (reviewerBranchId && req.branchId && reviewerBranchId !== req.branchId) {
+            throw new common_1.ForbiddenException('You cannot reject a request from a different branch');
+        }
         const updated = await this.prisma.approvalRequest.update({
             where: { id },
             data: { status: 'REJECTED', reviewedById, reviewedAt: new Date(), reviewNote },
@@ -128,28 +137,113 @@ let ApprovalsService = class ApprovalsService {
                 break;
             }
             case 'CREDIT_BILL': {
-                if (refId) {
-                    await this.prisma.invoice.update({
+                if (!refId)
+                    break;
+                await this.prisma.$transaction(async (tx) => {
+                    const invoice = await tx.invoice.findUnique({
+                        where: { id: refId },
+                        include: { items: true },
+                    });
+                    if (!invoice)
+                        throw new common_1.NotFoundException('Draft invoice not found');
+                    if (invoice.status !== 'DRAFT') {
+                        throw new common_1.BadRequestException(`Draft invoice already in status ${invoice.status}`);
+                    }
+                    const productSchedules = await tx.product.findMany({
+                        where: { id: { in: invoice.items.map((i) => i.productId) } },
+                        select: { id: true, name: true, schedule: true },
+                    });
+                    const needsRx = productSchedules.filter((p) => p.schedule === 'H' || p.schedule === 'H1' || p.schedule === 'X');
+                    if (needsRx.length > 0) {
+                        if (!invoice.customerId) {
+                            throw new common_1.BadRequestException(`Cannot approve: Schedule H/H1/X drugs require a registered customer with a valid prescription.`);
+                        }
+                        const activeRx = await tx.prescription.findFirst({
+                            where: {
+                                customerId: invoice.customerId,
+                                isActive: true,
+                                OR: [{ validUntil: null }, { validUntil: { gte: new Date() } }],
+                            },
+                            select: { id: true },
+                        });
+                        if (!activeRx) {
+                            const names = needsRx.map((p) => p.name).join(', ');
+                            throw new common_1.BadRequestException(`Cannot approve: customer has no active prescription for ${names}.`);
+                        }
+                    }
+                    for (const item of invoice.items) {
+                        const batch = await tx.batch.findUnique({
+                            where: { id: item.batchId },
+                        });
+                        if (!batch) {
+                            throw new common_1.BadRequestException(`Batch ${item.batchNumber} for ${item.productName} no longer exists`);
+                        }
+                        if (new Date(batch.expiryDate) < new Date()) {
+                            throw new common_1.BadRequestException(`Cannot approve: batch ${item.batchNumber} of ${item.productName} has expired`);
+                        }
+                        if (batch.quantity < item.quantity) {
+                            throw new common_1.BadRequestException(`Cannot approve: insufficient stock for ${item.productName} batch ${item.batchNumber}. Available ${batch.quantity}, needed ${item.quantity}`);
+                        }
+                        await tx.batch.update({
+                            where: { id: batch.id },
+                            data: { quantity: batch.quantity - item.quantity },
+                        });
+                        await tx.product.update({
+                            where: { id: item.productId },
+                            data: { totalStock: { decrement: item.quantity } },
+                        });
+                    }
+                    await tx.invoice.update({
                         where: { id: refId },
                         data: { status: 'CREDIT' },
                     });
-                    const invoice = await this.prisma.invoice.findUnique({ where: { id: refId } });
-                    if (invoice?.customerId) {
-                        await this.prisma.customer.update({
+                    if (invoice.customerId) {
+                        await tx.customer.update({
                             where: { id: invoice.customerId },
-                            data: { currentOutstanding: { increment: invoice.grandTotal } },
+                            data: {
+                                currentOutstanding: { increment: invoice.grandTotal },
+                            },
                         });
                     }
-                }
+                });
                 break;
             }
             case 'SALES_RETURN': {
-                const creditNoteNo = `CN-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
                 await this.prisma.$transaction(async (tx) => {
+                    const creditNoteNo = await this.numbering.nextNumber(tx, 'CN', branchId);
+                    if (payload.invoiceId) {
+                        const invoice = await tx.invoice.findUnique({
+                            where: { id: payload.invoiceId },
+                            include: { items: true },
+                        });
+                        if (!invoice)
+                            throw new common_1.NotFoundException('Invoice not found');
+                        const priorReturns = await tx.creditNoteItem.findMany({
+                            where: { creditNote: { invoiceId: invoice.id } },
+                            select: { productId: true, batchId: true, returnedQty: true },
+                        });
+                        const priorByKey = new Map();
+                        for (const r of priorReturns) {
+                            const k = `${r.productId}::${r.batchId}`;
+                            priorByKey.set(k, (priorByKey.get(k) ?? 0) + r.returnedQty);
+                        }
+                        for (const item of payload.items ?? []) {
+                            const sold = invoice.items.find((i) => i.productId === item.productId && i.batchId === item.batchId);
+                            if (!sold) {
+                                throw new common_1.BadRequestException(`Item ${item.productName} (batch ${item.batchNumber}) not found on invoice`);
+                            }
+                            const alreadyReturned = priorByKey.get(`${item.productId}::${item.batchId}`) ?? 0;
+                            const remaining = sold.quantity - alreadyReturned;
+                            if (item.returnedQty > remaining) {
+                                throw new common_1.BadRequestException(`Cannot approve return: only ${remaining} of ${item.productName} unreturned (sold ${sold.quantity}, already returned ${alreadyReturned})`);
+                            }
+                        }
+                    }
                     for (const item of payload.items ?? []) {
                         await tx.batch.update({ where: { id: item.batchId }, data: { quantity: { increment: item.returnedQty } } });
                         await tx.product.update({ where: { id: item.productId }, data: { totalStock: { increment: item.returnedQty } } });
                     }
+                    const cnSettlementMode = payload.settlementMode ?? 'REFUND';
                     await tx.creditNote.create({
                         data: {
                             creditNoteNo,
@@ -163,7 +257,8 @@ let ApprovalsService = class ApprovalsService {
                             sgst: payload.sgst ?? 0,
                             igst: payload.igst ?? 0,
                             totalAmount: payload.totalAmount,
-                            settlementMode: payload.settlementMode ?? 'REFUND',
+                            settlementMode: cnSettlementMode,
+                            settledAt: cnSettlementMode === 'CREDIT' ? new Date() : null,
                             createdById: payload.createdById,
                             branchId: branchId ?? null,
                             items: { create: payload.items.map((i) => ({
@@ -188,14 +283,60 @@ let ApprovalsService = class ApprovalsService {
                 });
                 break;
             }
+            case 'INVENTORY_ADJUSTMENT': {
+                const items = payload.items ?? [];
+                await this.prisma.$transaction(async (tx) => {
+                    const adjustmentNo = await this.numbering.nextNumber(tx, 'ADJ', branchId);
+                    for (const item of items) {
+                        const product = await tx.product.findUnique({ where: { id: item.productId } });
+                        if (!product) {
+                            throw new common_1.NotFoundException(`Product ${item.productId} not found`);
+                        }
+                        if (branchId && product.branchId && product.branchId !== branchId) {
+                            throw new common_1.BadRequestException(`Product ${product.name} belongs to a different branch`);
+                        }
+                        const batch = await tx.batch.findFirst({
+                            where: { id: item.batchId, productId: item.productId },
+                        });
+                        if (!batch) {
+                            throw new common_1.NotFoundException(`Batch ${item.batchId} not found`);
+                        }
+                        const diff = item.adjustedQty - batch.quantity;
+                        await tx.batch.update({
+                            where: { id: batch.id },
+                            data: { quantity: item.adjustedQty },
+                        });
+                        await tx.product.update({
+                            where: { id: product.id },
+                            data: { totalStock: { increment: diff } },
+                        });
+                        await tx.stockAdjustmentLog.create({
+                            data: {
+                                adjustmentNo,
+                                productId: product.id,
+                                batchId: batch.id,
+                                batchNumber: batch.batchNumber,
+                                userId: payload.requestedById ?? '',
+                                userName: payload.requestedByName ?? 'Unknown',
+                                reason: item.reason,
+                                previousQty: batch.quantity,
+                                adjustedQty: item.adjustedQty,
+                                diff,
+                                branchId: product.branchId ?? branchId ?? null,
+                            },
+                        });
+                    }
+                });
+                break;
+            }
             case 'PURCHASE_RETURN': {
-                const debitNoteNo = `DN-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
                 const settlementMode = payload.settlementMode ?? 'REFUND';
                 const initialStatus = settlementMode === 'ADJUST'
                     ? 'SETTLED'
                     : (payload.status ?? 'SENT');
                 const isShortDelivery = /short.*delivery|short.*supply/i.test(payload.reason ?? '');
                 await this.prisma.$transaction(async (tx) => {
+                    const debitNoteNo = await this.numbering.nextNumber(tx, 'DN', branchId);
                     if (!isShortDelivery) {
                         for (const item of payload.items ?? []) {
                             await tx.batch.update({ where: { id: item.batchId }, data: { quantity: { decrement: item.returnedQty } } });
@@ -216,6 +357,7 @@ let ApprovalsService = class ApprovalsService {
                             totalAmount: payload.totalAmount,
                             status: initialStatus,
                             settlementMode,
+                            stockReversedAt: isShortDelivery ? new Date() : null,
                             createdById: payload.createdById,
                             branchId: branchId ?? null,
                             items: { create: payload.items.map((i) => ({
@@ -232,6 +374,14 @@ let ApprovalsService = class ApprovalsService {
                         },
                     });
                     if (settlementMode === 'ADJUST') {
+                        const supplier = await tx.supplier.findUnique({
+                            where: { id: payload.supplierId },
+                            select: { currentOutstanding: true, name: true },
+                        });
+                        const currentOutstanding = Number(supplier?.currentOutstanding ?? 0);
+                        if (Number(payload.totalAmount) > currentOutstanding + 0.01) {
+                            throw new common_1.BadRequestException(`ADJUST debit note (₹${Number(payload.totalAmount).toFixed(2)}) exceeds supplier "${supplier?.name}" outstanding (₹${currentOutstanding.toFixed(2)}). The outstanding may have been settled since the request was raised.`);
+                        }
                         await tx.supplier.update({
                             where: { id: payload.supplierId },
                             data: { currentOutstanding: { decrement: payload.totalAmount } },
@@ -283,6 +433,7 @@ let ApprovalsService = class ApprovalsService {
 exports.ApprovalsService = ApprovalsService;
 exports.ApprovalsService = ApprovalsService = __decorate([
     (0, common_1.Injectable)(),
-    __metadata("design:paramtypes", [prisma_service_1.PrismaService])
+    __metadata("design:paramtypes", [prisma_service_1.PrismaService,
+        document_numbering_service_1.DocumentNumberingService])
 ], ApprovalsService);
 //# sourceMappingURL=approvals.service.js.map

@@ -27,21 +27,23 @@ let PurchaseOrdersController = class PurchaseOrdersController {
         this.poService = poService;
     }
     create(createPurchaseOrderDto, req, branchId) {
-        const effectiveBranchId = req.user.branchId ?? branchId;
+        const effectiveBranchId = req.user.branchId ?? branchId ?? undefined;
         return this.poService.create(createPurchaseOrderDto, req.user.userId, effectiveBranchId);
     }
-    findAll(req, q, branchId) {
-        const effectiveBranchId = req.user.branchId ?? branchId;
-        return this.poService.findAll(q, effectiveBranchId);
+    findAll(req, q, branchId, page, pageSize) {
+        const effectiveBranchId = req.user.branchId ?? branchId ?? undefined;
+        const pageNum = page ? Number(page) : undefined;
+        const pageSizeNum = pageSize ? Number(pageSize) : undefined;
+        return this.poService.findAll(q, effectiveBranchId, pageNum, pageSizeNum);
     }
     findOne(id, req) {
-        return this.poService.findOne(id, req.user.branchId);
+        return this.poService.findOne(id, req.user.branchId ?? undefined);
     }
     update(id, updatePurchaseOrderDto, req) {
-        return this.poService.update(id, updatePurchaseOrderDto, req.user.branchId);
+        return this.poService.update(id, updatePurchaseOrderDto, req.user.branchId ?? undefined);
     }
     remove(id, req) {
-        return this.poService.remove(id, req.user.branchId);
+        return this.poService.remove(id, req.user.branchId ?? undefined);
     }
 };
 exports.PurchaseOrdersController = PurchaseOrdersController;
@@ -59,14 +61,32 @@ __decorate([
 __decorate([
     (0, common_1.Get)(),
     (0, roles_decorator_1.Roles)('ADMIN', 'INVENTORY_MANAGER', 'PHARMACIST', 'ACCOUNTANT'),
-    (0, swagger_1.ApiOperation)({ summary: 'List all Purchase Orders or search' }),
+    (0, swagger_1.ApiOperation)({
+        summary: 'List all Purchase Orders or search (paginated when ?page is set)',
+    }),
     (0, swagger_1.ApiQuery)({ name: 'branchId', required: false }),
-    (0, swagger_1.ApiQuery)({ name: 'q', required: false, description: 'Search term for PO number or supplier' }),
+    (0, swagger_1.ApiQuery)({
+        name: 'q',
+        required: false,
+        description: 'Search term for PO number or supplier',
+    }),
+    (0, swagger_1.ApiQuery)({
+        name: 'page',
+        required: false,
+        description: 'Page number (1-indexed). Omit for full list.',
+    }),
+    (0, swagger_1.ApiQuery)({
+        name: 'pageSize',
+        required: false,
+        description: 'Page size (default 20, max 200)',
+    }),
     __param(0, (0, common_1.Request)()),
     __param(1, (0, common_1.Query)('q')),
     __param(2, (0, common_1.Query)('branchId')),
+    __param(3, (0, common_1.Query)('page')),
+    __param(4, (0, common_1.Query)('pageSize')),
     __metadata("design:type", Function),
-    __metadata("design:paramtypes", [Object, String, String]),
+    __metadata("design:paramtypes", [Object, String, String, String, String]),
     __metadata("design:returntype", void 0)
 ], PurchaseOrdersController.prototype, "findAll", null);
 __decorate([

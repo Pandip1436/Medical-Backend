@@ -35,6 +35,7 @@ export declare class CreditNotesController {
         customerName: string;
         customerId: string | null;
         creditNoteNo: string;
+        settledAt: Date | null;
         invoiceId: string;
     }) | {
         approvalRequested: boolean;
@@ -58,7 +59,13 @@ export declare class CreditNotesController {
         customerName: string;
         customerId: string | null;
         creditNoteNo: string;
+        settledAt: Date | null;
         invoiceId: string;
+    }[]>;
+    getReturnedQtyByInvoice(invoiceId: string, req: any): Promise<{
+        productId: string;
+        batchId: string;
+        alreadyReturned: number;
     }[]>;
     findOne(id: string, req: any): Promise<{
         items: {
@@ -121,6 +128,7 @@ export declare class CreditNotesController {
         customerName: string;
         customerId: string | null;
         creditNoteNo: string;
+        settledAt: Date | null;
         invoiceId: string;
     }>;
 }

@@ -11,6 +11,23 @@ var __metadata = (this && this.__metadata) || function (k, v) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.CreateExpenseDto = void 0;
 const class_validator_1 = require("class-validator");
+let ExpenseDateNotFuture = class ExpenseDateNotFuture {
+    validate(value) {
+        const d = new Date(value);
+        if (Number.isNaN(d.getTime()))
+            return false;
+        const limit = new Date();
+        limit.setDate(limit.getDate() + 1);
+        limit.setHours(23, 59, 59, 999);
+        return d <= limit;
+    }
+    defaultMessage() {
+        return 'expense date cannot be in the future';
+    }
+};
+ExpenseDateNotFuture = __decorate([
+    (0, class_validator_1.ValidatorConstraint)({ name: 'expenseDateNotFuture', async: false })
+], ExpenseDateNotFuture);
 class CreateExpenseDto {
     date;
     category;
@@ -24,6 +41,7 @@ exports.CreateExpenseDto = CreateExpenseDto;
 __decorate([
     (0, class_validator_1.IsDateString)(),
     (0, class_validator_1.IsNotEmpty)(),
+    (0, class_validator_1.Validate)(ExpenseDateNotFuture),
     __metadata("design:type", String)
 ], CreateExpenseDto.prototype, "date", void 0);
 __decorate([
@@ -38,7 +56,7 @@ __decorate([
 ], CreateExpenseDto.prototype, "description", void 0);
 __decorate([
     (0, class_validator_1.IsNumber)(),
-    (0, class_validator_1.Min)(0),
+    (0, class_validator_1.Min)(0.01, { message: 'amount must be greater than zero' }),
     __metadata("design:type", Number)
 ], CreateExpenseDto.prototype, "amount", void 0);
 __decorate([

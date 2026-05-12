@@ -32,6 +32,9 @@ let CreditNotesController = class CreditNotesController {
         const effectiveBranchId = req.user.branchId ?? branchId;
         return this.creditNotesService.findAll(q, customerId, effectiveBranchId);
     }
+    getReturnedQtyByInvoice(invoiceId, req) {
+        return this.creditNotesService.getReturnedQtyByInvoice(invoiceId, req.user.branchId);
+    }
     findOne(id, req) {
         return this.creditNotesService.findOne(id, req.user.branchId);
     }
@@ -61,6 +64,16 @@ __decorate([
     __metadata("design:paramtypes", [Object, String, String, String]),
     __metadata("design:returntype", void 0)
 ], CreditNotesController.prototype, "findAll", null);
+__decorate([
+    (0, common_1.Get)('invoice/:invoiceId/returned-qty'),
+    (0, roles_decorator_1.Roles)('ADMIN', 'PHARMACIST', 'ACCOUNTANT'),
+    (0, swagger_1.ApiOperation)({ summary: 'Already-returned qty per (productId, batchId) for an invoice (includes pending approvals)' }),
+    __param(0, (0, common_1.Param)('invoiceId')),
+    __param(1, (0, common_1.Request)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [String, Object]),
+    __metadata("design:returntype", void 0)
+], CreditNotesController.prototype, "getReturnedQtyByInvoice", null);
 __decorate([
     (0, common_1.Get)(':id'),
     (0, roles_decorator_1.Roles)('ADMIN', 'PHARMACIST', 'ACCOUNTANT'),

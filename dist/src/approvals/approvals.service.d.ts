@@ -1,8 +1,10 @@
 import { PrismaService } from '../prisma/prisma.service';
 import { ApprovalType } from '@prisma/client';
+import { DocumentNumberingService } from '../common/services/document-numbering.service';
 export declare class ApprovalsService {
     private readonly prisma;
-    constructor(prisma: PrismaService);
+    private readonly numbering;
+    constructor(prisma: PrismaService, numbering: DocumentNumberingService);
     createRequest(opts: {
         type: ApprovalType;
         payload: Record<string, any>;
@@ -86,7 +88,7 @@ export declare class ApprovalsService {
         requestedById: string;
         reviewedById: string | null;
     }) | null, null, import("@prisma/client/runtime/library").DefaultArgs>;
-    approve(id: string, reviewedById: string, reviewNote?: string): Promise<{
+    approve(id: string, reviewedById: string, reviewNote?: string, reviewerBranchId?: string): Promise<{
         id: string;
         branchId: string | null;
         createdAt: Date;
@@ -101,7 +103,7 @@ export declare class ApprovalsService {
         requestedById: string;
         reviewedById: string | null;
     }>;
-    reject(id: string, reviewedById: string, reviewNote: string): Promise<{
+    reject(id: string, reviewedById: string, reviewNote: string, reviewerBranchId?: string): Promise<{
         id: string;
         branchId: string | null;
         createdAt: Date;

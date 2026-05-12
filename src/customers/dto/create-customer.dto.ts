@@ -45,6 +45,10 @@ export class CreateCustomerDto {
 
   @IsString()
   @IsOptional()
+  registrationNumber?: string;
+
+  @IsString()
+  @IsOptional()
   notes?: string;
 
   @IsString()

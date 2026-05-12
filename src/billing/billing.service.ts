@@ -14,15 +14,20 @@ export class BillingService {
   ) {}
 
   // Schedule H, H1, and X are prescription-only drugs under the Drugs &
-  // Cosmetics Rules. Walk-in sales are illegal; for registered customers a
-  // current valid prescription must be on record. We enforce this once per
-  // invoice create / quotation conversion before any stock decrement.
+  // Cosmetics Rules. Walk-in/retail sales require a current valid prescription
+  // on record. WHOLESALE customers are licensed distributors (they hold a
+  // Drug License) so the retail prescription requirement is waived for them.
   private async assertPrescriptionForScheduledItems(
     tx: Prisma.TransactionClient,
     items: Array<{ productId: string; productName: string }>,
     customerId: string | null | undefined,
+    billingType?: string,
   ) {
     if (!items.length) return;
+
+    // Wholesale distributors are licensed — no retail prescription required.
+    if (billingType && billingType.toUpperCase() === 'WHOLESALE') return;
+
     const productIds = items.map((i) => i.productId);
     const products = await tx.product.findMany({
       where: { id: { in: productIds } },
@@ -77,7 +82,9 @@ export class BillingService {
       );
     }
     // Refuse expired stock — pharmacies cannot legally dispense it.
-    if (new Date(batch.expiryDate) < new Date()) {
+    const expiry = new Date(batch.expiryDate);
+    expiry.setHours(23, 59, 59, 999);
+    if (expiry < new Date()) {
       throw new BadRequestException(
         `Cannot sell ${item.productName} from batch ${item.batchNumber}: expired on ${new Date(batch.expiryDate).toLocaleDateString('en-IN')}`,
       );
@@ -242,11 +249,12 @@ export class BillingService {
       // Quotations are non-binding offers; stock isn't reserved until conversion.
       if (!isQuotation) {
         // Block dispensing of Schedule H/H1/X drugs without a valid prescription
-        // on file before we touch any stock.
+        // on file before we touch any stock. Wholesale customers are exempt.
         await this.assertPrescriptionForScheduledItems(
           tx,
           createInvoiceDto.items,
           createInvoiceDto.customerId ?? null,
+          createInvoiceDto.billingType,
         );
         for (const item of createInvoiceDto.items) {
           await this.deductStockForItem(tx, item, branchId);
@@ -395,6 +403,7 @@ export class BillingService {
         tx,
         quotation.items.map((i) => ({ productId: i.productId, productName: i.productName })),
         quotation.customerId ?? null,
+        quotation.billingType,
       );
       for (const item of quotation.items) {
         await this.deductStockForItem(

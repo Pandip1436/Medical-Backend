@@ -46,6 +46,18 @@ export class CustomersController {
     );
   }
 
+  @Post('bulk')
+  @Roles('ADMIN', 'PHARMACIST')
+  @ApiOperation({ summary: 'Bulk create customers' })
+  bulkCreate(
+    @Body() customers: CreateCustomerDto[],
+    @Request() req: AuthenticatedRequest,
+    @Query('branchId') branchId?: string,
+  ) {
+    const effectiveBranchId = req.user.branchId ?? branchId ?? undefined;
+    return this.customersService.bulkCreate(customers, effectiveBranchId);
+  }
+
   @Get()
   @Roles(
     'ADMIN',

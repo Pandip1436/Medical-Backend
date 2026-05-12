@@ -18,6 +18,8 @@ const auth_service_1 = require("./auth.service");
 const login_dto_1 = require("./dto/login.dto");
 const register_dto_1 = require("./dto/register.dto");
 const jwt_auth_guard_1 = require("../common/guards/jwt-auth.guard");
+const roles_guard_1 = require("../common/guards/roles.guard");
+const roles_decorator_1 = require("../common/decorators/roles.decorator");
 const swagger_1 = require("@nestjs/swagger");
 let AuthController = class AuthController {
     authService;
@@ -47,9 +49,13 @@ __decorate([
     __metadata("design:returntype", void 0)
 ], AuthController.prototype, "login", null);
 __decorate([
+    (0, common_1.UseGuards)(jwt_auth_guard_1.JwtAuthGuard, roles_guard_1.RolesGuard),
+    (0, roles_decorator_1.Roles)('ADMIN'),
+    (0, swagger_1.ApiBearerAuth)(),
     (0, common_1.Post)('register'),
-    (0, swagger_1.ApiOperation)({ summary: 'Register new user' }),
+    (0, swagger_1.ApiOperation)({ summary: 'Register a new user (admin only)' }),
     (0, swagger_1.ApiResponse)({ status: 201, description: 'User successfully created' }),
+    (0, swagger_1.ApiResponse)({ status: 403, description: 'Forbidden — admin role required' }),
     (0, swagger_1.ApiResponse)({ status: 409, description: 'Email already exists' }),
     __param(0, (0, common_1.Body)()),
     __metadata("design:type", Function),
