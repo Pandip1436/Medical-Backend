@@ -14,10 +14,51 @@ const common_1 = require("@nestjs/common");
 const prisma_service_1 = require("../prisma/prisma.service");
 const create_notification_dto_1 = require("./dto/create-notification.dto");
 const DEDUP_WINDOW_HOURS = Number(process.env.NOTIFICATION_DEDUP_WINDOW_HOURS ?? 24);
+const RESOLVED_SUPPRESS_DAYS = Number(process.env.NOTIFICATION_RESOLVED_DAYS ?? 30);
+const READ_SUPPRESS_DAYS = Number(process.env.NOTIFICATION_READ_DAYS ?? 3);
 function dedupSince() {
     const d = new Date();
     d.setHours(d.getHours() - DEDUP_WINDOW_HOURS);
     return d;
+}
+function daysAgo(n) {
+    const d = new Date();
+    d.setDate(d.getDate() - n);
+    return d;
+}
+function suppressionClauses() {
+    const now = new Date();
+    return [
+        { isRead: false, resolvedAt: null, snoozedUntil: null },
+        { isRead: false, resolvedAt: null, snoozedUntil: { gt: now } },
+        { resolvedAt: { gte: daysAgo(RESOLVED_SUPPRESS_DAYS) } },
+        { isRead: true, resolvedAt: null, createdAt: { gte: daysAgo(READ_SUPPRESS_DAYS) } },
+        { createdAt: { gte: dedupSince() } },
+    ];
+}
+const LOW_STOCK_DROP_PCT = 0.25;
+const PAYMENT_GROWTH_PCT = 0.10;
+const PAYMENT_AGE_BUMP_DAYS = 30;
+function shouldEscalateLowStock(prev, next) {
+    if (!prev)
+        return true;
+    if (prev.totalStock > prev.minStock && next.totalStock <= next.minStock)
+        return true;
+    if (next.totalStock < prev.totalStock * (1 - LOW_STOCK_DROP_PCT))
+        return true;
+    return false;
+}
+function shouldEscalatePaymentDue(prev, next) {
+    if (!prev)
+        return true;
+    if (next.outstanding > prev.outstanding * (1 + PAYMENT_GROWTH_PCT))
+        return true;
+    if (next.daysOutstanding - prev.daysOutstanding >= PAYMENT_AGE_BUMP_DAYS)
+        return true;
+    return false;
+}
+function shouldEscalateExpiry(_prev, _next) {
+    return false;
 }
 let NotificationsService = class NotificationsService {
     prisma;
@@ -28,15 +69,19 @@ let NotificationsService = class NotificationsService {
         return this.prisma.notification.create({ data: dto });
     }
     async findAll(branchId, onlyUnread) {
-        const where = {};
-        if (branchId)
-            where.OR = [{ branchId }, { branchId: null }];
+        const now = new Date();
+        const and = [
+            { OR: [{ snoozedUntil: null }, { snoozedUntil: { lte: now } }] },
+        ];
+        if (branchId) {
+            and.push({ OR: [{ branchId }, { branchId: null }] });
+        }
         if (onlyUnread)
-            where.isRead = false;
+            and.push({ isRead: false });
         return this.prisma.notification.findMany({
-            where,
+            where: { AND: and },
             orderBy: { createdAt: 'desc' },
-            take: 200,
+            take: 1000,
         });
     }
     async markAsRead(id) {
@@ -48,8 +93,35 @@ let NotificationsService = class NotificationsService {
             data: { isRead: true },
         });
     }
+    async markManyAsRead(ids) {
+        if (!ids.length)
+            return { count: 0 };
+        return this.prisma.notification.updateMany({
+            where: { id: { in: ids } },
+            data: { isRead: true },
+        });
+    }
+    async snooze(id, until) {
+        return this.prisma.notification.update({
+            where: { id },
+            data: { snoozedUntil: until },
+        });
+    }
+    async resolve(id, userId) {
+        return this.prisma.notification.update({
+            where: { id },
+            data: { resolvedAt: new Date(), resolvedById: userId ?? null, isRead: true },
+        });
+    }
     async remove(id) {
         return this.prisma.notification.delete({ where: { id } });
+    }
+    async removeMany(ids) {
+        if (!ids.length)
+            return { count: 0 };
+        return this.prisma.notification.deleteMany({
+            where: { id: { in: ids } },
+        });
     }
     async clearAll(branchId) {
         return this.prisma.notification.deleteMany({
@@ -77,24 +149,32 @@ let NotificationsService = class NotificationsService {
                 where: {
                     type: create_notification_dto_1.NotificationType.LOW_STOCK,
                     message: { contains: `[productId:${p.id}]` },
-                    createdAt: { gte: dedupSince() },
+                    OR: suppressionClauses(),
+                },
+                orderBy: { createdAt: 'desc' },
+            });
+            const nextState = {
+                kind: 'LOW_STOCK',
+                totalStock: p.totalStock,
+                minStock: p.minStock,
+            };
+            if (existing && !shouldEscalateLowStock(existing.entityState, nextState)) {
+                continue;
+            }
+            const stockLabel = p.totalStock <= 0
+                ? 'is out of stock'
+                : `has only ${p.totalStock} units left (min: ${p.minStock})`;
+            await this.prisma.notification.create({
+                data: {
+                    type: create_notification_dto_1.NotificationType.LOW_STOCK,
+                    title: 'Low Stock Alert',
+                    message: `${p.name} ${stockLabel}. [productId:${p.id}]`,
+                    actionUrl: `/inventory/product-history?productId=${p.id}`,
+                    branchId: p.branchId ?? branchId ?? null,
+                    entityState: nextState,
                 },
             });
-            if (!existing) {
-                const stockLabel = p.totalStock <= 0
-                    ? 'is out of stock'
-                    : `has only ${p.totalStock} units left (min: ${p.minStock})`;
-                await this.prisma.notification.create({
-                    data: {
-                        type: create_notification_dto_1.NotificationType.LOW_STOCK,
-                        title: 'Low Stock Alert',
-                        message: `${p.name} ${stockLabel}. [productId:${p.id}]`,
-                        actionUrl: `/inventory/products`,
-                        branchId: p.branchId ?? branchId ?? null,
-                    },
-                });
-                created++;
-            }
+            created++;
         }
         return { created };
     }
@@ -128,23 +208,27 @@ let NotificationsService = class NotificationsService {
                 where: {
                     type: create_notification_dto_1.NotificationType.EXPIRY,
                     message: { contains: `[batchId:${b.id}]` },
-                    createdAt: { gte: dedupSince() },
+                    OR: suppressionClauses(),
+                },
+                orderBy: { createdAt: 'desc' },
+            });
+            const daysLeft = Math.ceil((new Date(b.expiryDate).getTime() - now.getTime()) / 86400000);
+            const nextState = { kind: 'EXPIRY', daysLeft };
+            if (existing && !shouldEscalateExpiry(existing.entityState, nextState)) {
+                continue;
+            }
+            const label = daysLeft <= 0 ? 'has already expired' : `expires in ${daysLeft} day(s)`;
+            await this.prisma.notification.create({
+                data: {
+                    type: create_notification_dto_1.NotificationType.EXPIRY,
+                    title: daysLeft <= 0 ? 'Expired Stock' : 'Expiry Alert',
+                    message: `Batch ${b.batchNumber} of ${b.product.name} ${label}. [batchId:${b.id}]`,
+                    actionUrl: `/inventory/batches/detail?id=${b.id}`,
+                    branchId: b.product.branchId ?? branchId ?? null,
+                    entityState: nextState,
                 },
             });
-            if (!existing) {
-                const daysLeft = Math.ceil((new Date(b.expiryDate).getTime() - now.getTime()) / 86400000);
-                const label = daysLeft <= 0 ? 'has already expired' : `expires in ${daysLeft} day(s)`;
-                await this.prisma.notification.create({
-                    data: {
-                        type: create_notification_dto_1.NotificationType.EXPIRY,
-                        title: daysLeft <= 0 ? 'Expired Stock' : 'Expiry Alert',
-                        message: `Batch ${b.batchNumber} of ${b.product.name} ${label}. [batchId:${b.id}]`,
-                        actionUrl: `/inventory/expiry`,
-                        branchId: b.product.branchId ?? branchId ?? null,
-                    },
-                });
-                created++;
-            }
+            created++;
         }
         return { created };
     }
@@ -172,7 +256,7 @@ let NotificationsService = class NotificationsService {
                         type: create_notification_dto_1.NotificationType.SYSTEM,
                         title: '📅 Customer Reminder',
                         message: `${r.title} — Follow up with ${r.customer.name} today. ${dedupKey}`,
-                        actionUrl: `/reminders`,
+                        actionUrl: `/reminders/detail?id=${r.id}`,
                         branchId: r.branchId ?? null,
                     },
                 });
@@ -194,30 +278,41 @@ let NotificationsService = class NotificationsService {
                 grandTotal: true,
                 amountPaid: true,
                 branchId: true,
+                date: true,
             },
         });
+        const now = new Date();
         let created = 0;
         for (const inv of invoices) {
             const outstanding = Number(inv.grandTotal) - Number(inv.amountPaid);
+            const daysOutstanding = Math.floor((now.getTime() - new Date(inv.date).getTime()) / 86_400_000);
             const existing = await this.prisma.notification.findFirst({
                 where: {
                     type: create_notification_dto_1.NotificationType.PAYMENT_DUE,
                     message: { contains: `[invoiceId:${inv.id}]` },
-                    createdAt: { gte: dedupSince() },
+                    OR: suppressionClauses(),
+                },
+                orderBy: { createdAt: 'desc' },
+            });
+            const nextState = {
+                kind: 'PAYMENT_DUE',
+                outstanding,
+                daysOutstanding,
+            };
+            if (existing && !shouldEscalatePaymentDue(existing.entityState, nextState)) {
+                continue;
+            }
+            await this.prisma.notification.create({
+                data: {
+                    type: create_notification_dto_1.NotificationType.PAYMENT_DUE,
+                    title: 'Payment Due',
+                    message: `Invoice ${inv.invoiceNumber} for ${inv.customerName} has ₹${outstanding.toFixed(2)} outstanding. [invoiceId:${inv.id}]`,
+                    actionUrl: `/customers/invoices/detail?id=${inv.id}`,
+                    branchId: inv.branchId ?? branchId ?? null,
+                    entityState: nextState,
                 },
             });
-            if (!existing) {
-                await this.prisma.notification.create({
-                    data: {
-                        type: create_notification_dto_1.NotificationType.PAYMENT_DUE,
-                        title: 'Payment Due',
-                        message: `Invoice ${inv.invoiceNumber} for ${inv.customerName} has ₹${outstanding.toFixed(2)} outstanding. [invoiceId:${inv.id}]`,
-                        actionUrl: `/customers/invoices`,
-                        branchId: inv.branchId ?? branchId ?? null,
-                    },
-                });
-                created++;
-            }
+            created++;
         }
         return { created };
     }

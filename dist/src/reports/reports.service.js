@@ -48,37 +48,154 @@ let ReportsService = class ReportsService {
             where: branchId ? { branchId } : undefined,
             _sum: { currentOutstanding: true },
         });
+        const now = new Date();
         const ninetyDaysFromNow = (0, dayjs_1.default)().add(90, 'days').toDate();
         const expiryCount = await this.prisma.batch.count({
             where: {
-                expiryDate: { lte: ninetyDaysFromNow, gte: new Date() },
+                expiryDate: { lte: ninetyDaysFromNow, gte: now },
                 quantity: { gt: 0 },
                 ...(branchId ? { product: { branchId } } : {}),
             },
         });
+        const expiringBatches = await this.prisma.batch.findMany({
+            where: {
+                expiryDate: { lte: ninetyDaysFromNow, gte: now },
+                quantity: { gt: 0 },
+                ...(branchId ? { product: { branchId } } : {}),
+            },
+            orderBy: { expiryDate: 'asc' },
+            take: 20,
+            select: {
+                id: true,
+                batchNumber: true,
+                expiryDate: true,
+                quantity: true,
+                product: { select: { name: true, packSize: true } },
+            },
+        });
         const products = await this.prisma.product.findMany({
             where: branchId ? { branchId } : undefined,
-            select: { id: true, totalStock: true, minStock: true },
+            select: { id: true, name: true, packSize: true, totalStock: true, minStock: true, reorderQty: true },
         });
-        const lowStockCount = products.filter((p) => p.totalStock <= p.minStock).length;
-        const totalProducts = await this.prisma.product.count({
-            where: branchId ? { branchId } : undefined,
-        });
+        const lowStock = products.filter((p) => p.totalStock <= p.minStock);
+        const lowStockItems = lowStock
+            .map((p) => ({
+            id: p.id,
+            name: p.name,
+            packSize: p.packSize,
+            totalStock: p.totalStock,
+            minStock: p.minStock,
+            reorderQty: p.reorderQty,
+            deficit: p.minStock - p.totalStock,
+        }))
+            .sort((a, b) => b.deficit - a.deficit)
+            .slice(0, 20);
+        const totalProducts = products.length;
         const recentInvoices = await this.prisma.invoice.findMany({
-            take: 5,
+            take: 20,
             orderBy: { date: 'desc' },
             where: { ...bFilter },
             include: { items: { select: { productName: true, quantity: true } } },
         });
+        const overdueCutoff = (0, dayjs_1.default)().subtract(30, 'day').toDate();
+        const overdueInvoices = await this.prisma.invoice.findMany({
+            where: {
+                paymentMode: { in: ['CREDIT', 'SPLIT'] },
+                status: { in: ['CREDIT', 'PARTIAL'] },
+                date: { lte: overdueCutoff },
+                ...bFilter,
+            },
+            select: { customerId: true, customerName: true, date: true, grandTotal: true, amountPaid: true },
+            orderBy: { date: 'asc' },
+        });
+        const overdueByCustomer = new Map();
+        overdueInvoices.forEach((inv) => {
+            const unpaid = Number(inv.grandTotal) - Number(inv.amountPaid);
+            if (unpaid <= 0)
+                return;
+            const key = inv.customerId ?? inv.customerName;
+            const cur = overdueByCustomer.get(key);
+            if (cur) {
+                cur.overdueAmount += unpaid;
+                cur.invoiceCount += 1;
+                if (inv.date < cur.oldestDate)
+                    cur.oldestDate = inv.date;
+            }
+            else {
+                overdueByCustomer.set(key, {
+                    customerId: inv.customerId ?? '',
+                    customerName: inv.customerName,
+                    overdueAmount: unpaid,
+                    oldestDate: inv.date,
+                    invoiceCount: 1,
+                });
+            }
+        });
+        const overdueCustomers = Array.from(overdueByCustomer.values())
+            .map((c) => ({
+            customerId: c.customerId,
+            customerName: c.customerName,
+            overdueAmount: c.overdueAmount,
+            daysOverdue: (0, dayjs_1.default)().diff((0, dayjs_1.default)(c.oldestDate), 'day'),
+            invoiceCount: c.invoiceCount,
+        }))
+            .sort((a, b) => b.overdueAmount - a.overdueAmount)
+            .slice(0, 20);
+        const overdueCustomersCount = overdueByCustomer.size;
+        const overdueTotal = Array.from(overdueByCustomer.values()).reduce((s, c) => s + c.overdueAmount, 0);
         return {
             monthlySales: sales._sum.grandTotal || 0,
             todaysSales: todaysSales._sum.grandTotal || 0,
             totalOutstanding: outstanding._sum.currentOutstanding || 0,
             expiringBatchesCount: expiryCount,
-            lowStockAlertsCount: lowStockCount,
+            lowStockAlertsCount: lowStock.length,
             totalProducts,
             recentInvoices,
+            lowStockItems,
+            expiringBatches,
+            overdueCustomers,
+            overdueCustomersCount,
+            overdueTotal,
         };
+    }
+    async getSalesRange(query) {
+        const bFilter = this.branchFilter(query.branchId);
+        const start = (0, dayjs_1.default)(query.from).startOf('day');
+        const end = (0, dayjs_1.default)(query.to).endOf('day');
+        const invoices = await this.prisma.invoice.findMany({
+            where: { date: { gte: start.toDate(), lte: end.toDate() }, ...bFilter },
+            select: { date: true, grandTotal: true },
+        });
+        const total = invoices.reduce((s, i) => s + Number(i.grandTotal), 0);
+        const invoiceCount = invoices.length;
+        if (query.bucket === 'day') {
+            const numDays = end.startOf('day').diff(start.startOf('day'), 'day') + 1;
+            const chartData = Array.from({ length: numDays }, (_, i) => {
+                const day = start.add(i, 'day');
+                return { label: day.format('DD MMM'), amount: 0, iso: day.format('YYYY-MM-DD') };
+            });
+            invoices.forEach((inv) => {
+                const idx = (0, dayjs_1.default)(inv.date).startOf('day').diff(start.startOf('day'), 'day');
+                if (idx >= 0 && idx < chartData.length) {
+                    chartData[idx].amount += Number(inv.grandTotal);
+                }
+            });
+            return { bucket: 'day', chartData, total, invoiceCount };
+        }
+        const monthsMap = new Map();
+        let cursor = start.startOf('month');
+        while (cursor.isBefore(end) || cursor.isSame(end, 'month')) {
+            const key = cursor.format('YYYY-MM');
+            monthsMap.set(key, { label: cursor.format('MMM'), amount: 0, iso: key });
+            cursor = cursor.add(1, 'month');
+        }
+        invoices.forEach((inv) => {
+            const key = (0, dayjs_1.default)(inv.date).format('YYYY-MM');
+            const entry = monthsMap.get(key);
+            if (entry)
+                entry.amount += Number(inv.grandTotal);
+        });
+        return { bucket: 'month', chartData: Array.from(monthsMap.values()), total, invoiceCount };
     }
     async getDailySales(branchId) {
         const bFilter = this.branchFilter(branchId);
@@ -252,11 +369,11 @@ let ReportsService = class ReportsService {
     async getStockValuation(branchId) {
         const batches = await this.prisma.batch.findMany({
             where: branchId ? { product: { branchId } } : undefined,
-            include: { product: true },
+            include: { product: { include: { category: true } } },
         });
         const categoryValuation = new Map();
         const tableData = batches.map((b) => {
-            const cat = b.product.categoryId ?? 'OTHER';
+            const cat = b.product.category?.name ?? 'Uncategorized';
             const purchaseValue = Number(b.purchaseRate) * b.quantity;
             categoryValuation.set(cat, (categoryValuation.get(cat) || 0) + purchaseValue);
             return {

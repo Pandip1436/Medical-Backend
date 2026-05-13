@@ -679,15 +679,26 @@ model Payment {
 
 // ── Notifications ─────────────────────────────────────────────
 model Notification {
-  id         String           @id @default(cuid())
-  type       NotificationType
-  title      String
-  message    String
-  isRead     Boolean          @default(false)
-  actionUrl  String?
-  branchId   String?
-  branch     Branch?          @relation(fields: [branchId], references: [id])
-  createdAt  DateTime         @default(now())
+  id            String           @id @default(cuid())
+  type          NotificationType
+  title         String
+  message       String
+  isRead        Boolean          @default(false)
+  actionUrl     String?
+  branchId      String?
+  branch        Branch?          @relation(fields: [branchId], references: [id])
+  snoozedUntil  DateTime?
+  // Stamped when the user takes the corrective action (e.g. records payment
+  // for a Payment Due alert). Independent of isRead so we can show audit info.
+  resolvedAt    DateTime?
+  resolvedById  String?
+  // Snapshot of the underlying entity's state at create time, e.g.
+  // { totalStock: 5, minStock: 20 } for a Low Stock alert. Used by the
+  // scheduler's escalation check — only re-fire when the situation has worsened.
+  entityState   Json?
+  createdAt     DateTime         @default(now())
+
+  @@index([branchId, isRead, snoozedUntil])
 }
 
 enum NotificationType {

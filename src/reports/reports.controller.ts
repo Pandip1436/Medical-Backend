@@ -35,6 +35,28 @@ export class ReportsController {
     return this.reportsService.getMonthlySales(year, req.user.branchId ?? branchId);
   }
 
+  @Get('sales/range')
+  @Roles('ADMIN', 'PHARMACIST', 'ACCOUNTANT', 'INVENTORY_MANAGER')
+  @ApiOperation({ summary: 'Sales totals bucketed by day or month within an arbitrary range' })
+  @ApiQuery({ name: 'from', required: true })
+  @ApiQuery({ name: 'to', required: true })
+  @ApiQuery({ name: 'bucket', required: true, enum: ['day', 'month'] })
+  @ApiQuery({ name: 'branchId', required: false })
+  getSalesRange(
+    @Request() req: any,
+    @Query('from') from: string,
+    @Query('to') to: string,
+    @Query('bucket') bucket: 'day' | 'month',
+    @Query('branchId') branchId?: string,
+  ) {
+    return this.reportsService.getSalesRange({
+      from,
+      to,
+      bucket,
+      branchId: req.user.branchId ?? branchId,
+    });
+  }
+
   @Get('sales/yearly')
   @Roles('ADMIN', 'ACCOUNTANT')
   @ApiOperation({ summary: 'Yearly sales across all years' })

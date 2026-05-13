@@ -66,10 +66,34 @@ export class NotificationsController {
     return this.service.markAllAsRead(branchId);
   }
 
+  @Patch('read-bulk')
+  @Roles('ADMIN', 'PHARMACIST', 'INVENTORY_MANAGER', 'ACCOUNTANT')
+  markManyAsRead(@Body() body: { ids: string[] }) {
+    return this.service.markManyAsRead(body?.ids ?? []);
+  }
+
+  @Patch(':id/snooze')
+  @Roles('ADMIN', 'PHARMACIST', 'INVENTORY_MANAGER', 'ACCOUNTANT')
+  snooze(@Param('id') id: string, @Body() body: { until: string }) {
+    return this.service.snooze(id, new Date(body.until));
+  }
+
+  @Patch(':id/resolve')
+  @Roles('ADMIN', 'PHARMACIST', 'INVENTORY_MANAGER', 'ACCOUNTANT')
+  resolve(@Param('id') id: string, @Request() req: AuthenticatedRequest) {
+    return this.service.resolve(id, req.user.userId);
+  }
+
   @Delete(':id')
   @Roles('ADMIN', 'PHARMACIST', 'INVENTORY_MANAGER', 'ACCOUNTANT')
   remove(@Param('id') id: string) {
     return this.service.remove(id);
+  }
+
+  @Post('delete-bulk')
+  @Roles('ADMIN', 'PHARMACIST', 'INVENTORY_MANAGER', 'ACCOUNTANT')
+  removeMany(@Body() body: { ids: string[] }) {
+    return this.service.removeMany(body?.ids ?? []);
   }
 
   @Delete()

@@ -43,6 +43,34 @@ export declare class ReportsController {
             doctorId: string | null;
             salespersonId: string | null;
         })[];
+        lowStockItems: {
+            id: string;
+            name: string;
+            packSize: string;
+            totalStock: number;
+            minStock: number;
+            reorderQty: number;
+            deficit: number;
+        }[];
+        expiringBatches: {
+            id: string;
+            product: {
+                name: string;
+                packSize: string;
+            };
+            batchNumber: string;
+            expiryDate: Date;
+            quantity: number;
+        }[];
+        overdueCustomers: {
+            customerId: string;
+            customerName: string;
+            overdueAmount: number;
+            daysOverdue: number;
+            invoiceCount: number;
+        }[];
+        overdueCustomersCount: number;
+        overdueTotal: number;
     }>;
     getDailySales(req: any, branchId?: string): Promise<{
         chartData: {
@@ -71,6 +99,16 @@ export declare class ReportsController {
             label: string;
             value: string;
         }[];
+    }>;
+    getSalesRange(req: any, from: string, to: string, bucket: 'day' | 'month', branchId?: string): Promise<{
+        bucket: string;
+        chartData: {
+            label: string;
+            amount: number;
+            iso: string;
+        }[];
+        total: number;
+        invoiceCount: number;
     }>;
     getYearlySales(req: any, branchId?: string): Promise<{
         chartData: {

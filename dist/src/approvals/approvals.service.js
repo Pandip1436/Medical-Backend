@@ -36,7 +36,7 @@ let ApprovalsService = class ApprovalsService {
                 type: 'APPROVAL',
                 title: 'Approval Required',
                 message: `${request.requestedBy.name} requested approval for ${opts.type.replace(/_/g, ' ').toLowerCase()}.`,
-                actionUrl: '/admin/approvals',
+                actionUrl: `/admin/approvals/detail?id=${request.id}`,
                 branchId: opts.branchId ?? null,
             },
         });
@@ -89,7 +89,7 @@ let ApprovalsService = class ApprovalsService {
                 type: 'APPROVAL',
                 title: 'Request Approved',
                 message: `Your ${req.type.replace(/_/g, ' ').toLowerCase()} request has been approved.${reviewNote ? ` Note: ${reviewNote}` : ''}`,
-                actionUrl: '/admin/approvals',
+                actionUrl: `/admin/approvals/detail?id=${id}`,
                 branchId: req.branchId ?? null,
             },
         });
@@ -119,7 +119,7 @@ let ApprovalsService = class ApprovalsService {
                 type: 'APPROVAL',
                 title: 'Request Rejected',
                 message: `Your ${req.type.replace(/_/g, ' ').toLowerCase()} request was rejected.${reviewNote ? ` Reason: ${reviewNote}` : ''}`,
-                actionUrl: '/admin/approvals',
+                actionUrl: `/admin/approvals/detail?id=${id}`,
                 branchId: req.branchId ?? null,
             },
         });

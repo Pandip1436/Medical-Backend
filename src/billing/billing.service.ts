@@ -114,16 +114,24 @@ export class BillingService {
       (updatedProduct.minStock > 0 &&
         updatedProduct.totalStock <= updatedProduct.minStock);
     if (isLow) {
-      // Window-based dedup so marking the previous alert as read doesn't make
-      // the next sale immediately re-fire a duplicate. 24h matches the
-      // notifications.service default window.
-      const dedupSince = new Date();
-      dedupSince.setHours(dedupSince.getHours() - 24);
+      // Layered suppression: mirror notifications.service suppressionClauses()
+      // so post-sale alerts respect the user's prior actions (read / resolve /
+      // snooze) and don't keep re-firing every time the same product drops.
+      const now = new Date();
+      const dedupSince = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+      const resolvedSince = new Date(now.getTime() - 30 * 86_400_000);
+      const readSince = new Date(now.getTime() - 3 * 86_400_000);
       const alreadyNotified = await tx.notification.findFirst({
         where: {
           type: 'LOW_STOCK',
           message: { contains: `[productId:${updatedProduct.id}]` },
-          createdAt: { gte: dedupSince },
+          OR: [
+            { isRead: false, resolvedAt: null, snoozedUntil: null },
+            { isRead: false, resolvedAt: null, snoozedUntil: { gt: now } },
+            { resolvedAt: { gte: resolvedSince } },
+            { isRead: true, resolvedAt: null, createdAt: { gte: readSince } },
+            { createdAt: { gte: dedupSince } },
+          ],
         },
       });
       if (!alreadyNotified) {
@@ -136,7 +144,7 @@ export class BillingService {
             type: 'LOW_STOCK',
             title: 'Low Stock Alert',
             message: `${updatedProduct.name} ${stockLabel}. [productId:${updatedProduct.id}]`,
-            actionUrl: '/inventory/products',
+            actionUrl: `/inventory/product-history?productId=${updatedProduct.id}`,
             branchId: updatedProduct.branchId ?? branchId ?? null,
           },
         });
@@ -339,7 +347,7 @@ export class BillingService {
             type: 'PAYMENT_DUE',
             title: 'Payment Due',
             message: `Invoice ${invoiceNumber} for ${createInvoiceDto.customerName} has ₹${outstanding.toFixed(2)} outstanding. [invoiceId:${invoice.id}]`,
-            actionUrl: `/customers/invoices`,
+            actionUrl: `/customers/invoices/detail?id=${invoice.id}`,
             branchId: branchId ?? null,
           },
         });

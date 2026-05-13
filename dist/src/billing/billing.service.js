@@ -85,13 +85,21 @@ let BillingService = class BillingService {
             (updatedProduct.minStock > 0 &&
                 updatedProduct.totalStock <= updatedProduct.minStock);
         if (isLow) {
-            const dedupSince = new Date();
-            dedupSince.setHours(dedupSince.getHours() - 24);
+            const now = new Date();
+            const dedupSince = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+            const resolvedSince = new Date(now.getTime() - 30 * 86_400_000);
+            const readSince = new Date(now.getTime() - 3 * 86_400_000);
             const alreadyNotified = await tx.notification.findFirst({
                 where: {
                     type: 'LOW_STOCK',
                     message: { contains: `[productId:${updatedProduct.id}]` },
-                    createdAt: { gte: dedupSince },
+                    OR: [
+                        { isRead: false, resolvedAt: null, snoozedUntil: null },
+                        { isRead: false, resolvedAt: null, snoozedUntil: { gt: now } },
+                        { resolvedAt: { gte: resolvedSince } },
+                        { isRead: true, resolvedAt: null, createdAt: { gte: readSince } },
+                        { createdAt: { gte: dedupSince } },
+                    ],
                 },
             });
             if (!alreadyNotified) {
@@ -103,7 +111,7 @@ let BillingService = class BillingService {
                         type: 'LOW_STOCK',
                         title: 'Low Stock Alert',
                         message: `${updatedProduct.name} ${stockLabel}. [productId:${updatedProduct.id}]`,
-                        actionUrl: '/inventory/products',
+                        actionUrl: `/inventory/product-history?productId=${updatedProduct.id}`,
                         branchId: updatedProduct.branchId ?? branchId ?? null,
                     },
                 });
@@ -256,7 +264,7 @@ let BillingService = class BillingService {
                         type: 'PAYMENT_DUE',
                         title: 'Payment Due',
                         message: `Invoice ${invoiceNumber} for ${createInvoiceDto.customerName} has ₹${outstanding.toFixed(2)} outstanding. [invoiceId:${invoice.id}]`,
-                        actionUrl: `/customers/invoices`,
+                        actionUrl: `/customers/invoices/detail?id=${invoice.id}`,
                         branchId: branchId ?? null,
                     },
                 });

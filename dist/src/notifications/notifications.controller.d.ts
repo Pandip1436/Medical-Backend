@@ -13,6 +13,10 @@ export declare class NotificationsController {
         message: string;
         isRead: boolean;
         actionUrl: string | null;
+        snoozedUntil: Date | null;
+        resolvedAt: Date | null;
+        resolvedById: string | null;
+        entityState: import("@prisma/client/runtime/library").JsonValue | null;
     }[]>;
     create(dto: CreateNotificationDto, req: AuthenticatedRequest, queryBranchId?: string): Promise<{
         id: string;
@@ -23,6 +27,10 @@ export declare class NotificationsController {
         message: string;
         isRead: boolean;
         actionUrl: string | null;
+        snoozedUntil: Date | null;
+        resolvedAt: Date | null;
+        resolvedById: string | null;
+        entityState: import("@prisma/client/runtime/library").JsonValue | null;
     }>;
     markAsRead(id: string): Promise<{
         id: string;
@@ -33,8 +41,45 @@ export declare class NotificationsController {
         message: string;
         isRead: boolean;
         actionUrl: string | null;
+        snoozedUntil: Date | null;
+        resolvedAt: Date | null;
+        resolvedById: string | null;
+        entityState: import("@prisma/client/runtime/library").JsonValue | null;
     }>;
     markAllAsRead(req: AuthenticatedRequest, queryBranchId?: string): Promise<import(".prisma/client").Prisma.BatchPayload>;
+    markManyAsRead(body: {
+        ids: string[];
+    }): Promise<import(".prisma/client").Prisma.BatchPayload>;
+    snooze(id: string, body: {
+        until: string;
+    }): Promise<{
+        id: string;
+        branchId: string | null;
+        createdAt: Date;
+        type: import(".prisma/client").$Enums.NotificationType;
+        title: string;
+        message: string;
+        isRead: boolean;
+        actionUrl: string | null;
+        snoozedUntil: Date | null;
+        resolvedAt: Date | null;
+        resolvedById: string | null;
+        entityState: import("@prisma/client/runtime/library").JsonValue | null;
+    }>;
+    resolve(id: string, req: AuthenticatedRequest): Promise<{
+        id: string;
+        branchId: string | null;
+        createdAt: Date;
+        type: import(".prisma/client").$Enums.NotificationType;
+        title: string;
+        message: string;
+        isRead: boolean;
+        actionUrl: string | null;
+        snoozedUntil: Date | null;
+        resolvedAt: Date | null;
+        resolvedById: string | null;
+        entityState: import("@prisma/client/runtime/library").JsonValue | null;
+    }>;
     remove(id: string): Promise<{
         id: string;
         branchId: string | null;
@@ -44,7 +89,14 @@ export declare class NotificationsController {
         message: string;
         isRead: boolean;
         actionUrl: string | null;
+        snoozedUntil: Date | null;
+        resolvedAt: Date | null;
+        resolvedById: string | null;
+        entityState: import("@prisma/client/runtime/library").JsonValue | null;
     }>;
+    removeMany(body: {
+        ids: string[];
+    }): Promise<import(".prisma/client").Prisma.BatchPayload>;
     clearAll(req: AuthenticatedRequest, queryBranchId?: string): Promise<import(".prisma/client").Prisma.BatchPayload>;
     generateLowStock(req: AuthenticatedRequest, queryBranchId?: string): Promise<{
         created: number;

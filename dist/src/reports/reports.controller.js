@@ -33,6 +33,14 @@ let ReportsController = class ReportsController {
     getMonthlySales(req, year, branchId) {
         return this.reportsService.getMonthlySales(year, req.user.branchId ?? branchId);
     }
+    getSalesRange(req, from, to, bucket, branchId) {
+        return this.reportsService.getSalesRange({
+            from,
+            to,
+            bucket,
+            branchId: req.user.branchId ?? branchId,
+        });
+    }
     getYearlySales(req, branchId) {
         return this.reportsService.getYearlySales(req.user.branchId ?? branchId);
     }
@@ -136,6 +144,23 @@ __decorate([
     __metadata("design:paramtypes", [Object, String, String]),
     __metadata("design:returntype", void 0)
 ], ReportsController.prototype, "getMonthlySales", null);
+__decorate([
+    (0, common_1.Get)('sales/range'),
+    (0, roles_decorator_1.Roles)('ADMIN', 'PHARMACIST', 'ACCOUNTANT', 'INVENTORY_MANAGER'),
+    (0, swagger_1.ApiOperation)({ summary: 'Sales totals bucketed by day or month within an arbitrary range' }),
+    (0, swagger_1.ApiQuery)({ name: 'from', required: true }),
+    (0, swagger_1.ApiQuery)({ name: 'to', required: true }),
+    (0, swagger_1.ApiQuery)({ name: 'bucket', required: true, enum: ['day', 'month'] }),
+    (0, swagger_1.ApiQuery)({ name: 'branchId', required: false }),
+    __param(0, (0, common_1.Request)()),
+    __param(1, (0, common_1.Query)('from')),
+    __param(2, (0, common_1.Query)('to')),
+    __param(3, (0, common_1.Query)('bucket')),
+    __param(4, (0, common_1.Query)('branchId')),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, String, String, String, String]),
+    __metadata("design:returntype", void 0)
+], ReportsController.prototype, "getSalesRange", null);
 __decorate([
     (0, common_1.Get)('sales/yearly'),
     (0, roles_decorator_1.Roles)('ADMIN', 'ACCOUNTANT'),

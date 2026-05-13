@@ -51,6 +51,49 @@ export declare class ReportsService {
             doctorId: string | null;
             salespersonId: string | null;
         })[];
+        lowStockItems: {
+            id: string;
+            name: string;
+            packSize: string;
+            totalStock: number;
+            minStock: number;
+            reorderQty: number;
+            deficit: number;
+        }[];
+        expiringBatches: {
+            id: string;
+            product: {
+                name: string;
+                packSize: string;
+            };
+            batchNumber: string;
+            expiryDate: Date;
+            quantity: number;
+        }[];
+        overdueCustomers: {
+            customerId: string;
+            customerName: string;
+            overdueAmount: number;
+            daysOverdue: number;
+            invoiceCount: number;
+        }[];
+        overdueCustomersCount: number;
+        overdueTotal: number;
+    }>;
+    getSalesRange(query: {
+        from: string;
+        to: string;
+        bucket: 'day' | 'month';
+        branchId?: string;
+    }): Promise<{
+        bucket: string;
+        chartData: {
+            label: string;
+            amount: number;
+            iso: string;
+        }[];
+        total: number;
+        invoiceCount: number;
     }>;
     getDailySales(branchId?: string): Promise<{
         chartData: {

@@ -41,8 +41,20 @@ let NotificationsController = class NotificationsController {
         const branchId = req.user.branchId ?? queryBranchId ?? undefined;
         return this.service.markAllAsRead(branchId);
     }
+    markManyAsRead(body) {
+        return this.service.markManyAsRead(body?.ids ?? []);
+    }
+    snooze(id, body) {
+        return this.service.snooze(id, new Date(body.until));
+    }
+    resolve(id, req) {
+        return this.service.resolve(id, req.user.userId);
+    }
     remove(id) {
         return this.service.remove(id);
+    }
+    removeMany(body) {
+        return this.service.removeMany(body?.ids ?? []);
     }
     clearAll(req, queryBranchId) {
         const branchId = req.user.branchId ?? queryBranchId ?? undefined;
@@ -109,6 +121,32 @@ __decorate([
     __metadata("design:returntype", void 0)
 ], NotificationsController.prototype, "markAllAsRead", null);
 __decorate([
+    (0, common_1.Patch)('read-bulk'),
+    (0, roles_decorator_1.Roles)('ADMIN', 'PHARMACIST', 'INVENTORY_MANAGER', 'ACCOUNTANT'),
+    __param(0, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object]),
+    __metadata("design:returntype", void 0)
+], NotificationsController.prototype, "markManyAsRead", null);
+__decorate([
+    (0, common_1.Patch)(':id/snooze'),
+    (0, roles_decorator_1.Roles)('ADMIN', 'PHARMACIST', 'INVENTORY_MANAGER', 'ACCOUNTANT'),
+    __param(0, (0, common_1.Param)('id')),
+    __param(1, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [String, Object]),
+    __metadata("design:returntype", void 0)
+], NotificationsController.prototype, "snooze", null);
+__decorate([
+    (0, common_1.Patch)(':id/resolve'),
+    (0, roles_decorator_1.Roles)('ADMIN', 'PHARMACIST', 'INVENTORY_MANAGER', 'ACCOUNTANT'),
+    __param(0, (0, common_1.Param)('id')),
+    __param(1, (0, common_1.Request)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [String, Object]),
+    __metadata("design:returntype", void 0)
+], NotificationsController.prototype, "resolve", null);
+__decorate([
     (0, common_1.Delete)(':id'),
     (0, roles_decorator_1.Roles)('ADMIN', 'PHARMACIST', 'INVENTORY_MANAGER', 'ACCOUNTANT'),
     __param(0, (0, common_1.Param)('id')),
@@ -116,6 +154,14 @@ __decorate([
     __metadata("design:paramtypes", [String]),
     __metadata("design:returntype", void 0)
 ], NotificationsController.prototype, "remove", null);
+__decorate([
+    (0, common_1.Post)('delete-bulk'),
+    (0, roles_decorator_1.Roles)('ADMIN', 'PHARMACIST', 'INVENTORY_MANAGER', 'ACCOUNTANT'),
+    __param(0, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object]),
+    __metadata("design:returntype", void 0)
+], NotificationsController.prototype, "removeMany", null);
 __decorate([
     (0, common_1.Delete)(),
     (0, roles_decorator_1.Roles)('ADMIN'),
