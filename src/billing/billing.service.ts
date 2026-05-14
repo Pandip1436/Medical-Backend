@@ -357,7 +357,23 @@ export class BillingService {
     });
   }
 
-  findAll(query?: string, customerId?: string, branchId?: string, type?: string) {
+  // Match the customers/suppliers pattern: legacy plain-array path when no
+  // skip/take, paginated { data, total, hasMore } when either is provided.
+  async findAll(
+    query?: string,
+    customerId?: string,
+    branchId?: string,
+    type?: string,
+    filters?: {
+      status?: string;
+      paymentMode?: string;
+      salespersonId?: string;
+      from?: string;
+      to?: string;
+    },
+    skip?: number,
+    take?: number,
+  ) {
     const where: any = {};
     if (customerId) where.customerId = customerId;
     if (branchId) where.branchId = branchId;
@@ -368,12 +384,86 @@ export class BillingService {
         { customerName: { contains: query, mode: 'insensitive' } },
       ];
     }
-    return this.prisma.invoice.findMany({
-      where,
-      include: { items: true },
-      orderBy: { date: 'desc' },
-      take: 100,
-    });
+    if (filters?.status) where.status = filters.status;
+    if (filters?.paymentMode) where.paymentMode = filters.paymentMode;
+    if (filters?.salespersonId) where.salespersonId = filters.salespersonId;
+    if (filters?.from || filters?.to) {
+      where.date = {};
+      if (filters.from) where.date.gte = new Date(filters.from);
+      if (filters.to) {
+        // Make the `to` boundary inclusive of the entire day.
+        const toEnd = new Date(filters.to);
+        toEnd.setHours(23, 59, 59, 999);
+        where.date.lte = toEnd;
+      }
+    }
+
+    const paginated = typeof skip === 'number' && typeof take === 'number';
+
+    if (!paginated) {
+      // Legacy callers (NewSale, dashboard, customer detail) — keep the
+      // lightweight array contract. Capped at 200 to avoid runaway responses.
+      return this.prisma.invoice.findMany({
+        where,
+        include: { items: true },
+        orderBy: { date: 'desc' },
+        take: 200,
+      });
+    }
+
+    const safeTake = Math.min(Math.max(take!, 1), 100);
+    const safeSkip = Math.max(skip!, 0);
+
+    const [data, total] = await Promise.all([
+      this.prisma.invoice.findMany({
+        where,
+        include: { items: true },
+        orderBy: { date: 'desc' },
+        skip: safeSkip,
+        take: safeTake,
+      }),
+      this.prisma.invoice.count({ where }),
+    ]);
+
+    return {
+      data,
+      total,
+      hasMore: safeSkip + data.length < total,
+    };
+  }
+
+  // Global summary across all invoices (optionally scoped to a branch). Kept
+  // unfiltered so the top stat cards stay stable as the user types in the
+  // search box below.
+  async summary(branchId?: string) {
+    const base: any = { type: 'INVOICE' };
+    if (branchId) base.branchId = branchId;
+
+    const [totalInvoices, totalAmountAgg, paidCount, outstandingAgg] = await Promise.all([
+      this.prisma.invoice.count({ where: base }),
+      this.prisma.invoice.aggregate({
+        where: base,
+        _sum: { grandTotal: true },
+      }),
+      this.prisma.invoice.count({ where: { ...base, status: 'PAID' } }),
+      this.prisma.invoice.findMany({
+        where: { ...base, status: { in: ['CREDIT', 'PARTIAL'] } },
+        select: { grandTotal: true, amountPaid: true },
+      }),
+    ]);
+
+    const outstandingAmount = outstandingAgg.reduce(
+      (sum, inv) => sum + (Number(inv.grandTotal) - Number(inv.amountPaid)),
+      0,
+    );
+
+    return {
+      totalInvoices,
+      totalAmount: Number(totalAmountAgg._sum.grandTotal ?? 0),
+      paidCount,
+      outstandingAmount,
+      outstandingCount: outstandingAgg.length,
+    };
   }
 
   async findOne(id: string, branchId?: string) {

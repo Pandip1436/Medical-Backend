@@ -72,6 +72,53 @@ export class RemindersService {
     })
   }
 
+  // Bulk-create reminders for a list of customers. Used by the Outstanding
+  // Receivables page's "Bulk Reminders" button — one reminder per customer.
+  // Idempotent on (customerId + title): an existing reminder with the same
+  // title for the same customer is left untouched and reported as 'skipped'.
+  async createBulk(
+    customerIds: string[],
+    options: { title?: string; dayOfMonth?: number; branchId?: string } = {},
+  ) {
+    const title = options.title?.trim() || 'Payment follow-up'
+    // Cap dayOfMonth at 28 (matches validateDayOfMonth) so the reminder fires every month.
+    const rawDay = options.dayOfMonth ?? new Date().getDate()
+    const dayOfMonth = Math.min(Math.max(rawDay, 1), 28)
+    const branchId = options.branchId
+
+    // Look up existing reminders for these customers + title so we don't
+    // re-create the same follow-up.
+    const existing = await this.prisma.customerReminder.findMany({
+      where: {
+        customerId: { in: customerIds },
+        title,
+        ...(branchId ? { branchId } : {}),
+      },
+      select: { customerId: true },
+    })
+    const existingIds = new Set(existing.map((r) => r.customerId))
+    const toCreate = customerIds.filter((id) => !existingIds.has(id))
+
+    if (toCreate.length === 0) {
+      return { created: 0, skipped: customerIds.length }
+    }
+
+    await this.prisma.customerReminder.createMany({
+      data: toCreate.map((customerId) => ({
+        customerId,
+        dayOfMonth,
+        title,
+        branchId: branchId ?? null,
+      })),
+      skipDuplicates: true,
+    })
+
+    return {
+      created: toCreate.length,
+      skipped: customerIds.length - toCreate.length,
+    }
+  }
+
   async update(id: string, dto: UpdateReminderDto, branchId?: string) {
     await this.assertOwnedByBranch(id, branchId)
     if (dto.dayOfMonth !== undefined) {

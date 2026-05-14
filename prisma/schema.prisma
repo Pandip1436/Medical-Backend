@@ -36,6 +36,8 @@ model Branch {
   payments        Payment[]
   reminders       CustomerReminder[]
   categories      Category[]
+  supplierActivities SupplierActivity[]
+  customerActivities CustomerActivity[]
 }
 
 // ── Users & Auth ──────────────────────────────────────────────
@@ -57,6 +59,8 @@ model User {
   auditLogs            AuditLog[]
   approvalRequests     ApprovalRequest[]  @relation("ApprovalRequests")
   approvalReviews      ApprovalRequest[]  @relation("ApprovalReviews")
+  supplierActivities   SupplierActivity[]
+  customerActivities   CustomerActivity[]
 }
 
 enum Role {
@@ -94,6 +98,7 @@ model Customer {
   quotations         Quotation[]
   payments           Payment[]
   reminders          CustomerReminder[]
+  activities         CustomerActivity[]
 }
 
 enum CustomerType {
@@ -240,12 +245,104 @@ model Supplier {
   purchaseOrders      PurchaseOrder[]
   grns                GRN[]
   purchaseReturns     PurchaseReturn[]
+  activities          SupplierActivity[]
 }
 
 enum PaymentTerms {
   NET_30
   NET_45
   NET_60
+}
+
+// ── Supplier Activity log ────────────────────────────────────
+// Audit trail of interactions with a supplier — calls, WhatsApp, emails,
+// free-text notes, and future-dated reminders. Single table with a `type`
+// discriminator; field requirements vary by type (enforced in the service).
+enum SupplierActivityType {
+  CALL
+  WHATSAPP
+  EMAIL
+  NOTE
+  REMINDER
+}
+
+enum SupplierActivityStatus {
+  PENDING
+  DONE
+  CANCELLED
+}
+
+model SupplierActivity {
+  id          String                   @id @default(cuid())
+  supplierId  String
+  supplier    Supplier                 @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+  type        SupplierActivityType
+  // Free-text body. Required for CALL/WHATSAPP/EMAIL/NOTE; optional for REMINDER.
+  notes       String?
+  // Short label, required for REMINDER (e.g. "Follow up on June invoice").
+  title       String?
+  // When the past interaction happened (CALL/WHATSAPP/EMAIL/NOTE).
+  occurredAt  DateTime?
+  // When the future reminder is due (REMINDER only).
+  dueAt       DateTime?
+  // REMINDER lifecycle. Null/ignored for other types.
+  status      SupplierActivityStatus?  @default(PENDING)
+  // Optional context: who at the supplier's side.
+  contactName String?
+  // EMAIL subject line only.
+  subject     String?
+
+  createdById String
+  createdBy   User                     @relation(fields: [createdById], references: [id])
+  branchId    String?
+  branch      Branch?                  @relation(fields: [branchId], references: [id])
+  createdAt   DateTime                 @default(now())
+  updatedAt   DateTime                 @updatedAt
+
+  @@index([supplierId, createdAt])
+  @@index([supplierId, type])
+}
+
+// Mirrors SupplierActivity for the customer side — same CALL/WHATSAPP/EMAIL/
+// NOTE/REMINDER discriminator + REMINDER lifecycle. Coexists with
+// CustomerReminder (which models a separate monthly-recurring follow-up
+// system); this table is the ad-hoc interaction log.
+enum CustomerActivityType {
+  CALL
+  WHATSAPP
+  EMAIL
+  NOTE
+  REMINDER
+}
+
+enum CustomerActivityStatus {
+  PENDING
+  DONE
+  CANCELLED
+}
+
+model CustomerActivity {
+  id          String                   @id @default(cuid())
+  customerId  String
+  customer    Customer                 @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  type        CustomerActivityType
+  notes       String?
+  title       String?
+  occurredAt  DateTime?
+  dueAt       DateTime?
+  status      CustomerActivityStatus?  @default(PENDING)
+  contactName String?
+  subject     String?
+
+  createdById String
+  createdBy   User                     @relation(fields: [createdById], references: [id])
+  branchId    String?
+  branch      Branch?                  @relation(fields: [branchId], references: [id])
+  createdAt   DateTime                 @default(now())
+  updatedAt   DateTime                 @updatedAt
+
+  @@index([customerId, createdAt])
+  @@index([customerId, type])
 }
 
 // ── Doctors ───────────────────────────────────────────────────

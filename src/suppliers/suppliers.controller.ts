@@ -70,13 +70,52 @@ export class SuppliersController {
   })
   @ApiQuery({ name: 'q', required: false })
   @ApiQuery({ name: 'branchId', required: false })
+  @ApiQuery({ name: 'skip', required: false, type: Number })
+  @ApiQuery({ name: 'take', required: false, type: Number })
+  @ApiQuery({ name: 'isActive', required: false, type: Boolean })
+  @ApiQuery({ name: 'paymentTerms', required: false })
+  @ApiQuery({ name: 'hasGstin', required: false, type: Boolean })
+  @ApiQuery({ name: 'outstandingMin', required: false, type: Number })
+  @ApiQuery({ name: 'outstandingMax', required: false, type: Number })
   findAll(
     @Request() req: AuthenticatedRequest,
     @Query('q') q?: string,
     @Query('branchId') branchId?: string,
+    @Query('skip') skip?: string,
+    @Query('take') take?: string,
+    @Query('isActive') isActive?: string,
+    @Query('paymentTerms') paymentTerms?: string,
+    @Query('hasGstin') hasGstin?: string,
+    @Query('outstandingMin') outstandingMin?: string,
+    @Query('outstandingMax') outstandingMax?: string,
   ) {
     const effectiveBranchId = req.user.branchId ?? branchId ?? undefined;
-    return this.suppliersService.findAll(q, effectiveBranchId);
+    const skipNum = skip !== undefined ? Number(skip) : undefined;
+    const takeNum = take !== undefined ? Number(take) : undefined;
+
+    const parseBool = (v?: string): boolean | undefined =>
+      v === 'true' ? true : v === 'false' ? false : undefined;
+    const parseNum = (v?: string): number | undefined => {
+      if (v === undefined || v === '') return undefined;
+      const n = Number(v);
+      return Number.isFinite(n) ? n : undefined;
+    };
+
+    const filters = {
+      isActive: parseBool(isActive),
+      paymentTerms: paymentTerms && paymentTerms !== 'all' ? paymentTerms : undefined,
+      hasGstin: parseBool(hasGstin),
+      outstandingMin: parseNum(outstandingMin),
+      outstandingMax: parseNum(outstandingMax),
+    };
+
+    return this.suppliersService.findAll(
+      q,
+      effectiveBranchId,
+      Number.isFinite(skipNum) ? skipNum : undefined,
+      Number.isFinite(takeNum) ? takeNum : undefined,
+      filters,
+    );
   }
 
   @Get(':id')

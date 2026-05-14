@@ -145,7 +145,19 @@ export class SuppliersService {
     return { createdCount, skippedCount, errors };
   }
 
-  findAll(query?: string, branchId?: string) {
+  async findAll(
+    query?: string,
+    branchId?: string,
+    skip?: number,
+    take?: number,
+    filters?: {
+      isActive?: boolean;
+      paymentTerms?: string;
+      hasGstin?: boolean;
+      outstandingMin?: number;
+      outstandingMax?: number;
+    },
+  ) {
     const conditions: Prisma.SupplierWhereInput[] = [];
 
     // Branch filter: include the requested branch + global (null) suppliers
@@ -166,16 +178,73 @@ export class SuppliersService {
       });
     }
 
+    if (filters) {
+      if (typeof filters.isActive === 'boolean') {
+        conditions.push({ isActive: filters.isActive });
+      }
+      if (filters.paymentTerms) {
+        // Prisma accepts the string value of the enum directly.
+        conditions.push({ paymentTerms: filters.paymentTerms as any });
+      }
+      if (typeof filters.hasGstin === 'boolean') {
+        conditions.push(
+          filters.hasGstin
+            ? { NOT: [{ gstin: '' }, { gstin: null as any }] }
+            : { OR: [{ gstin: '' }, { gstin: null as any }] },
+        );
+      }
+      if (
+        typeof filters.outstandingMin === 'number' ||
+        typeof filters.outstandingMax === 'number'
+      ) {
+        const outstanding: any = {};
+        if (typeof filters.outstandingMin === 'number') outstanding.gte = filters.outstandingMin;
+        if (typeof filters.outstandingMax === 'number') outstanding.lte = filters.outstandingMax;
+        conditions.push({ currentOutstanding: outstanding });
+      }
+    }
+
     const where: Prisma.SupplierWhereInput =
       conditions.length > 0 ? { AND: conditions } : {};
-    return this.prisma.supplier.findMany({ where });
+
+    const paginated = typeof skip === 'number' && typeof take === 'number';
+    const safeTake = paginated ? Math.min(Math.max(take, 1), 100) : undefined;
+    const safeSkip = paginated ? Math.max(skip, 0) : undefined;
+
+    if (!paginated) {
+      return this.prisma.supplier.findMany({
+        where,
+        orderBy: { name: 'asc' },
+      });
+    }
+
+    const [data, total] = await Promise.all([
+      this.prisma.supplier.findMany({
+        where,
+        orderBy: { name: 'asc' },
+        skip: safeSkip,
+        take: safeTake,
+      }),
+      this.prisma.supplier.count({ where }),
+    ]);
+
+    return {
+      data,
+      total,
+      hasMore: (safeSkip ?? 0) + data.length < total,
+    };
   }
 
   async findOne(id: string, branchId?: string) {
     const supplier = await this.prisma.supplier.findUnique({
       where: { id },
       include: {
-        batches: true,
+        batches: {
+          // Include product name so the supplier-detail Batches tab can render
+          // it without a separate fetch / client-side join.
+          include: { product: { select: { name: true } } },
+          orderBy: { expiryDate: 'asc' },
+        },
         purchaseOrders: { take: 10, orderBy: { date: 'desc' } },
       },
     });

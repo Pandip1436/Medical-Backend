@@ -950,7 +950,17 @@ export class ReportsService {
 
   // ── Customer Ledger ────────────────────────────────────────────
   async getCustomerLedger(customerId: string, query: PeriodQuery & { branchId?: string }) {
-    const { from, to } = this.resolvePeriod(query);
+    // Custom period handling — `resolvePeriod()` defaults `from` to
+    // start-of-current-month when none is supplied, which silently truncates
+    // "All Time" requests. The detail-page Ledger tab needs true full-history,
+    // so we build the date predicate manually: omit it entirely when from/to
+    // are both unset.
+    const fromDate = query.from ? dayjs(query.from).startOf('day').toDate() : undefined;
+    const toDate = query.to ? dayjs(query.to).endOf('day').toDate() : undefined;
+    const dateFilter: { gte?: Date; lte?: Date } | undefined =
+      fromDate || toDate
+        ? { ...(fromDate ? { gte: fromDate } : {}), ...(toDate ? { lte: toDate } : {}) }
+        : undefined;
     const bFilter = this.branchFilter(query.branchId);
 
     // Reject the lookup if the customer belongs to a different branch — keeps
@@ -962,7 +972,7 @@ export class ReportsService {
     }
 
     const invoices = await this.prisma.invoice.findMany({
-      where: { customerId, date: { gte: from, lte: to }, ...bFilter },
+      where: { customerId, ...(dateFilter ? { date: dateFilter } : {}), ...bFilter },
       orderBy: { date: 'asc' },
       select: {
         id: true,
@@ -974,7 +984,7 @@ export class ReportsService {
       },
     });
     const creditNotes = await this.prisma.creditNote.findMany({
-      where: { customerId, date: { gte: from, lte: to }, ...bFilter },
+      where: { customerId, ...(dateFilter ? { date: dateFilter } : {}), ...bFilter },
       orderBy: { date: 'asc' },
     });
 
@@ -1018,6 +1028,19 @@ export class ReportsService {
 
     const totalDebit = entries.reduce((s, e) => s + e.debit, 0);
     const totalCredit = entries.reduce((s, e) => s + e.credit, 0);
+    // Total Returns isolated from Total Credit (which also includes payments)
+    // so the customer detail page can show a clean returns figure.
+    const totalReturns = creditNotes.reduce((s, cn) => s + Number(cn.totalAmount), 0);
+
+    // Active Quotations is a current snapshot, not a period stat — must not be
+    // date-filtered. Mirrors the Open POs fix on the supplier ledger.
+    const activeQuotationsCount = await this.prisma.quotation.count({
+      where: {
+        customerId,
+        ...bFilter,
+        status: { in: ['DRAFT', 'SENT'] },
+      },
+    });
 
     return {
       customer,
@@ -1027,13 +1050,23 @@ export class ReportsService {
         { label: 'Total Credit', value: this.inr(totalCredit) },
         { label: 'Closing Balance', value: this.inr(balance) },
         { label: 'Outstanding', value: this.inr(Number(customer.currentOutstanding)) },
+        { label: 'Total Sales', value: this.inr(totalDebit) },
+        { label: 'Total Returns', value: this.inr(totalReturns) },
+        { label: 'Active Quotations', value: String(activeQuotationsCount) },
       ],
     };
   }
 
   // ── Supplier Ledger ────────────────────────────────────────────
   async getSupplierLedger(supplierId: string, query: PeriodQuery & { branchId?: string }) {
-    const { from, to } = this.resolvePeriod(query);
+    // Mirror customer ledger: honour true "All Time" by omitting the date
+    // filter when neither from nor to is supplied.
+    const fromDate = query.from ? dayjs(query.from).startOf('day').toDate() : undefined;
+    const toDate = query.to ? dayjs(query.to).endOf('day').toDate() : undefined;
+    const dateFilter: { gte?: Date; lte?: Date } | undefined =
+      fromDate || toDate
+        ? { ...(fromDate ? { gte: fromDate } : {}), ...(toDate ? { lte: toDate } : {}) }
+        : undefined;
     const bFilter = this.branchFilter(query.branchId);
 
     // Same branch-scope check as customer ledger: reject if the supplier
@@ -1044,20 +1077,26 @@ export class ReportsService {
       return { supplier: null, tableData: [], kpis: [] };
     }
 
-    const orders = await this.prisma.purchaseOrder.findMany({
-      where: { supplierId, date: { gte: from, lte: to }, ...bFilter },
-      orderBy: { date: 'asc' },
-      select: { id: true, date: true, totalAmount: true, status: true, poNumber: true },
+    // "Open POs" is a current snapshot, not a period stat — keep it un-filtered
+    // by date. resolvePeriod() defaults `from` to start-of-current-month, so
+    // applying it here makes the count always-zero for any supplier whose POs
+    // pre-date this month.
+    const openPOsCount = await this.prisma.purchaseOrder.count({
+      where: {
+        supplierId,
+        ...bFilter,
+        status: { in: ['DRAFT', 'SENT', 'ACKNOWLEDGED', 'PARTIALLY_RECEIVED'] },
+      },
     });
 
     const grns = await this.prisma.gRN.findMany({
-      where: { supplierId, date: { gte: from, lte: to }, ...bFilter },
+      where: { supplierId, ...(dateFilter ? { date: dateFilter } : {}), ...bFilter },
       orderBy: { date: 'asc' },
       select: { id: true, date: true, totalAmount: true, grnNumber: true },
     });
 
     const purchaseReturns = await this.prisma.purchaseReturn.findMany({
-      where: { supplierId, createdAt: { gte: from, lte: to }, ...bFilter },
+      where: { supplierId, ...(dateFilter ? { createdAt: dateFilter } : {}), ...bFilter },
       orderBy: { createdAt: 'asc' },
       select: { id: true, createdAt: true, totalAmount: true, debitNoteNo: true },
     });
@@ -1091,7 +1130,6 @@ export class ReportsService {
 
     const totalPurchases = entries.reduce((s, e) => s + e.debit, 0);
     const totalReturns = entries.reduce((s, e) => s + e.credit, 0);
-    const openPOs = orders.filter((o) => o.status === 'DRAFT' || o.status === 'SENT' || o.status === 'ACKNOWLEDGED' || o.status === 'PARTIALLY_RECEIVED').length;
 
     return {
       supplier,
@@ -1100,7 +1138,7 @@ export class ReportsService {
         { label: 'Total Purchases', value: this.inr(totalPurchases) },
         { label: 'Total Returns', value: this.inr(totalReturns) },
         { label: 'Net Payable', value: this.inr(balance) },
-        { label: 'Open POs', value: String(openPOs) },
+        { label: 'Open POs', value: String(openPOsCount) },
       ],
     };
   }

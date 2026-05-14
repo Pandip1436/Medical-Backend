@@ -141,17 +141,56 @@ export class CustomersService {
     return { createdCount, skippedCount, errors };
   }
 
-  async findAll(query?: string, branchId?: string) {
+  async findAll(
+    query?: string,
+    branchId?: string,
+    skip?: number,
+    take?: number,
+    filters?: {
+      customerType?: 'RETAIL' | 'WHOLESALE' | 'DOCTOR';
+      hasOutstanding?: boolean;
+      hasGstin?: boolean;
+    },
+  ) {
     const where: any = {};
     if (branchId) where.branchId = branchId;
     if (query) {
+      // Match against name (case-insensitive), phone digits, or GSTIN. Typing a
+      // GSTIN into the search box should surface the right customer.
       where.OR = [
         { name: { contains: query, mode: 'insensitive' } },
         { phone: { contains: query } },
+        { gstin: { contains: query, mode: 'insensitive' } },
       ];
     }
-    const customers = await this.prisma.customer.findMany({
+
+    if (filters?.customerType) {
+      where.type = filters.customerType;
+    }
+    if (typeof filters?.hasOutstanding === 'boolean') {
+      where.currentOutstanding = filters.hasOutstanding
+        ? { gt: 0 }
+        : { lte: 0 };
+    }
+    if (typeof filters?.hasGstin === 'boolean') {
+      // Empty-string GSTIN is treated the same as null (legacy rows persist
+      // both). Use NOT/OR to capture either case correctly.
+      where.AND = [
+        ...(where.AND ?? []),
+        filters.hasGstin
+          ? { NOT: [{ gstin: '' }, { gstin: null as any }] }
+          : { OR: [{ gstin: '' }, { gstin: null as any }] },
+      ];
+    }
+
+    const paginated = typeof skip === 'number' && typeof take === 'number';
+    // Clamp take to a sane max so a rogue caller can't request the universe.
+    const safeTake = paginated ? Math.min(Math.max(take, 1), 100) : undefined;
+    const safeSkip = paginated ? Math.max(skip, 0) : undefined;
+
+    const findArgs: any = {
       where,
+      orderBy: { name: 'asc' as const },
       include: {
         _count: {
           select: {
@@ -159,12 +198,54 @@ export class CustomersService {
           },
         },
       },
-    });
-    // Flatten _count into a plain pendingCreditCount field
-    return customers.map(({ _count, ...c }) => ({
+    };
+    if (paginated) {
+      findArgs.skip = safeSkip;
+      findArgs.take = safeTake;
+    }
+
+    const [customers, total] = paginated
+      ? await Promise.all([
+          this.prisma.customer.findMany(findArgs),
+          this.prisma.customer.count({ where }),
+        ])
+      : [await this.prisma.customer.findMany(findArgs), undefined];
+
+    const flattened = (customers as Array<any>).map(({ _count, ...c }) => ({
       ...c,
       pendingCreditCount: _count.invoices,
     }));
+
+    // Legacy callers (no pagination params) keep the plain-array contract.
+    if (!paginated) return flattened;
+
+    return {
+      data: flattened,
+      total: total ?? 0,
+      hasMore: (safeSkip ?? 0) + flattened.length < (total ?? 0),
+    };
+  }
+
+  // Global summary across all customers (optionally scoped to a branch). Kept
+  // unfiltered intentionally — these power top-of-page stat cards that should
+  // remain stable as the user types in the search box below.
+  async summary(branchId?: string) {
+    const where: any = branchId ? { branchId } : {};
+    const [total, withOutstanding, outstandingAgg] = await Promise.all([
+      this.prisma.customer.count({ where }),
+      this.prisma.customer.count({
+        where: { ...where, currentOutstanding: { gt: 0 } },
+      }),
+      this.prisma.customer.aggregate({
+        where,
+        _sum: { currentOutstanding: true },
+      }),
+    ]);
+    return {
+      total,
+      withOutstanding,
+      totalOutstanding: Number(outstandingAgg._sum.currentOutstanding ?? 0),
+    };
   }
 
   async findOne(id: string, branchId?: string) {
@@ -220,7 +301,14 @@ export class CustomersService {
     return this.prisma.customer.delete({ where: { id } });
   }
 
-  async getOutstanding(branchId?: string) {
+  async getOutstanding(
+    branchId?: string,
+    filters?: {
+      q?: string;
+      bucket?: 'current' | '0-30' | '31-60' | '61-90' | '90+';
+      minOutstanding?: number;
+    },
+  ) {
     // Compute live from CREDIT/PARTIAL invoices — avoids stale currentOutstanding field
     const invoices = await this.prisma.invoice.findMany({
       where: {
@@ -261,7 +349,7 @@ export class CustomersService {
     }
 
     const now = Date.now();
-    const rows = Array.from(map.values()).map((entry) => {
+    let rows = Array.from(map.values()).map((entry) => {
       let current = 0, d0_30 = 0, d31_60 = 0, d61_90 = 0, d90plus = 0;
       for (const inv of entry.invoices) {
         const due = Number(inv.grandTotal) - Number(inv.amountPaid);
@@ -285,12 +373,69 @@ export class CustomersService {
       };
     });
 
+    // Apply post-aggregation filters (cheap — the row set is small).
+    if (filters?.q) {
+      const q = filters.q.toLowerCase();
+      rows = rows.filter((r) => r.customer.toLowerCase().includes(q));
+    }
+    if (filters?.bucket) {
+      rows = rows.filter((r) => r[filters.bucket!] > 0);
+    }
+    if (typeof filters?.minOutstanding === 'number' && filters.minOutstanding > 0) {
+      rows = rows.filter((r) => r.outstanding >= filters.minOutstanding!);
+    }
+
     rows.sort((a, b) => b.outstanding - a.outstanding);
 
     return {
       total: rows.reduce((s, r) => s + r.outstanding, 0),
       rows,
     };
+  }
+
+  // Per-customer drill-down for the OutstandingPage drawer: returns each
+  // unpaid invoice with its balance + age in days. Sorted oldest-first to
+  // match the FIFO allocation order used by recordPayment().
+  async getCustomerOutstandingInvoices(customerId: string, branchId?: string) {
+    const invoices = await this.prisma.invoice.findMany({
+      where: {
+        customerId,
+        status: { in: ['CREDIT', 'PARTIAL'] },
+        ...(branchId ? { branchId } : {}),
+      },
+      select: {
+        id: true,
+        invoiceNumber: true,
+        date: true,
+        grandTotal: true,
+        amountPaid: true,
+        status: true,
+      },
+      orderBy: { date: 'asc' },
+    });
+
+    const now = Date.now();
+    return invoices
+      .map((inv) => {
+        const grandTotal = Number(inv.grandTotal);
+        const amountPaid = Number(inv.amountPaid);
+        const balance = grandTotal - amountPaid;
+        const daysOverdue = Math.max(
+          0,
+          Math.floor((now - new Date(inv.date).getTime()) / 86400000),
+        );
+        return {
+          id: inv.id,
+          invoiceNumber: inv.invoiceNumber,
+          date: inv.date,
+          grandTotal,
+          amountPaid,
+          balance,
+          status: inv.status,
+          daysOverdue,
+        };
+      })
+      .filter((inv) => inv.balance > 0);
   }
 
   // Allocates payment FIFO across oldest CREDIT/PARTIAL invoices,

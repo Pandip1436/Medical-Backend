@@ -28,6 +28,8 @@ import { CategoriesModule } from './categories/categories.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { RemindersModule } from './reminders/reminders.module';
 import { ApprovalsModule } from './approvals/approvals.module';
+import { SupplierActivitiesModule } from './supplier-activities/supplier-activities.module';
+import { CustomerActivitiesModule } from './customer-activities/customer-activities.module';
 import { CommonServicesModule } from './common/services/common-services.module';
 import { ServeStaticModule } from '@nestjs/serve-static';
 import { join } from 'path';
@@ -64,6 +66,8 @@ import { join } from 'path';
     NotificationsModule,
     RemindersModule,
     ApprovalsModule,
+    SupplierActivitiesModule,
+    CustomerActivitiesModule,
   ],
   controllers: [AppController],
   providers: [

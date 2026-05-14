@@ -46,6 +46,19 @@ export class RemindersController {
     return this.service.create({ ...dto, branchId: req.user.branchId ?? dto.branchId });
   }
 
+  @Post('bulk')
+  createBulk(
+    @Body() body: { customerIds: string[]; title?: string; dayOfMonth?: number },
+    @Request() req: any,
+  ) {
+    const customerIds = Array.isArray(body?.customerIds) ? body.customerIds.filter(Boolean) : [];
+    return this.service.createBulk(customerIds, {
+      title: body?.title,
+      dayOfMonth: body?.dayOfMonth,
+      branchId: req.user.branchId ?? undefined,
+    });
+  }
+
   @Patch(':id')
   update(@Param('id') id: string, @Body() dto: UpdateReminderDto, @Request() req: any) {
     return this.service.update(id, dto, req.user.branchId);

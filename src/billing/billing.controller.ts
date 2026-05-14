@@ -29,15 +29,55 @@ export class BillingController {
   @ApiQuery({ name: 'customerId', required: false })
   @ApiQuery({ name: 'branchId', required: false })
   @ApiQuery({ name: 'type', required: false, description: 'INVOICE or QUOTATION' })
+  @ApiQuery({ name: 'status', required: false })
+  @ApiQuery({ name: 'paymentMode', required: false })
+  @ApiQuery({ name: 'salespersonId', required: false })
+  @ApiQuery({ name: 'from', required: false, description: 'ISO date (inclusive)' })
+  @ApiQuery({ name: 'to', required: false, description: 'ISO date (inclusive)' })
+  @ApiQuery({ name: 'skip', required: false, type: Number })
+  @ApiQuery({ name: 'take', required: false, type: Number })
   findAll(
     @Request() req: any,
     @Query('q') q?: string,
     @Query('customerId') customerId?: string,
     @Query('branchId') branchId?: string,
     @Query('type') type?: string,
+    @Query('status') status?: string,
+    @Query('paymentMode') paymentMode?: string,
+    @Query('salespersonId') salespersonId?: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+    @Query('skip') skip?: string,
+    @Query('take') take?: string,
   ) {
     const effectiveBranchId = req.user.branchId ?? branchId;
-    return this.billingService.findAll(q, customerId, effectiveBranchId, type);
+    const skipNum = skip !== undefined ? Number(skip) : undefined;
+    const takeNum = take !== undefined ? Number(take) : undefined;
+    return this.billingService.findAll(
+      q,
+      customerId,
+      effectiveBranchId,
+      type,
+      {
+        status: status || undefined,
+        paymentMode: paymentMode || undefined,
+        salespersonId: salespersonId || undefined,
+        from: from || undefined,
+        to: to || undefined,
+      },
+      Number.isFinite(skipNum) ? skipNum : undefined,
+      Number.isFinite(takeNum) ? takeNum : undefined,
+    );
+  }
+
+  // NOTE: keep this above `@Get(':id')` so 'summary' doesn't get captured as an id.
+  @Get('summary')
+  @Roles('ADMIN', 'PHARMACIST', 'ACCOUNTANT', 'SALESPERSON')
+  @ApiOperation({ summary: 'Global invoice counts + totals (for stat cards)' })
+  @ApiQuery({ name: 'branchId', required: false })
+  summary(@Request() req: any, @Query('branchId') branchId?: string) {
+    const effectiveBranchId = req.user.branchId ?? branchId;
+    return this.billingService.summary(effectiveBranchId);
   }
 
   @Get(':id')
