@@ -194,7 +194,7 @@ export class CustomersService {
       include: {
         _count: {
           select: {
-            invoices: { where: { status: { in: ['CREDIT', 'PARTIAL'] } } },
+            invoices: { where: { status: { in: ['UNPAID', 'PARTIAL'] } } },
           },
         },
       },
@@ -309,10 +309,10 @@ export class CustomersService {
       minOutstanding?: number;
     },
   ) {
-    // Compute live from CREDIT/PARTIAL invoices — avoids stale currentOutstanding field
+    // Compute live from UNPAID/PARTIAL invoices — avoids stale currentOutstanding field
     const invoices = await this.prisma.invoice.findMany({
       where: {
-        status: { in: ['CREDIT', 'PARTIAL'] },
+        status: { in: ['UNPAID', 'PARTIAL'] },
         ...(branchId ? { branchId } : {}),
       },
       select: {
@@ -400,7 +400,7 @@ export class CustomersService {
     const invoices = await this.prisma.invoice.findMany({
       where: {
         customerId,
-        status: { in: ['CREDIT', 'PARTIAL'] },
+        status: { in: ['UNPAID', 'PARTIAL'] },
         ...(branchId ? { branchId } : {}),
       },
       select: {
@@ -438,7 +438,7 @@ export class CustomersService {
       .filter((inv) => inv.balance > 0);
   }
 
-  // Allocates payment FIFO across oldest CREDIT/PARTIAL invoices,
+  // Allocates payment FIFO across oldest UNPAID/PARTIAL invoices,
   // creates Payment records, and updates invoice statuses + customer outstanding.
   async recordPayment(
     id: string,
@@ -455,7 +455,7 @@ export class CustomersService {
     const openInvoices = await this.prisma.invoice.findMany({
       where: {
         customerId: id,
-        status: { in: ['CREDIT', 'PARTIAL'] },
+        status: { in: ['UNPAID', 'PARTIAL'] },
       },
       orderBy: { date: 'asc' },
     });

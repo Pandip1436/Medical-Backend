@@ -316,7 +316,7 @@ export class NotificationsService {
   async generatePaymentDueAlerts(branchId?: string) {
     const invoices = await this.prisma.invoice.findMany({
       where: {
-        status: { in: ['CREDIT', 'PARTIAL'] },
+        status: { in: ['UNPAID', 'PARTIAL'] },
         ...(branchId ? { branchId } : {}),
       },
       select: {

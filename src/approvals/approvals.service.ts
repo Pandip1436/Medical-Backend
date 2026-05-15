@@ -249,7 +249,7 @@ export class ApprovalsService {
           }
           await tx.invoice.update({
             where: { id: refId },
-            data: { status: 'CREDIT' },
+            data: { status: 'UNPAID' },
           });
           if (invoice.customerId) {
             await tx.customer.update({

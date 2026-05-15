@@ -178,7 +178,7 @@ export class BillingService {
         const pendingCount = await tx.invoice.count({
           where: {
             customerId: createInvoiceDto.customerId,
-            status: { in: ['CREDIT', 'PARTIAL'] },
+            status: { in: ['UNPAID', 'PARTIAL'] },
           },
         });
         if (pendingCount >= maxPendingCredit) {
@@ -457,7 +457,7 @@ export class BillingService {
       }),
       this.prisma.invoice.count({ where: { ...base, status: 'PAID' } }),
       this.prisma.invoice.findMany({
-        where: { ...base, status: { in: ['CREDIT', 'PARTIAL'] } },
+        where: { ...base, status: { in: ['UNPAID', 'PARTIAL'] } },
         select: { grandTotal: true, amountPaid: true },
       }),
     ]);
@@ -616,11 +616,11 @@ export class BillingService {
 
   // Finalize a draft into a real invoice. Runs the side effects that create()
   // skipped: prescription check, stock deduction, ledger, loyalty, notification.
-  // The DTO's status must be a final state (PAID / CREDIT / PARTIAL) — drafts
+  // The DTO's status must be a final state (PAID / UNPAID / PARTIAL) — drafts
   // can't "finalize" themselves into another draft.
   async finalizeDraft(id: string, dto: CreateInvoiceDto, branchId?: string) {
     if (dto.status === 'DRAFT') {
-      throw new BadRequestException('Finalize requires a non-DRAFT status (PAID / CREDIT / PARTIAL).');
+      throw new BadRequestException('Finalize requires a non-DRAFT status (PAID / UNPAID / PARTIAL).');
     }
     return this.prisma.$transaction(async (tx) => {
       const existing = await this._verifyDraft(tx, id, branchId);

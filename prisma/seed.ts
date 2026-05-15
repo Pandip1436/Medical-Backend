@@ -388,9 +388,9 @@ async function main() {
 
   // PAID invoices — retail sales for past 3 months
   const hqInvoiceData = [
-    { days: 90, amount: 8500, cust: cust1, mode: PaymentMode.CREDIT, status: InvoiceStatus.CREDIT, amountPaid: 0, product: products[0], batch: hqBatch1, qty: 20 },
+    { days: 90, amount: 8500, cust: cust1, mode: PaymentMode.CREDIT, status: InvoiceStatus.UNPAID, amountPaid: 0, product: products[0], batch: hqBatch1, qty: 20 },
     { days: 75, amount: 12400, cust: cust1, mode: PaymentMode.CASH, status: InvoiceStatus.PAID, amountPaid: 12400, product: products[4], batch: hqBatch3, qty: 50 },
-    { days: 60, amount: 63000, cust: cust1, mode: PaymentMode.CREDIT, status: InvoiceStatus.CREDIT, amountPaid: 0, product: products[3], batch: hqBatch2, qty: 30 },
+    { days: 60, amount: 63000, cust: cust1, mode: PaymentMode.CREDIT, status: InvoiceStatus.UNPAID, amountPaid: 0, product: products[3], batch: hqBatch2, qty: 30 },
     { days: 45, amount: 9800, cust: cust3, mode: PaymentMode.CASH, status: InvoiceStatus.PAID, amountPaid: 9800, product: products[0], batch: hqBatch1, qty: 30 },
     { days: 30, amount: 5600, cust: cust4, mode: PaymentMode.UPI, status: InvoiceStatus.PAID, amountPaid: 5600, product: products[4], batch: hqBatch3, qty: 25 },
     { days: 20, amount: 42000, cust: cust1, mode: PaymentMode.CREDIT, status: InvoiceStatus.PARTIAL, amountPaid: 20000, product: products[3], batch: hqBatch2, qty: 20 },
@@ -399,7 +399,7 @@ async function main() {
     { days: 5, amount: 2800, cust: cust4, mode: PaymentMode.UPI, status: InvoiceStatus.PAID, amountPaid: 2800, product: products[0], batch: hqBatch1, qty: 8 },
     { days: 2, amount: 6800, cust: cust4, mode: PaymentMode.CASH, status: InvoiceStatus.PAID, amountPaid: 6800, product: products[4], batch: hqBatch3, qty: 30 },
     { days: 1, amount: 9600, cust: cust3, mode: PaymentMode.UPI, status: InvoiceStatus.PAID, amountPaid: 9600, product: products[0], batch: hqBatch1, qty: 28 },
-    { days: 0, amount: 21000, cust: cust1, mode: PaymentMode.CREDIT, status: InvoiceStatus.CREDIT, amountPaid: 0, product: products[3], batch: hqBatch2, qty: 10 },
+    { days: 0, amount: 21000, cust: cust1, mode: PaymentMode.CREDIT, status: InvoiceStatus.UNPAID, amountPaid: 0, product: products[3], batch: hqBatch2, qty: 10 },
   ];
 
   for (let i = 0; i < hqInvoiceData.length; i++) {
@@ -617,16 +617,16 @@ async function main() {
   // 5c. Invoices → Chennai
   console.log('  🧾 Creating Chennai invoices...');
   const br1InvoiceData = [
-    { days: 80, amount: 94500, cust: cust2, mode: PaymentMode.CREDIT, status: InvoiceStatus.CREDIT, amountPaid: 0, product: products[9], batch: br1Batch3, qty: 4 },
+    { days: 80, amount: 94500, cust: cust2, mode: PaymentMode.CREDIT, status: InvoiceStatus.UNPAID, amountPaid: 0, product: products[9], batch: br1Batch3, qty: 4 },
     { days: 60, amount: 42000, cust: cust2, mode: PaymentMode.CREDIT, status: InvoiceStatus.PARTIAL, amountPaid: 20000, product: products[8], batch: br1Batch2, qty: 5 },
     { days: 45, amount: 22500, cust: cust2, mode: PaymentMode.CASH, status: InvoiceStatus.PAID, amountPaid: 22500, product: products[6], batch: br1Batch1, qty: 50 },
     { days: 30, amount: 8500, cust: cust5, mode: PaymentMode.UPI, status: InvoiceStatus.PAID, amountPaid: 8500, product: products[6], batch: br1Batch1, qty: 20 },
-    { days: 20, amount: 17000, cust: cust2, mode: PaymentMode.CREDIT, status: InvoiceStatus.CREDIT, amountPaid: 0, product: products[6], batch: br1Batch1, qty: 40 },
-    { days: 14, amount: 125000, cust: cust2, mode: PaymentMode.CREDIT, status: InvoiceStatus.CREDIT, amountPaid: 0, product: products[9], batch: br1Batch3, qty: 5 },
+    { days: 20, amount: 17000, cust: cust2, mode: PaymentMode.CREDIT, status: InvoiceStatus.UNPAID, amountPaid: 0, product: products[6], batch: br1Batch1, qty: 40 },
+    { days: 14, amount: 125000, cust: cust2, mode: PaymentMode.CREDIT, status: InvoiceStatus.UNPAID, amountPaid: 0, product: products[9], batch: br1Batch3, qty: 5 },
     { days: 10, amount: 4500, cust: cust5, mode: PaymentMode.CASH, status: InvoiceStatus.PAID, amountPaid: 4500, product: products[6], batch: br1Batch1, qty: 10 },
     { days: 7, amount: 34000, cust: cust2, mode: PaymentMode.CARD, status: InvoiceStatus.PAID, amountPaid: 34000, product: products[8], batch: br1Batch2, qty: 4 },
     { days: 3, amount: 9000, cust: cust5, mode: PaymentMode.UPI, status: InvoiceStatus.PAID, amountPaid: 9000, product: products[6], batch: br1Batch1, qty: 20 },
-    { days: 1, amount: 47500, cust: cust2, mode: PaymentMode.CREDIT, status: InvoiceStatus.CREDIT, amountPaid: 0, product: products[9], batch: br1Batch3, qty: 2 },
+    { days: 1, amount: 47500, cust: cust2, mode: PaymentMode.CREDIT, status: InvoiceStatus.UNPAID, amountPaid: 0, product: products[9], batch: br1Batch3, qty: 2 },
   ];
 
   for (let i = 0; i < br1InvoiceData.length; i++) {
@@ -758,10 +758,10 @@ async function main() {
 
   console.log('  ✅ Chennai: 2 POs, 1 GRN, 10 invoices, 1 credit note, 1 purchase return, 8 expenses\n');
 
-  // ── 6. UPDATE currentOutstanding from actual CREDIT/PARTIAL invoices ──────────
+  // ── 6. UPDATE currentOutstanding from actual UNPAID/PARTIAL invoices ──────────
   console.log('💰 Updating customer outstanding balances...');
   const openInvoices = await prisma.invoice.findMany({
-    where: { status: { in: ['CREDIT', 'PARTIAL'] } },
+    where: { status: { in: ['UNPAID', 'PARTIAL'] } },
     select: { customerId: true, grandTotal: true, amountPaid: true },
   });
   const outstandingMap = new Map<string, number>();

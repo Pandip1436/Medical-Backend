@@ -96,7 +96,7 @@ export class ReportsService {
     const overdueInvoices = await this.prisma.invoice.findMany({
       where: {
         paymentMode: { in: ['CREDIT', 'SPLIT'] },
-        status: { in: ['CREDIT', 'PARTIAL'] },
+        status: { in: ['UNPAID', 'PARTIAL'] },
         date: { lte: overdueCutoff },
         ...bFilter,
       },
@@ -1469,7 +1469,7 @@ export class ReportsService {
           where: {
             customerId: c.id,
             paymentMode: { in: ['CREDIT', 'SPLIT'] },
-            status: { in: ['CREDIT', 'PARTIAL'] },
+            status: { in: ['UNPAID', 'PARTIAL'] },
             ...(branchId ? { branchId } : {}),
           },
           orderBy: { date: 'asc' },

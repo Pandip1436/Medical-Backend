@@ -32,7 +32,7 @@ async function main() {
     const invoices = await prisma.invoice.findMany({
       where: {
         customerId: c.id,
-        status: { in: ['CREDIT', 'PARTIAL'] },
+        status: { in: ['UNPAID', 'PARTIAL'] },
       },
       select: { grandTotal: true, amountPaid: true },
     });

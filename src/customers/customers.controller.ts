@@ -165,7 +165,7 @@ export class CustomersController {
   @Roles('ADMIN', 'PHARMACIST', 'ACCOUNTANT')
   @ApiOperation({
     summary:
-      "Get a single customer's open invoices (CREDIT / PARTIAL) — oldest first, with daysOverdue",
+      "Get a single customer's open invoices (UNPAID / PARTIAL) — oldest first, with daysOverdue",
   })
   getCustomerOutstandingInvoices(
     @Param('id') id: string,
