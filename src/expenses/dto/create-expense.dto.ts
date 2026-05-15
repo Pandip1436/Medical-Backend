@@ -9,6 +9,7 @@ import {
   ValidatorConstraint,
   type ValidatorConstraintInterface,
 } from 'class-validator';
+import { Type } from 'class-transformer';
 
 // Reject expense entries dated in the future. Fat-fingers (e.g. 2099-01-01)
 // would land in P&L and silently distort future periods. We allow a small
@@ -43,6 +44,9 @@ export class CreateExpenseDto {
   @IsNotEmpty()
   description: string;
 
+  // multipart/form-data submissions send amount as a string; coerce to number
+  // so validation works against either JSON or FormData payloads.
+  @Type(() => Number)
   @IsNumber()
   // Reject zero/negative amounts — phantom 0-rupee expenses pollute reports
   // and make reconciliation harder.

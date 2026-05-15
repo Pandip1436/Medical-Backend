@@ -71,6 +71,7 @@ export class ReportsService {
       select: { id: true, name: true, packSize: true, totalStock: true, minStock: true, reorderQty: true },
     });
     const lowStock = products.filter((p) => p.totalStock <= p.minStock);
+    const outOfStockCount = products.filter((p) => p.totalStock <= 0).length;
     const lowStockItems = lowStock
       .map((p) => ({
         id: p.id,
@@ -151,6 +152,7 @@ export class ReportsService {
       totalOutstanding: outstanding._sum.currentOutstanding || 0,
       expiringBatchesCount: expiryCount,
       lowStockAlertsCount: lowStock.length,
+      outOfStockCount,
       totalProducts,
       recentInvoices,
       lowStockItems,
@@ -961,6 +963,7 @@ export class ReportsService {
       description: `${e.category}: ${e.description}`,
       amount: Number(e.amount),
       type: 'PAYMENT' as const,
+      receiptImage: e.receiptImage,
     }));
 
     const totalReceipts = receipts.reduce((s, r) => s + r.amount, 0);
