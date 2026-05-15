@@ -44,6 +44,8 @@ export class QuotationsController {
     @Query('amountMin') amountMin?: number,
     @Query('amountMax') amountMax?: number,
     @Query('branchId') branchId?: string,
+    @Query('customerId') customerId?: string,
+    @Query('customerPhone') customerPhone?: string,
   ) {
     const effectiveBranchId = req.user.branchId ?? branchId ?? undefined;
     return this.quotationsService.findAll({
@@ -54,6 +56,8 @@ export class QuotationsController {
       amountMin,
       amountMax,
       branchId: effectiveBranchId,
+      customerId,
+      customerPhone,
     });
   }
 

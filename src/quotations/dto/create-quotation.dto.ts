@@ -1,4 +1,4 @@
-import { IsString, IsNotEmpty, IsNumber, Min, IsOptional, ValidateNested, ArrayMinSize, IsDateString } from 'class-validator';
+import { IsString, IsNotEmpty, IsNumber, Min, IsOptional, ValidateNested, ArrayMinSize, IsDateString, Matches } from 'class-validator';
 import { Type } from 'class-transformer';
 
 export class CreateQuotationItemDto {
@@ -52,6 +52,11 @@ export class CreateQuotationDto {
   @IsNotEmpty()
   customerName: string;
 
+  @IsString()
+  @IsOptional()
+  @Matches(/^\d{10}$/, { message: 'Phone must be exactly 10 digits' })
+  customerPhone?: string;
+
   @ValidateNested({ each: true })
   @Type(() => CreateQuotationItemDto)
   @ArrayMinSize(1)
@@ -68,6 +73,11 @@ export class CreateQuotationDto {
   @IsNumber()
   @Min(0)
   sgst: number;
+
+  @IsNumber()
+  @Min(0)
+  @IsOptional()
+  deliveryCharge?: number;
 
   @IsNumber()
   @Min(0)

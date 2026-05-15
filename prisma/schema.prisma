@@ -3,8 +3,14 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  // Neon's connection pooler runs in transaction mode and doesn't hold
+  // session-level advisory locks. Prisma uses an advisory lock during
+  // `migrate deploy`/`migrate dev`, so we point those commands at the
+  // non-pooler hostname via DIRECT_URL. Runtime traffic still uses the
+  // pooled DATABASE_URL.
+  directUrl = env("DIRECT_URL")
 }
 
 // ── Branch / Location ─────────────────────────────────────────
@@ -405,6 +411,7 @@ model Invoice {
   cgst            Decimal
   sgst            Decimal
   igst            Decimal       @default(0)
+  deliveryCharge  Decimal       @default(0)
   roundOff        Decimal       @default(0)
   grandTotal      Decimal
   paymentMode     PaymentMode
@@ -740,10 +747,12 @@ model Quotation {
   customerId      String?
   customer        Customer?       @relation(fields: [customerId], references: [id])
   customerName    String
+  customerPhone   String?
   items           QuotationItem[]
   subtotal        Decimal         @default(0)
   cgst            Decimal         @default(0)
   sgst            Decimal         @default(0)
+  deliveryCharge  Decimal         @default(0)
   total           Decimal
   validUntil      DateTime?
   notes           String?

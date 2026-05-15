@@ -237,6 +237,8 @@ export class ProductsService {
         { name: { contains: query, mode: 'insensitive' } },
         { genericName: { contains: query, mode: 'insensitive' } },
         { manufacturer: { contains: query, mode: 'insensitive' } },
+        { hsnCode: { contains: query, mode: 'insensitive' } },
+        { barcode: { contains: query, mode: 'insensitive' } },
       ];
     }
     if (categoryId) where.categoryId = categoryId;
@@ -245,11 +247,13 @@ export class ProductsService {
     const include = { batches: true, category: true };
 
     if (take !== undefined) {
+      const safeTake = Math.min(Math.max(0, take), 100);
+      const safeSkip = Math.max(0, skip);
       const [data, total] = await Promise.all([
-        this.prisma.product.findMany({ where, include, skip, take, orderBy: { name: 'asc' } }),
+        this.prisma.product.findMany({ where, include, skip: safeSkip, take: safeTake, orderBy: { name: 'asc' } }),
         this.prisma.product.count({ where }),
       ]);
-      return { data, total };
+      return { data, total, hasMore: safeSkip + data.length < total };
     }
 
     return this.prisma.product.findMany({ where, include, orderBy: { name: 'asc' } });

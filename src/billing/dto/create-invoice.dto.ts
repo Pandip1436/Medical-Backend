@@ -57,6 +57,11 @@ export class CreateInvoiceDto {
   igst?: number;
 
   @IsNumber()
+  @Min(0)
+  @IsOptional()
+  deliveryCharge?: number;
+
+  @IsNumber()
   roundOff: number;
 
   @IsNumber()

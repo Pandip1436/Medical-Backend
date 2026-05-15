@@ -28,9 +28,11 @@ export class QuotationsService {
           branchId,
           customerId: dto.customerId || null,
           customerName: dto.customerName,
+          customerPhone: dto.customerPhone || null,
           subtotal: dto.subtotal,
           cgst: dto.cgst,
           sgst: dto.sgst,
+          deliveryCharge: dto.deliveryCharge ?? 0,
           total: dto.total,
           validUntil: dto.validUntil ? new Date(dto.validUntil) : null,
           notes: dto.notes,
@@ -63,10 +65,22 @@ export class QuotationsService {
     amountMin?: number;
     amountMax?: number;
     branchId?: string;
+    customerId?: string;
+    customerPhone?: string;
   }) {
     const where: Prisma.QuotationWhereInput = {};
 
     if (filters.branchId) where.branchId = filters.branchId;
+
+    // Customer scoping: match by id OR phone. This lets us also surface
+    // quotations originally created with a lightweight (no-id) customer
+    // once the same phone is later promoted into a real Customer record.
+    if (filters.customerId || filters.customerPhone) {
+      const customerOr: Prisma.QuotationWhereInput[] = [];
+      if (filters.customerId) customerOr.push({ customerId: filters.customerId });
+      if (filters.customerPhone) customerOr.push({ customerPhone: filters.customerPhone });
+      where.AND = [{ OR: customerOr }];
+    }
 
     if (filters.q) {
       where.OR = [

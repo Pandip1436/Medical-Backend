@@ -45,7 +45,13 @@ export class PrescriptionsController {
       new ParseFilePipe({
         validators: [
           new MaxFileSizeValidator({ maxSize: 5 * 1024 * 1024 }), // 5 MB
-          new FileTypeValidator({ fileType: /(jpg|jpeg|png|webp|pdf)/ }),
+          // skipMagicNumbersValidation lets the regex test the mimetype string
+          // directly (image/png, application/pdf, etc.) without magic-byte
+          // sniffing — which was rejecting valid PNGs in some browsers.
+          new FileTypeValidator({
+            fileType: /^(image\/(jpe?g|png|webp)|application\/pdf)$/,
+            skipMagicNumbersValidation: true,
+          }),
         ],
       }),
     )
