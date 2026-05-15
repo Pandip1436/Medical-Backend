@@ -164,10 +164,20 @@ export class NotificationsService {
         // Include products for this branch AND products with no branch assigned
         ...(branchId ? { OR: [{ branchId }, { branchId: null }] } : {}),
       },
-      select: { id: true, name: true, totalStock: true, minStock: true, branchId: true },
+      select: {
+        id: true, name: true, totalStock: true, minStock: true, branchId: true,
+        // Used to suppress alerts for placeholder products that have never
+        // been stocked — see filter below.
+        _count: { select: { batches: true } },
+      },
     });
 
     const lowStock = products.filter((p) => {
+      // Skip catalog placeholders: a product with zero batches ever created
+      // has never been stocked, so "low stock" is meaningless noise. Once it
+      // receives its first GRN a batch record is created and it becomes
+      // eligible for alerts.
+      if (p._count.batches === 0) return false;
       if (p.totalStock <= 0) return true;
       if (p.minStock > 0 && p.totalStock <= p.minStock) return true;
       return false;
