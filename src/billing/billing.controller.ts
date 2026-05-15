@@ -94,6 +94,20 @@ export class BillingController {
     return this.billingService.convertToInvoice(id, req.user.branchId);
   }
 
+  @Patch(':id/save-draft')
+  @Roles('ADMIN', 'PHARMACIST')
+  @ApiOperation({ summary: 'Re-save a draft invoice without finalizing (no stock / ledger changes).' })
+  saveDraft(@Param('id') id: string, @Body() dto: CreateInvoiceDto, @Request() req: any) {
+    return this.billingService.saveDraft(id, dto, req.user.branchId);
+  }
+
+  @Patch(':id/finalize')
+  @Roles('ADMIN', 'PHARMACIST')
+  @ApiOperation({ summary: 'Finalize a draft invoice (deducts stock, updates ledger, awards loyalty).' })
+  finalizeDraft(@Param('id') id: string, @Body() dto: CreateInvoiceDto, @Request() req: any) {
+    return this.billingService.finalizeDraft(id, dto, req.user.branchId);
+  }
+
   @Patch(':id/collect-payment')
   @Roles('ADMIN', 'PHARMACIST', 'ACCOUNTANT')
   @ApiOperation({ summary: 'Collect payment against a credit/partial invoice' })

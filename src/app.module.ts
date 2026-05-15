@@ -30,6 +30,7 @@ import { RemindersModule } from './reminders/reminders.module';
 import { ApprovalsModule } from './approvals/approvals.module';
 import { SupplierActivitiesModule } from './supplier-activities/supplier-activities.module';
 import { CustomerActivitiesModule } from './customer-activities/customer-activities.module';
+import { SharedFilesModule } from './shared-files/shared-files.module';
 import { CommonServicesModule } from './common/services/common-services.module';
 import { ServeStaticModule } from '@nestjs/serve-static';
 import { join } from 'path';
@@ -68,6 +69,7 @@ import { join } from 'path';
     ApprovalsModule,
     SupplierActivitiesModule,
     CustomerActivitiesModule,
+    SharedFilesModule,
   ],
   controllers: [AppController],
   providers: [

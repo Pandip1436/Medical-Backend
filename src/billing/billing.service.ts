@@ -162,9 +162,15 @@ export class BillingService {
     // before a new credit sale needs admin approval. Set MAX_PENDING_CREDIT
     // in the environment to override; default 3.
     const maxPendingCredit = Number(process.env.MAX_PENDING_CREDIT ?? 3);
+    // User-initiated drafts skip every side effect — no stock deduction, no
+    // ledger update, no loyalty, no notifications, no credit-limit check.
+    // The draft only becomes "real" when finalizeDraft() runs.
+    const isDraft = createInvoiceDto.status === 'DRAFT';
     return this.prisma.$transaction(async (tx) => {
-      // 1. Credit limit check — behaviour differs by role
+      // 1. Credit limit check — behaviour differs by role. Skipped for drafts
+      // (a draft hasn't extended credit to anyone yet).
       if (
+        !isDraft &&
         createInvoiceDto.type === 'INVOICE' &&
         createInvoiceDto.paymentMode === 'CREDIT' &&
         createInvoiceDto.customerId
@@ -253,9 +259,10 @@ export class BillingService {
         branchId ?? null,
       );
 
-      // 3. Validate and deduct stock — only for actual invoices, not quotations.
-      // Quotations are non-binding offers; stock isn't reserved until conversion.
-      if (!isQuotation) {
+      // 3. Validate and deduct stock — only for actual invoices, not quotations,
+      // and not for drafts. Stock is reserved at finalization time for drafts,
+      // at conversion time for quotations.
+      if (!isQuotation && !isDraft) {
         // Block dispensing of Schedule H/H1/X drugs without a valid prescription
         // on file before we touch any stock. Wholesale customers are exempt.
         await this.assertPrescriptionForScheduledItems(
@@ -316,8 +323,9 @@ export class BillingService {
         }
       });
 
-      // 4. If CREDIT or SPLIT payment and customer exists, update outstanding ledger
-      if ((createInvoiceDto.paymentMode === 'CREDIT' || createInvoiceDto.paymentMode === 'SPLIT') && createInvoiceDto.customerId) {
+      // 4. If CREDIT or SPLIT payment and customer exists, update outstanding ledger.
+      // Skipped for drafts — outstanding isn't extended until the draft is finalized.
+      if (!isDraft && (createInvoiceDto.paymentMode === 'CREDIT' || createInvoiceDto.paymentMode === 'SPLIT') && createInvoiceDto.customerId) {
         const amountAddedToCredit = createInvoiceDto.grandTotal - createInvoiceDto.amountPaid;
 
         if (amountAddedToCredit > 0) {
@@ -328,8 +336,9 @@ export class BillingService {
         }
       }
 
-      // 5. Award loyalty points (1 point per ₹100) for non-quotation invoices
-      if (createInvoiceDto.type === 'INVOICE' && createInvoiceDto.customerId) {
+      // 5. Award loyalty points (1 point per ₹100) for non-quotation invoices.
+      // Skipped for drafts — points accrue at finalize-time.
+      if (!isDraft && createInvoiceDto.type === 'INVOICE' && createInvoiceDto.customerId) {
         const pointsEarned = Math.floor(Number(createInvoiceDto.grandTotal) / 100);
         if (pointsEarned > 0) {
           await tx.customer.update({
@@ -339,8 +348,9 @@ export class BillingService {
         }
       }
 
-      // 6. Auto-create a PAYMENT_DUE notification for new credit invoices
-      if (!isQuotation && createInvoiceDto.paymentMode === 'CREDIT') {
+      // 6. Auto-create a PAYMENT_DUE notification for new credit invoices.
+      // Skipped for drafts — nothing's due yet.
+      if (!isQuotation && !isDraft && createInvoiceDto.paymentMode === 'CREDIT') {
         const outstanding = Number(createInvoiceDto.grandTotal) - Number(createInvoiceDto.amountPaid);
         await tx.notification.create({
           data: {
@@ -530,6 +540,188 @@ export class BillingService {
     });
   }
 
+  // ── Draft lifecycle ──────────────────────────────────────────
+  // Drafts are user-initiated parked sales: created via POST /billing with
+  // status=DRAFT, re-saved via PATCH :id/save-draft, finalized via
+  // PATCH :id/finalize. Stock, ledger, loyalty, notifications only run at
+  // finalize time — see create() for the corresponding guards.
+
+  private async _verifyDraft(tx: Prisma.TransactionClient, id: string, branchId?: string) {
+    const existing = await tx.invoice.findUnique({ where: { id }, include: { items: true } });
+    if (!existing) throw new NotFoundException('Draft not found');
+    if (branchId && existing.branchId && existing.branchId !== branchId) {
+      throw new NotFoundException('Draft not found');
+    }
+    if (existing.status !== 'DRAFT') {
+      throw new BadRequestException(
+        `Invoice ${existing.invoiceNumber} is not a draft (current status: ${existing.status})`,
+      );
+    }
+    return existing;
+  }
+
+  // Re-save the draft's contents (items + totals + customer + payment intent
+  // selection) without finalizing. Status stays DRAFT. No side effects.
+  async saveDraft(id: string, dto: CreateInvoiceDto, branchId?: string) {
+    return this.prisma.$transaction(async (tx) => {
+      await this._verifyDraft(tx, id, branchId);
+
+      // Replace items wholesale — simpler than diffing and matches how the
+      // frontend sends the full item set every save.
+      await tx.invoiceItem.deleteMany({ where: { invoiceId: id } });
+
+      return tx.invoice.update({
+        where: { id },
+        data: {
+          billingType: dto.billingType,
+          customerId: dto.customerId ?? null,
+          customerName: dto.customerName,
+          doctorName: dto.doctorName ?? null,
+          salespersonId: dto.salespersonId ?? null,
+          salespersonName: dto.salespersonName ?? null,
+          subtotal: dto.subtotal,
+          productDiscount: dto.productDiscount ?? 0,
+          taxableAmount: dto.taxableAmount ?? dto.subtotal,
+          cgst: dto.cgst ?? 0,
+          sgst: dto.sgst ?? 0,
+          igst: dto.igst ?? 0,
+          roundOff: dto.roundOff ?? 0,
+          grandTotal: dto.grandTotal,
+          paymentMode: dto.paymentMode,
+          paymentDetails: dto.paymentDetails,
+          amountPaid: dto.amountPaid ?? 0,
+          changeReturned: dto.changeReturned ?? 0,
+          // Status pinned to DRAFT — finalization goes through finalizeDraft().
+          status: 'DRAFT',
+          items: {
+            create: dto.items.map((item) => ({
+              productId: item.productId,
+              productName: item.productName,
+              batchId: item.batchId,
+              batchNumber: item.batchNumber,
+              expiryDate: new Date(item.expiryDate),
+              quantity: item.quantity,
+              mrp: item.mrp,
+              rate: item.rate,
+              discountPercent: item.discountPercent ?? 0,
+              gstPercent: item.gstPercent ?? 0,
+              amount: item.amount,
+            })),
+          },
+        },
+        include: { items: true },
+      });
+    });
+  }
+
+  // Finalize a draft into a real invoice. Runs the side effects that create()
+  // skipped: prescription check, stock deduction, ledger, loyalty, notification.
+  // The DTO's status must be a final state (PAID / CREDIT / PARTIAL) — drafts
+  // can't "finalize" themselves into another draft.
+  async finalizeDraft(id: string, dto: CreateInvoiceDto, branchId?: string) {
+    if (dto.status === 'DRAFT') {
+      throw new BadRequestException('Finalize requires a non-DRAFT status (PAID / CREDIT / PARTIAL).');
+    }
+    return this.prisma.$transaction(async (tx) => {
+      const existing = await this._verifyDraft(tx, id, branchId);
+
+      // Prescription + stock — same validators a fresh invoice goes through.
+      await this.assertPrescriptionForScheduledItems(
+        tx,
+        dto.items,
+        dto.customerId ?? null,
+        dto.billingType,
+      );
+      for (const item of dto.items) {
+        await this.deductStockForItem(tx, item, branchId);
+      }
+
+      // Replace items, flip status, write final payment fields.
+      await tx.invoiceItem.deleteMany({ where: { invoiceId: id } });
+      const finalized = await tx.invoice.update({
+        where: { id },
+        data: {
+          billingType: dto.billingType,
+          customerId: dto.customerId ?? null,
+          customerName: dto.customerName,
+          doctorName: dto.doctorName ?? null,
+          salespersonId: dto.salespersonId ?? null,
+          salespersonName: dto.salespersonName ?? null,
+          subtotal: dto.subtotal,
+          productDiscount: dto.productDiscount ?? 0,
+          taxableAmount: dto.taxableAmount ?? dto.subtotal,
+          cgst: dto.cgst ?? 0,
+          sgst: dto.sgst ?? 0,
+          igst: dto.igst ?? 0,
+          roundOff: dto.roundOff ?? 0,
+          grandTotal: dto.grandTotal,
+          paymentMode: dto.paymentMode,
+          paymentDetails: dto.paymentDetails,
+          amountPaid: dto.amountPaid ?? 0,
+          changeReturned: dto.changeReturned ?? 0,
+          status: dto.status,
+          items: {
+            create: dto.items.map((item) => ({
+              productId: item.productId,
+              productName: item.productName,
+              batchId: item.batchId,
+              batchNumber: item.batchNumber,
+              expiryDate: new Date(item.expiryDate),
+              quantity: item.quantity,
+              mrp: item.mrp,
+              rate: item.rate,
+              discountPercent: item.discountPercent ?? 0,
+              gstPercent: item.gstPercent ?? 0,
+              amount: item.amount,
+            })),
+          },
+        },
+        include: { items: true },
+      });
+
+      // Outstanding ledger update — same logic as create()'s non-draft path.
+      if (
+        (dto.paymentMode === 'CREDIT' || dto.paymentMode === 'SPLIT') &&
+        dto.customerId
+      ) {
+        const owed = dto.grandTotal - (dto.amountPaid ?? 0);
+        if (owed > 0) {
+          await tx.customer.update({
+            where: { id: dto.customerId },
+            data: { currentOutstanding: { increment: owed } },
+          });
+        }
+      }
+
+      // Loyalty — 1 point per ₹100, only for type=INVOICE rows.
+      if (existing.type === 'INVOICE' && dto.customerId) {
+        const points = Math.floor(Number(dto.grandTotal) / 100);
+        if (points > 0) {
+          await tx.customer.update({
+            where: { id: dto.customerId },
+            data: { loyaltyPoints: { increment: points } },
+          });
+        }
+      }
+
+      // PAYMENT_DUE notification for credit finalizations.
+      if (existing.type === 'INVOICE' && dto.paymentMode === 'CREDIT') {
+        const outstanding = Number(dto.grandTotal) - Number(dto.amountPaid ?? 0);
+        await tx.notification.create({
+          data: {
+            type: 'PAYMENT_DUE',
+            title: 'Payment Due',
+            message: `Invoice ${existing.invoiceNumber} for ${dto.customerName} has ₹${outstanding.toFixed(2)} outstanding. [invoiceId:${existing.id}]`,
+            actionUrl: `/customers/invoices/detail?id=${existing.id}`,
+            branchId: existing.branchId ?? branchId ?? null,
+          },
+        });
+      }
+
+      return finalized;
+    });
+  }
+
   async collectPayment(id: string, amountReceived: number, paymentMode: string, branchId?: string) {
     return this.prisma.$transaction(async (tx) => {
       const invoice = await tx.invoice.findUnique({ where: { id } });
@@ -604,10 +796,13 @@ export class BillingService {
       throw new NotFoundException('Invoice not found');
     }
     // Block hard-delete of any invoice that has financial impact (paid, partly
-    // paid, on credit, returned, or in draft awaiting approval). Only DRAFT
-    // QUOTATIONs and CANCELLED invoices are safe to physically remove.
+    // paid, on credit, returned). Safe to physically remove:
+    //  - CANCELLED invoices (already wound down)
+    //  - QUOTATION drafts (never reserved stock)
+    //  - INVOICE drafts (user-abandoned, no stock/ledger impact since drafts
+    //    skip every side effect — see create() guards)
     const deletable = invoice.status === 'CANCELLED'
-      || (invoice.type === 'QUOTATION' && invoice.status === 'DRAFT');
+      || invoice.status === 'DRAFT';
     if (!deletable) {
       throw new BadRequestException(
         `Cannot delete invoice ${invoice.invoiceNumber} (status: ${invoice.status}). Cancel it first; deletion is reserved for cancelled invoices and unconverted quotations.`,

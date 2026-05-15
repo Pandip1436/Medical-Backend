@@ -61,6 +61,7 @@ model User {
   approvalReviews      ApprovalRequest[]  @relation("ApprovalReviews")
   supplierActivities   SupplierActivity[]
   customerActivities   CustomerActivity[]
+  sharedFiles          SharedFile[]
 }
 
 enum Role {
@@ -105,6 +106,24 @@ enum CustomerType {
   RETAIL
   WHOLESALE
   DOCTOR
+}
+
+// ── Shared files ──────────────────────────────────────────────
+// Temporary public links for sharing PDFs (invoices, quotations) with
+// customers via WhatsApp etc. The id is also the on-disk filename stub;
+// expired rows are cleaned up by a daily scheduler and the static-serve
+// path 404s once the file is gone.
+model SharedFile {
+  id          String   @id @default(cuid())
+  filename    String   // original filename (for Content-Disposition / display)
+  mimeType    String
+  sizeBytes   Int
+  label       String?  // optional caller-supplied tag, e.g. "INV-123"
+  createdById String
+  createdBy   User     @relation(fields: [createdById], references: [id])
+  createdAt   DateTime @default(now())
+  expiresAt   DateTime
+  @@index([expiresAt])
 }
 
 // ── Prescriptions ─────────────────────────────────────────────

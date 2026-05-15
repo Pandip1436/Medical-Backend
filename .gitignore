@@ -8,3 +8,10 @@ dist
 !.env.example
 
 /generated/prisma
+
+# User-uploaded files (prescriptions, shared invoice/quotation PDFs, etc.)
+/uploads
+
+# Local dev runtime logs
+backend-startup.log
+*.log

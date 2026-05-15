@@ -174,6 +174,13 @@ export class ReportsController {
     return this.reportsService.getExpiryReport(req.user.branchId ?? branchId);
   }
 
+  @Get('inventory/stats')
+  @Roles('ADMIN', 'INVENTORY_MANAGER', 'PHARMACIST', 'ACCOUNTANT', 'SALESPERSON')
+  @ApiOperation({ summary: 'Lightweight inventory KPI counters (no row data)' })
+  getInventoryStats(@Request() req: any, @Query('branchId') branchId?: string) {
+    return this.reportsService.getInventoryStats(req.user.branchId ?? branchId);
+  }
+
   // ── Financial ─────────────────────────────────────────────────
   @Get('financial/profit-loss')
   @Roles('ADMIN', 'ACCOUNTANT')

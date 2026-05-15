@@ -541,6 +541,75 @@ export class ReportsService {
     };
   }
 
+  // Lightweight inventory KPI bundle for the Stock Overview / Products /
+  // Expiry summary cards. Returns just the counters — no row data — so it
+  // stays cheap to call from any page. Also includes per-bucket expiry
+  // counts/values (30 / 60 / 90 / 180 day windows + expired) so the Expiry
+  // page's 5 summary cards can render in a single round-trip.
+  async getInventoryStats(branchId?: string) {
+    const now = new Date();
+    const oneEightyDays = dayjs().add(180, 'days').toDate();
+    const branchProductFilter = branchId ? { product: { branchId } } : {};
+    const productBranchFilter = branchId ? { branchId } : {};
+
+    const [stockBucket, categoriesCount, activeBatches, expiredBatchesRaw, near180Batches] = await Promise.all([
+      this.prisma.product.findMany({
+        where: { ...productBranchFilter, isActive: true },
+        select: { totalStock: true, minStock: true },
+      }),
+      this.prisma.category.count({ where: branchId ? { OR: [{ branchId }, { branchId: null }] } : undefined }),
+      this.prisma.batch.findMany({
+        where: { ...branchProductFilter, expiryDate: { gte: now } },
+        select: { quantity: true, mrp: true },
+      }),
+      this.prisma.batch.findMany({
+        where: { ...branchProductFilter, expiryDate: { lt: now }, quantity: { gt: 0 } },
+        select: { quantity: true, mrp: true },
+      }),
+      // All batches expiring within 180 days (inclusive). We bucket these in
+      // memory rather than firing four separate queries.
+      this.prisma.batch.findMany({
+        where: {
+          ...branchProductFilter,
+          expiryDate: { gte: now, lte: oneEightyDays },
+          quantity: { gt: 0 },
+        },
+        select: { quantity: true, mrp: true, expiryDate: true },
+      }),
+    ]);
+
+    const totalProducts = stockBucket.length;
+    const outOfStockItems = stockBucket.filter((p) => p.totalStock === 0).length;
+    const lowStockItems = stockBucket.filter((p) => p.totalStock > 0 && p.totalStock < p.minStock).length;
+    const sellableStockValue = activeBatches.reduce((s, b) => s + b.quantity * Number(b.mrp), 0);
+    const expiredStockValue = expiredBatchesRaw.reduce((s, b) => s + b.quantity * Number(b.mrp), 0);
+
+    // Bucket near-expiry batches into 30/60/90/180 day windows (cumulative).
+    const buckets = { '30d': { count: 0, value: 0 }, '60d': { count: 0, value: 0 }, '90d': { count: 0, value: 0 }, '180d': { count: 0, value: 0 } };
+    for (const b of near180Batches) {
+      const days = Math.floor((new Date(b.expiryDate).getTime() - now.getTime()) / (24 * 60 * 60 * 1000));
+      const value = b.quantity * Number(b.mrp);
+      const slot = days <= 30 ? '30d' : days <= 60 ? '60d' : days <= 90 ? '90d' : '180d';
+      buckets[slot].count += 1;
+      buckets[slot].value += value;
+    }
+
+    return {
+      totalProducts,
+      lowStockItems,
+      outOfStockItems,
+      categoriesCount,
+      sellableStockValue,
+      nearExpiryCount: buckets['30d'].count + buckets['60d'].count + buckets['90d'].count,
+      expiredStockValue,
+      expiredBatchCount: expiredBatchesRaw.length,
+      expiryBuckets: {
+        expired: { count: expiredBatchesRaw.length, value: expiredStockValue },
+        ...buckets,
+      },
+    };
+  }
+
   async getExpiryReport(branchId?: string) {
     const today = new Date();
     const ninetyDays = dayjs().add(90, 'days').toDate();

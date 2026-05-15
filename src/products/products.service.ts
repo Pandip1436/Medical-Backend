@@ -255,6 +255,113 @@ export class ProductsService {
     return this.prisma.product.findMany({ where, include, orderBy: { name: 'asc' } });
   }
 
+  // ── Batches ───────────────────────────────────────────────────
+  // Paginated/filtered batch listing. Frontend pages (Expiry Management,
+  // Stock Overview, Stock Adjustment) used to derive batches from the master
+  // /products call which loaded every product+batch nested. Letting them hit
+  // /batches directly with the filters they need keeps the wire small.
+  async findBatches(opts: {
+    query?: string;
+    productId?: string;
+    supplierId?: string;
+    expiringWithin?: number;   // days; e.g. 30 / 60 / 90 / 180
+    expired?: boolean;
+    status?: 'active' | 'expired' | 'out_of_stock' | 'all';
+    skip?: number;
+    take?: number;
+    branchId?: string;
+  } = {}) {
+    const { query, productId, supplierId, expiringWithin, expired, status, skip = 0, take, branchId } = opts;
+
+    const where: any = {};
+    if (productId) where.productId = productId;
+    if (supplierId) where.supplierId = supplierId;
+    if (branchId) where.product = { branchId };
+
+    const now = new Date();
+    if (expired === true) {
+      where.expiryDate = { lt: now };
+    } else if (expiringWithin !== undefined && !Number.isNaN(expiringWithin)) {
+      // Batches expiring within N days (inclusive) and NOT yet expired.
+      const upper = new Date(now.getTime() + expiringWithin * 24 * 60 * 60 * 1000);
+      where.expiryDate = { gte: now, lte: upper };
+    }
+
+    if (status === 'active') {
+      where.quantity = { gt: 0 };
+      where.expiryDate = where.expiryDate ?? { gte: now };
+    } else if (status === 'expired') {
+      where.expiryDate = { lt: now };
+    } else if (status === 'out_of_stock') {
+      where.quantity = 0;
+    }
+
+    if (query) {
+      where.OR = [
+        { batchNumber: { contains: query, mode: 'insensitive' } },
+        { product: { ...(where.product ?? {}), name: { contains: query, mode: 'insensitive' } } },
+      ];
+    }
+
+    const include = {
+      product: { select: { id: true, name: true, genericName: true, packSize: true, minStock: true, totalStock: true } },
+      supplier: { select: { id: true, name: true } },
+    };
+
+    const orderBy = { expiryDate: 'asc' as const };
+
+    if (take !== undefined) {
+      const [rows, total] = await Promise.all([
+        this.prisma.batch.findMany({ where, include, skip, take, orderBy }),
+        this.prisma.batch.count({ where }),
+      ]);
+      const data = rows.map((b) => this.shapeBatchRow(b));
+      return { data, total };
+    }
+
+    const rows = await this.prisma.batch.findMany({ where, include, orderBy });
+    return rows.map((b) => this.shapeBatchRow(b));
+  }
+
+  async findOneBatch(id: string, branchId?: string) {
+    const batch = await this.prisma.batch.findUnique({
+      where: { id },
+      include: {
+        product: { select: { id: true, name: true, genericName: true, packSize: true, manufacturer: true, minStock: true, totalStock: true, branchId: true } },
+        supplier: { select: { id: true, name: true } },
+      },
+    });
+    if (!batch) throw new NotFoundException('Batch not found');
+    if (branchId && batch.product?.branchId && batch.product.branchId !== branchId) {
+      throw new NotFoundException('Batch not found');
+    }
+    return this.shapeBatchRow(batch);
+  }
+
+  // Flattens product/supplier joins onto the batch row so the frontend gets a
+  // single object it can render without re-stitching relations.
+  private shapeBatchRow(b: any) {
+    return {
+      id: b.id,
+      batchNumber: b.batchNumber,
+      productId: b.productId,
+      productName: b.product?.name ?? null,
+      genericName: b.product?.genericName ?? null,
+      packSize: b.product?.packSize ?? null,
+      manufacturer: b.product?.manufacturer ?? null,
+      minStock: b.product?.minStock ?? null,
+      productTotalStock: b.product?.totalStock ?? null,
+      mfgDate: b.mfgDate,
+      expiryDate: b.expiryDate,
+      quantity: b.quantity,
+      mrp: b.mrp,
+      purchaseRate: b.purchaseRate,
+      supplierId: b.supplierId,
+      supplierName: b.supplier?.name ?? null,
+      createdAt: b.createdAt,
+    };
+  }
+
   async findOne(id: string, branchId?: string) {
     const product = await this.prisma.product.findUnique({
       where: { id },
