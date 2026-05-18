@@ -90,4 +90,11 @@ export class CreateQuotationDto {
   @IsString()
   @IsOptional()
   notes?: string;
+
+  // Optional link to a CRM Lead. When set, the resulting quotation shows up
+  // in /leads/:id/quotations and the lead's Quotations tab. Set by the
+  // "Create Quote" quick action on the lead detail panel.
+  @IsString()
+  @IsOptional()
+  leadId?: string;
 }

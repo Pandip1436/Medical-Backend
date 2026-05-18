@@ -31,6 +31,10 @@ import { ApprovalsModule } from './approvals/approvals.module';
 import { SupplierActivitiesModule } from './supplier-activities/supplier-activities.module';
 import { CustomerActivitiesModule } from './customer-activities/customer-activities.module';
 import { SharedFilesModule } from './shared-files/shared-files.module';
+import { CompaniesModule } from './companies/companies.module';
+import { ContactsModule } from './contacts/contacts.module';
+import { LeadsModule } from './leads/leads.module';
+import { LeadActivitiesModule } from './lead-activities/lead-activities.module';
 import { CommonServicesModule } from './common/services/common-services.module';
 import { ServeStaticModule } from '@nestjs/serve-static';
 import { join } from 'path';
@@ -70,6 +74,10 @@ import { join } from 'path';
     SupplierActivitiesModule,
     CustomerActivitiesModule,
     SharedFilesModule,
+    CompaniesModule,
+    ContactsModule,
+    LeadsModule,
+    LeadActivitiesModule,
   ],
   controllers: [AppController],
   providers: [

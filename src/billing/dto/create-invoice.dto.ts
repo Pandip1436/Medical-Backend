@@ -92,4 +92,10 @@ export class CreateInvoiceDto {
   @IsOptional()
   @IsString()
   salespersonName?: string;
+
+  // Optional link to a CRM Lead. When set, the resulting invoice shows up
+  // in /leads/:id/invoices and the lead's Invoices tab.
+  @IsOptional()
+  @IsString()
+  leadId?: string;
 }

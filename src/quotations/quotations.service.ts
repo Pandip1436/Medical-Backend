@@ -37,6 +37,9 @@ export class QuotationsService {
           validUntil: dto.validUntil ? new Date(dto.validUntil) : null,
           notes: dto.notes,
           status: 'DRAFT',
+          // Link to a CRM Lead when the quote is created via the lead detail
+          // "Create Quote" quick action. Field is optional everywhere else.
+          ...(dto.leadId && { leadId: dto.leadId }),
           items: {
             create: dto.items.map((item) => ({
               productId: item.productId || null,

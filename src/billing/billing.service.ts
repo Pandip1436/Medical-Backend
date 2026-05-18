@@ -216,6 +216,9 @@ export class BillingService {
                 amountPaid: 0,
                 changeReturned: 0,
                 createdById: userId,
+                // Optional CRM Lead link — populated when the invoice is
+                // created via "Create Invoice" from the lead detail panel.
+                ...(createInvoiceDto.leadId && { leadId: createInvoiceDto.leadId }),
                 items: {
                   create: createInvoiceDto.items.map(item => ({
                     productId: item.productId,
@@ -304,6 +307,8 @@ export class BillingService {
           salespersonId: createInvoiceDto.salespersonId ?? null,
           salespersonName: createInvoiceDto.salespersonName ?? null,
           createdById: userId,
+          // Optional CRM Lead link — see DTO comment.
+          ...(createInvoiceDto.leadId && { leadId: createInvoiceDto.leadId }),
           items: {
             create: createInvoiceDto.items.map(item => ({
               productId: item.productId,
