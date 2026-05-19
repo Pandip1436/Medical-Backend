@@ -66,7 +66,6 @@ export class GrnService {
 
       // 2. Loop through GRN items and process Stock and Batches
       for (const item of createGrnDto.items) {
-        // Calculate the valid stock addition (We do NOT subtract damageQty here, because damaged goods must formally pass through Purchase Returns to generate a Debit Note)
         const addedStock = item.receivedQty + item.freeQty;
 
         if (addedStock > 0) {
@@ -125,7 +124,6 @@ export class GrnService {
               expiryDate: new Date(item.expiryDate),
               purchaseRate: item.purchaseRate,
               mrp: item.mrp,
-              damageQty: item.damageQty,
             })),
           },
         },

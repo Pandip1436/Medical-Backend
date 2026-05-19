@@ -69,8 +69,4 @@ export class CreateGrnItemDto {
   @IsNumber()
   @Min(0)
   mrp: number;
-
-  @IsNumber()
-  @Min(0)
-  damageQty: number;
 }
