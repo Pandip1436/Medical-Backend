@@ -10,6 +10,9 @@ import { ContactsModule } from '../contacts/contacts.module';
   imports: [ContactsModule],
   providers: [LeadsService, LeadNumberingService, LeadsAnalyticsService],
   controllers: [LeadsController, LeadsAnalyticsController],
-  exports: [LeadsService],
+  // LeadNumberingService is exported so the IndiaMART sync (in IndiamartModule)
+  // can generate L-XXXX numbers for auto-imported leads without duplicating
+  // the document-sequence logic.
+  exports: [LeadsService, LeadNumberingService],
 })
 export class LeadsModule {}

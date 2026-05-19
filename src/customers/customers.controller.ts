@@ -211,12 +211,17 @@ export class CustomersController {
   @Roles('ADMIN', 'PHARMACIST', 'ACCOUNTANT')
   @ApiOperation({
     summary:
-      'Record a payment against customer outstanding balance (FIFO allocation)',
+      'Record a payment against customer outstanding balance. Defaults to FIFO; pass invoiceIds to apply to specific invoices only.',
   })
   recordPayment(
     @Param('id') id: string,
     @Body()
-    body: { amount: number; paymentMode: string; referenceNumber?: string },
+    body: {
+      amount: number;
+      paymentMode: string;
+      referenceNumber?: string;
+      invoiceIds?: string[];
+    },
     @Request() req: AuthenticatedRequest,
   ) {
     return this.customersService.recordPayment(
@@ -225,6 +230,7 @@ export class CustomersController {
       body.paymentMode,
       body.referenceNumber,
       req.user.branchId ?? undefined,
+      body.invoiceIds,
     );
   }
 

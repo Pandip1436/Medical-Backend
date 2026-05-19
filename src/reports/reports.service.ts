@@ -1060,7 +1060,7 @@ export class ReportsService {
       orderBy: { date: 'asc' },
     });
 
-    const entries: Array<{ date: Date; ref: string; description: string; debit: number; credit: number }> = [];
+    const entries: Array<{ date: Date; ref: string; description: string; debit: number; credit: number; sourceType: 'INVOICE' | 'CREDIT_NOTE'; sourceId: string }> = [];
 
     invoices.forEach((inv) => {
       entries.push({
@@ -1069,6 +1069,8 @@ export class ReportsService {
         description: `Invoice`,
         debit: Number(inv.grandTotal),
         credit: 0,
+        sourceType: 'INVOICE',
+        sourceId: inv.id,
       });
       if (Number(inv.amountPaid) > 0) {
         entries.push({
@@ -1077,6 +1079,8 @@ export class ReportsService {
           description: `Payment (${inv.paymentMode})`,
           debit: 0,
           credit: Number(inv.amountPaid),
+          sourceType: 'INVOICE',
+          sourceId: inv.id,
         });
       }
     });
@@ -1088,6 +1092,8 @@ export class ReportsService {
         description: `Credit Note: ${cn.reason}`,
         debit: 0,
         credit: Number(cn.totalAmount),
+        sourceType: 'CREDIT_NOTE',
+        sourceId: cn.id,
       });
     });
 
@@ -1173,15 +1179,17 @@ export class ReportsService {
       select: { id: true, createdAt: true, totalAmount: true, debitNoteNo: true },
     });
 
-    type LedgerEntry = { date: Date | string; ref: string; description: string; debit: number; credit: number; balance?: number };
+    type LedgerEntry = { date: Date | string; ref: string; description: string; debit: number; credit: number; balance?: number; sourceType: 'GRN' | 'PURCHASE_RETURN'; sourceId: string };
     const entries: LedgerEntry[] = [];
 
     grns.forEach((g) => entries.push({
       date: g.date,
       ref: g.grnNumber,
-      description: 'Goods Received',
+      description: 'Purchase Received',
       debit: Number(g.totalAmount),
       credit: 0,
+      sourceType: 'GRN',
+      sourceId: g.id,
     }));
 
     purchaseReturns.forEach((r) => entries.push({
@@ -1190,6 +1198,8 @@ export class ReportsService {
       description: 'Purchase Return',
       debit: 0,
       credit: Number(r.totalAmount),
+      sourceType: 'PURCHASE_RETURN',
+      sourceId: r.id,
     }));
 
     entries.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());

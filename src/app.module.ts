@@ -35,6 +35,7 @@ import { CompaniesModule } from './companies/companies.module';
 import { ContactsModule } from './contacts/contacts.module';
 import { LeadsModule } from './leads/leads.module';
 import { LeadActivitiesModule } from './lead-activities/lead-activities.module';
+import { IndiamartModule } from './indiamart/indiamart.module';
 import { CommonServicesModule } from './common/services/common-services.module';
 import { ServeStaticModule } from '@nestjs/serve-static';
 import { join } from 'path';
@@ -78,6 +79,7 @@ import { join } from 'path';
     ContactsModule,
     LeadsModule,
     LeadActivitiesModule,
+    IndiamartModule,
   ],
   controllers: [AppController],
   providers: [

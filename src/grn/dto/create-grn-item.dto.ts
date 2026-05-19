@@ -4,46 +4,25 @@ import {
   IsNumber,
   Min,
   IsDateString,
+  IsOptional,
   Validate,
   ValidatorConstraint,
   type ValidatorConstraintInterface,
-  type ValidationArguments,
 } from 'class-validator';
 
-// Reject expiry dates that are in the past or before mfgDate. Pharmacies
-// shouldn't be receiving stock that's already expired, and the BE was
-// previously trusting any IsDateString here.
-@ValidatorConstraint({ name: 'expiryAfterMfgAndFuture', async: false })
-class ExpiryAfterMfgAndFuture implements ValidatorConstraintInterface {
-  validate(value: string, args: ValidationArguments) {
-    const obj = args.object as { mfgDate?: string };
+// Reject expiry dates that are in the past. mfgDate is no longer required
+// or captured at the form level, so we only check the future-dated guard here.
+@ValidatorConstraint({ name: 'expiryNotInPast', async: false })
+class ExpiryNotInPast implements ValidatorConstraintInterface {
+  validate(value: string) {
     const expiry = new Date(value);
     if (Number.isNaN(expiry.getTime())) return false;
     const today = new Date();
     today.setHours(0, 0, 0, 0);
-    if (expiry < today) return false;
-    if (obj.mfgDate) {
-      const mfg = new Date(obj.mfgDate);
-      if (!Number.isNaN(mfg.getTime()) && expiry < mfg) return false;
-    }
-    return true;
+    return expiry >= today;
   }
   defaultMessage() {
-    return 'expiryDate must be on or after today and not earlier than mfgDate';
-  }
-}
-
-@ValidatorConstraint({ name: 'mfgNotInFuture', async: false })
-class MfgNotInFuture implements ValidatorConstraintInterface {
-  validate(value: string) {
-    const mfg = new Date(value);
-    if (Number.isNaN(mfg.getTime())) return false;
-    const today = new Date();
-    today.setHours(23, 59, 59, 999);
-    return mfg <= today;
-  }
-  defaultMessage() {
-    return 'mfgDate cannot be in the future';
+    return 'expiryDate must be on or after today';
   }
 }
 
@@ -72,14 +51,15 @@ export class CreateGrnItemDto {
   @IsNotEmpty()
   batchNumber: string;
 
+  // Optional: the GRN form no longer captures mfgDate. When absent, the
+  // service falls back to "today" because the DB column is non-nullable.
+  @IsOptional()
   @IsDateString()
-  @IsNotEmpty()
-  @Validate(MfgNotInFuture)
-  mfgDate: string;
+  mfgDate?: string;
 
   @IsDateString()
   @IsNotEmpty()
-  @Validate(ExpiryAfterMfgAndFuture)
+  @Validate(ExpiryNotInPast)
   expiryDate: string;
 
   @IsNumber()

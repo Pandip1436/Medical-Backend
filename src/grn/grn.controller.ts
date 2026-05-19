@@ -31,7 +31,7 @@ export class GrnController {
   @Post()
   @Roles('ADMIN', 'INVENTORY_MANAGER')
   @ApiOperation({
-    summary: 'Create a new Goods Receipt Note and spawn batches',
+    summary: 'Create a new Purchase Entry and spawn batches',
   })
   create(
     @Body() createGrnDto: CreateGrnDto,

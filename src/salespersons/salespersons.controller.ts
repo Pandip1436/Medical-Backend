@@ -35,8 +35,15 @@ export class SalespersonsController {
 
   @Get()
   @Roles('ADMIN', 'PHARMACIST', 'SALESPERSON')
-  findAll(@Query('branchId') branchId?: string) {
-    return this.salespersonsService.findAll(branchId);
+  findAll(
+    @Query('branchId') branchId?: string,
+    @Query('q') q?: string,
+    @Query('take') take?: string,
+  ) {
+    return this.salespersonsService.findAll(branchId, {
+      q,
+      take: take ? Number(take) : undefined,
+    });
   }
 
   @Post()

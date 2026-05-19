@@ -438,30 +438,50 @@ export class CustomersService {
       .filter((inv) => inv.balance > 0);
   }
 
-  // Allocates payment FIFO across oldest UNPAID/PARTIAL invoices,
-  // creates Payment records, and updates invoice statuses + customer outstanding.
+  // Allocates payment across UNPAID/PARTIAL invoices.
+  // - If `invoiceIds` is provided, payment is applied ONLY to those invoices
+  //   (oldest-first within the selected set).
+  // - Otherwise, FIFO across all open invoices for the customer.
+  // Creates a Payment record and updates invoice statuses + customer outstanding.
   async recordPayment(
     id: string,
     amount: number,
     paymentMode: string,
     referenceNumber?: string,
     branchId?: string,
+    invoiceIds?: string[],
   ) {
     if (amount <= 0) throw new BadRequestException('Amount must be greater than zero');
 
     const customer = await this.findOne(id, branchId);
 
-    // Fetch open invoices oldest-first (FIFO)
+    const useSpecific = Array.isArray(invoiceIds) && invoiceIds.length > 0;
+
     const openInvoices = await this.prisma.invoice.findMany({
       where: {
         customerId: id,
         status: { in: ['UNPAID', 'PARTIAL'] },
+        ...(useSpecific ? { id: { in: invoiceIds } } : {}),
       },
       orderBy: { date: 'asc' },
     });
 
     if (openInvoices.length === 0) {
-      throw new BadRequestException('No outstanding invoices for this customer');
+      throw new BadRequestException(
+        useSpecific
+          ? 'Selected invoices are not open or do not belong to this customer'
+          : 'No outstanding invoices for this customer',
+      );
+    }
+
+    if (
+      invoiceIds &&
+      useSpecific &&
+      openInvoices.length !== invoiceIds.length
+    ) {
+      throw new BadRequestException(
+        'One or more selected invoices are not open or do not belong to this customer',
+      );
     }
 
     const totalOutstanding = openInvoices.reduce(
@@ -471,7 +491,9 @@ export class CustomersService {
 
     if (amount > totalOutstanding + 0.01) {
       throw new BadRequestException(
-        `Payment amount (₹${amount.toFixed(2)}) exceeds outstanding balance (₹${totalOutstanding.toFixed(2)})`,
+        useSpecific
+          ? `Payment amount (₹${amount.toFixed(2)}) exceeds balance of selected invoices (₹${totalOutstanding.toFixed(2)})`
+          : `Payment amount (₹${amount.toFixed(2)}) exceeds outstanding balance (₹${totalOutstanding.toFixed(2)})`,
       );
     }
 

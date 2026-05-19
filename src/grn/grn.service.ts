@@ -71,11 +71,13 @@ export class GrnService {
 
         if (addedStock > 0) {
           // A. Create a new Batch mapped to this GRN and Product
+          // mfgDate is no longer captured at the form level — fall back to
+          // today when missing so the non-nullable DB column stays populated.
           await tx.batch.create({
             data: {
               productId: item.productId,
               batchNumber: item.batchNumber,
-              mfgDate: new Date(item.mfgDate),
+              mfgDate: item.mfgDate ? new Date(item.mfgDate) : new Date(),
               expiryDate: new Date(item.expiryDate),
               quantity: addedStock,
               mrp: item.mrp,
@@ -119,7 +121,7 @@ export class GrnService {
               receivedQty: item.receivedQty,
               freeQty: item.freeQty,
               batchNumber: item.batchNumber,
-              mfgDate: new Date(item.mfgDate),
+              mfgDate: item.mfgDate ? new Date(item.mfgDate) : new Date(),
               expiryDate: new Date(item.expiryDate),
               purchaseRate: item.purchaseRate,
               mrp: item.mrp,

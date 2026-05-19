@@ -108,6 +108,13 @@ export class BillingController {
     return this.billingService.finalizeDraft(id, dto, req.user.branchId);
   }
 
+  @Patch(':id/edit-invoice')
+  @Roles('ADMIN', 'PHARMACIST')
+  @ApiOperation({ summary: 'Edit an UNPAID or PARTIAL invoice (reverses old stock/ledger/loyalty and re-applies).' })
+  editInvoice(@Param('id') id: string, @Body() dto: CreateInvoiceDto, @Request() req: any) {
+    return this.billingService.editUnpaidInvoice(id, dto, req.user.userId, req.user.branchId);
+  }
+
   @Patch(':id/collect-payment')
   @Roles('ADMIN', 'PHARMACIST', 'ACCOUNTANT')
   @ApiOperation({ summary: 'Collect payment against a credit/partial invoice' })

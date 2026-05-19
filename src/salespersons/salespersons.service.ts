@@ -5,11 +5,32 @@ import { PrismaService } from '../prisma/prisma.service';
 export class SalespersonsService {
   constructor(private prisma: PrismaService) {}
 
-  async findAll(branchId?: string) {
+  async findAll(branchId?: string, opts?: { q?: string; take?: number }) {
+    // Server-side searchable list — the CRM Leads page uses this for the
+    // sales-person filter / column dropdown, where a tenant may have hundreds
+    // of salespeople and loading them all in the browser is wasteful. `q`
+    // performs a case-insensitive contains on name / email / phone; `take`
+    // caps the page size when explicitly provided (other callers still get
+    // the full list).
+    const q = opts?.q?.trim();
+    const take =
+      opts?.take !== undefined
+        ? Math.min(Math.max(opts.take, 1), 100)
+        : undefined;
+
     return this.prisma.user.findMany({
       where: {
         role: 'SALESPERSON',
         ...(branchId ? { branchId } : {}),
+        ...(q
+          ? {
+              OR: [
+                { name: { contains: q, mode: 'insensitive' as const } },
+                { email: { contains: q, mode: 'insensitive' as const } },
+                { phone: { contains: q } },
+              ],
+            }
+          : {}),
       },
       select: {
         id: true,
@@ -23,6 +44,7 @@ export class SalespersonsService {
         createdAt: true,
       },
       orderBy: { name: 'asc' },
+      ...(take !== undefined ? { take } : {}),
     });
   }
 

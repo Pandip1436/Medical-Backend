@@ -731,6 +731,264 @@ export class BillingService {
     });
   }
 
+  // ── Edit an UNPAID / PARTIAL invoice ─────────────────────────
+  // Lets staff fix items/quantities/rates/customer/payment-mode on a real
+  // invoice that the customer hasn't fully paid yet. Inside one transaction
+  // we reverse the original side effects (stock, customer outstanding,
+  // loyalty) and reapply them with the new figures. PAID/RETURNED/CANCELLED
+  // invoices are not editable here — they're financially closed. Drafts go
+  // through saveDraft/finalizeDraft instead.
+  async editUnpaidInvoice(
+    id: string,
+    dto: CreateInvoiceDto,
+    userId: string,
+    branchId?: string,
+  ) {
+    return this.prisma.$transaction(async (tx) => {
+      const existing = await tx.invoice.findUnique({
+        where: { id },
+        include: { items: true, creditNotes: { select: { id: true } } },
+      });
+      if (!existing) throw new NotFoundException('Invoice not found');
+      if (branchId && existing.branchId && existing.branchId !== branchId) {
+        throw new NotFoundException('Invoice not found');
+      }
+      if (existing.type !== 'INVOICE') {
+        throw new BadRequestException(
+          'Only invoices can be edited here. Use the quotation flow for quotations.',
+        );
+      }
+      // PAID / UNPAID / PARTIAL are all editable. CANCELLED is excluded
+      // because the invoice has been formally wound down; RETURNED is
+      // excluded because a credit note now carries its financial counterweight
+      // (and the credit-notes check below would catch that anyway). DRAFT
+      // has its own saveDraft / finalizeDraft flow and never reaches here
+      // via this endpoint in normal use.
+      if (
+        existing.status !== 'PAID' &&
+        existing.status !== 'UNPAID' &&
+        existing.status !== 'PARTIAL'
+      ) {
+        throw new BadRequestException(
+          `Cannot edit invoice ${existing.invoiceNumber}: status is ${existing.status}. CANCELLED / RETURNED invoices are financially closed.`,
+        );
+      }
+      // Block edits on invoices that already have a credit note — those
+      // are financially entangled with another document.
+      if (existing.creditNotes.length > 0) {
+        throw new BadRequestException(
+          `Invoice ${existing.invoiceNumber} has a credit note linked to it and can no longer be edited.`,
+        );
+      }
+
+      // Don't allow the new grand total to fall below what's already been
+      // collected — that would put the business in a refund situation we
+      // aren't equipped to settle automatically.
+      const alreadyPaid = Number(existing.amountPaid);
+      if (dto.grandTotal < alreadyPaid - 0.01) {
+        throw new BadRequestException(
+          `New grand total (₹${dto.grandTotal.toFixed(2)}) is less than the amount already collected (₹${alreadyPaid.toFixed(2)}). Issue a credit note for the difference instead.`,
+        );
+      }
+
+      // 1) Restore stock from the existing items.
+      for (const old of existing.items) {
+        await tx.batch.update({
+          where: { id: old.batchId },
+          data: { quantity: { increment: old.quantity } },
+        });
+        await tx.product.update({
+          where: { id: old.productId },
+          data: { totalStock: { increment: old.quantity } },
+        });
+      }
+
+      // 2) Reverse the old customer-side ledger entries.
+      if (existing.customerId) {
+        const oldOutstanding = Number(existing.grandTotal) - alreadyPaid;
+        if (oldOutstanding > 0) {
+          await tx.customer.update({
+            where: { id: existing.customerId },
+            data: { currentOutstanding: { decrement: oldOutstanding } },
+          });
+        }
+        const oldPoints = Math.floor(Number(existing.grandTotal) / 100);
+        if (oldPoints > 0) {
+          await tx.customer.update({
+            where: { id: existing.customerId },
+            data: { loyaltyPoints: { decrement: oldPoints } },
+          });
+        }
+      }
+
+      // 3) Snapshot "before" for the audit log (after we have everything we
+      // need from `existing` but before we mutate items / invoice).
+      const beforeSnapshot = {
+        invoiceNumber: existing.invoiceNumber,
+        customerId: existing.customerId,
+        customerName: existing.customerName,
+        doctorName: existing.doctorName,
+        salespersonId: existing.salespersonId,
+        salespersonName: existing.salespersonName,
+        billingType: existing.billingType,
+        subtotal: Number(existing.subtotal),
+        productDiscount: Number(existing.productDiscount),
+        taxableAmount: Number(existing.taxableAmount),
+        cgst: Number(existing.cgst),
+        sgst: Number(existing.sgst),
+        igst: Number(existing.igst),
+        deliveryCharge: Number(existing.deliveryCharge),
+        roundOff: Number(existing.roundOff),
+        grandTotal: Number(existing.grandTotal),
+        paymentMode: existing.paymentMode,
+        status: existing.status,
+        amountPaid: Number(existing.amountPaid),
+        items: existing.items.map((it) => ({
+          productId: it.productId,
+          productName: it.productName,
+          batchId: it.batchId,
+          batchNumber: it.batchNumber,
+          quantity: it.quantity,
+          mrp: Number(it.mrp),
+          rate: Number(it.rate),
+          discountPercent: Number(it.discountPercent),
+          gstPercent: Number(it.gstPercent),
+          amount: Number(it.amount),
+        })),
+      };
+
+      // 4) Wipe old items and validate the new ones (prescription + stock).
+      await tx.invoiceItem.deleteMany({ where: { invoiceId: id } });
+      await this.assertPrescriptionForScheduledItems(
+        tx,
+        dto.items,
+        dto.customerId ?? null,
+        dto.billingType,
+      );
+      for (const item of dto.items) {
+        await this.deductStockForItem(tx, item, branchId);
+      }
+
+      // 5) Recompute status from the new totals + the (preserved) amountPaid.
+      // amountPaid carries forward — we never touch money already collected.
+      const newGrandTotal = Number(dto.grandTotal);
+      const newStatus =
+        alreadyPaid + 0.01 >= newGrandTotal
+          ? 'PAID'
+          : alreadyPaid > 0
+            ? 'PARTIAL'
+            : 'UNPAID';
+
+      // 6) Write the updated invoice and recreate items.
+      const updated = await tx.invoice.update({
+        where: { id },
+        data: {
+          billingType: dto.billingType,
+          customerId: dto.customerId ?? null,
+          customerName: dto.customerName,
+          doctorName: dto.doctorName ?? null,
+          salespersonId: dto.salespersonId ?? null,
+          salespersonName: dto.salespersonName ?? null,
+          subtotal: dto.subtotal,
+          productDiscount: dto.productDiscount ?? 0,
+          taxableAmount: dto.taxableAmount ?? dto.subtotal,
+          cgst: dto.cgst ?? 0,
+          sgst: dto.sgst ?? 0,
+          igst: dto.igst ?? 0,
+          deliveryCharge: dto.deliveryCharge ?? 0,
+          roundOff: dto.roundOff ?? 0,
+          grandTotal: dto.grandTotal,
+          paymentMode: dto.paymentMode,
+          paymentDetails: dto.paymentDetails,
+          status: newStatus,
+          // amountPaid intentionally NOT overwritten — it's the running tally
+          // of what the customer actually handed over and lives independently
+          // of the invoice's billed amount.
+          items: {
+            create: dto.items.map((item) => ({
+              productId: item.productId,
+              productName: item.productName,
+              batchId: item.batchId,
+              batchNumber: item.batchNumber,
+              expiryDate: new Date(item.expiryDate),
+              quantity: item.quantity,
+              mrp: item.mrp,
+              rate: item.rate,
+              discountPercent: item.discountPercent ?? 0,
+              gstPercent: item.gstPercent ?? 0,
+              amount: item.amount,
+            })),
+          },
+        },
+        include: { items: true },
+      });
+
+      // 7) Reapply the customer-side ledger entries based on the new figures.
+      if (dto.customerId) {
+        const newOutstanding = newGrandTotal - alreadyPaid;
+        if (newOutstanding > 0) {
+          await tx.customer.update({
+            where: { id: dto.customerId },
+            data: { currentOutstanding: { increment: newOutstanding } },
+          });
+        }
+        const newPoints = Math.floor(newGrandTotal / 100);
+        if (newPoints > 0) {
+          await tx.customer.update({
+            where: { id: dto.customerId },
+            data: { loyaltyPoints: { increment: newPoints } },
+          });
+        }
+      }
+
+      // 8) Write the audit row.
+      const afterSnapshot = {
+        invoiceNumber: updated.invoiceNumber,
+        customerId: updated.customerId,
+        customerName: updated.customerName,
+        doctorName: updated.doctorName,
+        salespersonId: updated.salespersonId,
+        salespersonName: updated.salespersonName,
+        billingType: updated.billingType,
+        subtotal: Number(updated.subtotal),
+        productDiscount: Number(updated.productDiscount),
+        taxableAmount: Number(updated.taxableAmount),
+        cgst: Number(updated.cgst),
+        sgst: Number(updated.sgst),
+        igst: Number(updated.igst),
+        deliveryCharge: Number(updated.deliveryCharge),
+        roundOff: Number(updated.roundOff),
+        grandTotal: Number(updated.grandTotal),
+        paymentMode: updated.paymentMode,
+        status: updated.status,
+        amountPaid: Number(updated.amountPaid),
+        items: updated.items.map((it) => ({
+          productId: it.productId,
+          productName: it.productName,
+          batchId: it.batchId,
+          batchNumber: it.batchNumber,
+          quantity: it.quantity,
+          mrp: Number(it.mrp),
+          rate: Number(it.rate),
+          discountPercent: Number(it.discountPercent),
+          gstPercent: Number(it.gstPercent),
+          amount: Number(it.amount),
+        })),
+      };
+      await tx.invoiceEditAudit.create({
+        data: {
+          invoiceId: id,
+          editedById: userId,
+          branchId: existing.branchId ?? branchId ?? null,
+          before: beforeSnapshot as Prisma.InputJsonValue,
+          after: afterSnapshot as Prisma.InputJsonValue,
+        },
+      });
+
+      return updated;
+    });
+  }
+
   async collectPayment(id: string, amountReceived: number, paymentMode: string, branchId?: string) {
     return this.prisma.$transaction(async (tx) => {
       const invoice = await tx.invoice.findUnique({ where: { id } });

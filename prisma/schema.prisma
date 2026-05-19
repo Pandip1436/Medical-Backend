@@ -77,6 +77,7 @@ model User {
   assignedLeads        Lead[]             @relation("LeadAssignee")
   ownedContacts        Contact[]          @relation("ContactOwner")
   leadActivities       LeadActivity[]
+  invoiceEdits         InvoiceEditAudit[] @relation("InvoiceEdits")
 }
 
 enum Role {
@@ -436,6 +437,22 @@ model Invoice {
   payments        Payment[]
   leadId          String?
   lead            Lead?         @relation(fields: [leadId], references: [id])
+  editAudits      InvoiceEditAudit[]
+}
+
+model InvoiceEditAudit {
+  id          String   @id @default(cuid())
+  invoiceId   String
+  invoice     Invoice  @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  editedById  String
+  editedBy    User     @relation("InvoiceEdits", fields: [editedById], references: [id])
+  editedAt    DateTime @default(now())
+  branchId    String?
+  before      Json
+  after       Json
+
+  @@index([invoiceId])
+  @@index([editedAt])
 }
 
 model InvoiceItem {
@@ -1145,13 +1162,22 @@ model IntegrationCredential {
   provider              IntegrationProvider
   branchId              String
   branch                Branch              @relation(fields: [branchId], references: [id])
-  apiKeyCiphertext      String              // AES-256-GCM ciphertext
-  apiKeyIv              String              // base64 IV
-  apiKeyTag             String              // base64 auth tag
+  // Push API: the high-entropy URL-path secret. IndiaMART POSTs to
+  // `<APP_PUBLIC_URL>/api/v1/integrations/indiamart/webhook/<webhookToken>`
+  // and we use the token to route the incoming lead to the right branch.
+  // Stored as plaintext because the token IS the URL the seller pastes
+  // into IndiaMART's panel — protecting it inside our DB doesn't help
+  // once the URL leaves our system.
+  webhookToken          String?             @unique
+  // Pull API (legacy) — kept nullable for backward compatibility while we
+  // migrate to Push. New rows leave these null.
+  apiKeyCiphertext      String?             // AES-256-GCM ciphertext
+  apiKeyIv              String?             // base64 IV
+  apiKeyTag             String?             // base64 auth tag
   isActive              Boolean             @default(true)
   lastVerifiedAt        DateTime?
-  lastSuccessfulEndTime DateTime?
-  cooldownUntil         DateTime?           // set when upstream returns 429-with-block
+  lastSuccessfulEndTime DateTime?           // legacy: Pull watermark; Push uses lastVerifiedAt for "last received"
+  cooldownUntil         DateTime?           // legacy: Pull rate-limit cooldown; unused for Push
   notes                 String?
   createdAt             DateTime            @default(now())
   updatedAt             DateTime            @updatedAt
