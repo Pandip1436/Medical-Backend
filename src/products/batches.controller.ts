@@ -21,6 +21,7 @@ export class BatchesController {
   @ApiQuery({ name: 'expiringWithin', required: false, description: 'Days; only batches not yet expired and expiring within N days' })
   @ApiQuery({ name: 'expired', required: false, description: 'true → only already-expired batches' })
   @ApiQuery({ name: 'status', required: false, enum: ['active', 'expired', 'out_of_stock', 'all'] })
+  @ApiQuery({ name: 'hasStock', required: false, description: 'true → only batches with quantity > 0, independent of expiry' })
   @ApiQuery({ name: 'skip', required: false })
   @ApiQuery({ name: 'take', required: false })
   @ApiQuery({ name: 'branchId', required: false })
@@ -32,6 +33,7 @@ export class BatchesController {
     @Query('expiringWithin') expiringWithin?: string,
     @Query('expired') expired?: string,
     @Query('status') status?: 'active' | 'expired' | 'out_of_stock' | 'all',
+    @Query('hasStock') hasStock?: string,
     @Query('skip') skip?: string,
     @Query('take') take?: string,
     @Query('branchId') branchId?: string,
@@ -44,6 +46,7 @@ export class BatchesController {
       expiringWithin: expiringWithin !== undefined ? Number(expiringWithin) : undefined,
       expired: expired === 'true' ? true : expired === 'false' ? false : undefined,
       status,
+      hasStock: hasStock === 'true' ? true : hasStock === 'false' ? false : undefined,
       skip: skip !== undefined ? Number(skip) : undefined,
       take: take !== undefined ? Number(take) : undefined,
       branchId: effectiveBranchId,

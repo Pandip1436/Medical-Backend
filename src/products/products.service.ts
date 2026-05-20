@@ -271,11 +271,16 @@ export class ProductsService {
     expiringWithin?: number;   // days; e.g. 30 / 60 / 90 / 180
     expired?: boolean;
     status?: 'active' | 'expired' | 'out_of_stock' | 'all';
+    // Orthogonal to `status`: just filters out zero-qty batches without
+    // touching the expiry constraint. Used by Expiry Management's All
+    // Batches / Expired / Expiring Soon folders to hide written-off and
+    // disposed batches (they live in their own history folders).
+    hasStock?: boolean;
     skip?: number;
     take?: number;
     branchId?: string;
   } = {}) {
-    const { query, productId, supplierId, expiringWithin, expired, status, skip = 0, take, branchId } = opts;
+    const { query, productId, supplierId, expiringWithin, expired, status, hasStock, skip = 0, take, branchId } = opts;
 
     const where: any = {};
     if (productId) where.productId = productId;
@@ -298,6 +303,12 @@ export class ProductsService {
       where.expiryDate = { lt: now };
     } else if (status === 'out_of_stock') {
       where.quantity = 0;
+    }
+
+    // `hasStock` applies on top of whatever filter `status` set up — it only
+    // matters when the caller hasn't already pinned `quantity` via `status`.
+    if (hasStock === true && where.quantity === undefined) {
+      where.quantity = { gt: 0 };
     }
 
     if (query) {
@@ -705,7 +716,7 @@ export class ProductsService {
   }
 
   async bulkAdjustStock(
-    items: { productId: string; batchId: string; adjustedQty: number; reason: string }[],
+    items: { productId: string; batchId: string; adjustedQty: number; reason: string; notes?: string }[],
     branchId?: string,
     user?: { userId: string; name: string },
   ) {
@@ -756,6 +767,7 @@ export class ProductsService {
               previousQty: item.previousQty,
               adjustedQty: item.adjustedQty,
               diff: item.diff,
+              notes: item.notes ?? null,
               branchId: item.branchId ?? branchId ?? null,
             },
           });
@@ -801,10 +813,155 @@ export class ProductsService {
     return total;
   }
 
+  // Paginated list of historical stock adjustments, grouped by `adjustmentNo`
+  // (one submission = many log rows sharing one number). Returns one entry per
+  // submission with line items embedded so the frontend can render a detail
+  // panel without a second fetch.
+  //
+  // Impact in rupees is best-effort: `mrp` is read from the *current* batch
+  // (since the log doesn't snapshot it). When a batch has been deleted, mrp
+  // falls back to 0 — the totalImpact is therefore an approximation, not an
+  // authoritative ledger value.
+  async listAdjustments(
+    branchId: string | undefined,
+    opts: { skip?: number; take?: number } = {},
+  ) {
+    const skip = opts.skip ?? 0;
+    const take = Math.min(opts.take ?? 10, 50);
+    const where = {
+      branchId: branchId ?? undefined,
+      adjustmentNo: { not: null },
+    } as const;
+
+    // 1. Distinct adjustmentNos for the current page, newest first.
+    const grouped = await (this.prisma as any).stockAdjustmentLog.groupBy({
+      by: ['adjustmentNo'],
+      where,
+      _max: { createdAt: true },
+      orderBy: { _max: { createdAt: 'desc' } },
+      skip,
+      take,
+    });
+    const totalGrouped = await (this.prisma as any).stockAdjustmentLog.groupBy({
+      by: ['adjustmentNo'],
+      where,
+      _count: { _all: true },
+    });
+    const total = totalGrouped.length;
+
+    if (grouped.length === 0) return { data: [], total };
+
+    const adjustmentNos: string[] = grouped.map((g: any) => g.adjustmentNo);
+
+    // 2. All log rows for those adjustmentNos, with product name joined.
+    const logs = await (this.prisma as any).stockAdjustmentLog.findMany({
+      where: { ...where, adjustmentNo: { in: adjustmentNos } },
+      include: { product: { select: { id: true, name: true } } },
+      orderBy: { createdAt: 'asc' },
+    });
+
+    // 3. Best-effort mrp lookup so we can compute impact.
+    const batchIds = Array.from(new Set(logs.map((l: any) => l.batchId)));
+    const batches = batchIds.length
+      ? await this.prisma.batch.findMany({
+          where: { id: { in: batchIds as string[] } },
+          select: { id: true, mrp: true },
+        })
+      : [];
+    const mrpByBatch = new Map(batches.map((b) => [b.id, Number(b.mrp)]));
+
+    // 4. Group logs by adjustmentNo, preserving the page order.
+    const byNo = new Map<string, any[]>();
+    for (const log of logs) {
+      const list = byNo.get(log.adjustmentNo) ?? [];
+      list.push(log);
+      byNo.set(log.adjustmentNo, list);
+    }
+
+    const data = adjustmentNos.map((no) => {
+      const items = (byNo.get(no) ?? []).map((l: any) => {
+        const mrp = mrpByBatch.get(l.batchId) ?? 0;
+        const impact = l.diff * mrp;
+        return {
+          productId: l.productId,
+          productName: l.product?.name ?? '(deleted product)',
+          batchId: l.batchId,
+          batchNumber: l.batchNumber,
+          reason: l.reason,
+          previousQty: l.previousQty,
+          adjustedQty: l.adjustedQty,
+          diff: l.diff,
+          notes: l.notes,
+          mrp,
+          impact,
+        };
+      });
+      const first = (byNo.get(no) ?? [])[0];
+      const totalDiff = items.reduce((s, i) => s + i.diff, 0);
+      const totalImpact = items.reduce((s, i) => s + i.impact, 0);
+      return {
+        adjustmentNo: no,
+        createdAt: first?.createdAt,
+        userId: first?.userId,
+        userName: first?.userName,
+        branchId: first?.branchId,
+        itemsCount: items.length,
+        totalDiff,
+        totalImpact,
+        items,
+      };
+    });
+
+    return { data, total };
+  }
+
+  // Flat list of disposal/write-off log rows for a single reason, used by the
+  // Expiry Management page's "Write-offs" and "Disposals" folders. Unlike
+  // `listAdjustments` (grouped by adjustmentNo), this returns one row per
+  // affected batch since the caller wants a batch-centric view.
+  async listDisposals(
+    branchId: string | undefined,
+    reason: 'Expired Removal' | 'Damaged',
+    opts: { skip?: number; take?: number } = {},
+  ) {
+    const skip = opts.skip ?? 0;
+    const take = Math.min(opts.take ?? 10, 50);
+    const where = { branchId: branchId ?? undefined, reason };
+    const [rows, total] = await Promise.all([
+      (this.prisma as any).stockAdjustmentLog.findMany({
+        where,
+        include: { product: { select: { id: true, name: true } } },
+        orderBy: { createdAt: 'desc' },
+        skip,
+        take,
+      }),
+      (this.prisma as any).stockAdjustmentLog.count({ where }),
+    ]);
+    return {
+      data: rows.map((l: any) => ({
+        id: l.id,
+        adjustmentNo: l.adjustmentNo,
+        productId: l.productId,
+        productName: l.product?.name ?? '(deleted product)',
+        batchId: l.batchId,
+        batchNumber: l.batchNumber,
+        reason: l.reason,
+        previousQty: l.previousQty,
+        adjustedQty: l.adjustedQty,
+        diff: l.diff,
+        notes: l.notes,
+        userId: l.userId,
+        userName: l.userName,
+        createdAt: l.createdAt,
+      })),
+      total,
+    };
+  }
+
   // Decide whether to execute the adjustment immediately or queue it for admin
   // approval based on rupee value and user role. Admins always execute.
   async submitBulkAdjustment(
-    items: { productId: string; batchId: string; adjustedQty: number; reason: string }[],
+    items: { productId: string; batchId: string; adjustedQty: number; reason: string; notes?: string }[],
     branchId: string | undefined,
     user: { userId: string; name: string; role: string },
   ) {

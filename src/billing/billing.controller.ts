@@ -6,13 +6,19 @@ import { ApiTags, ApiOperation, ApiBearerAuth, ApiQuery } from '@nestjs/swagger'
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
 import { Roles } from '../common/decorators/roles.decorator';
+import { PaymentsService } from '../payments/payments.service';
+import { ReconciliationService } from '../payments/reconciliation.service';
 
 @ApiTags('billing')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard, RolesGuard)
 @Controller('api/v1/billing')
 export class BillingController {
-  constructor(private readonly billingService: BillingService) {}
+  constructor(
+    private readonly billingService: BillingService,
+    private readonly paymentsService: PaymentsService,
+    private readonly reconciliation: ReconciliationService,
+  ) {}
 
   @Post()
   @Roles('ADMIN', 'PHARMACIST')
@@ -125,6 +131,45 @@ export class BillingController {
     @Request() req: any,
   ) {
     return this.billingService.collectPayment(id, Number(amountReceived), paymentMode, req.user.branchId);
+  }
+
+  @Post(':id/send-whatsapp')
+  @Roles('ADMIN', 'PHARMACIST')
+  @ApiOperation({ summary: 'Re-queue invoice PDF + payment QR for WhatsApp delivery' })
+  sendWhatsApp(@Param('id') id: string) {
+    return this.billingService.emitInvoiceCreatedById(id);
+  }
+
+  @Post(':id/payment-link')
+  @Roles('ADMIN', 'PHARMACIST')
+  @ApiOperation({ summary: 'Generate / regenerate a UPI payment QR for the invoice outstanding' })
+  createPaymentLink(@Param('id') id: string) {
+    return this.paymentsService.createPaymentLinkForInvoice(id);
+  }
+
+  @Post(':id/reconcile-payment-link')
+  @Roles('ADMIN', 'PHARMACIST', 'ACCOUNTANT')
+  @ApiOperation({
+    summary:
+      'Poll payment gateway for any payments captured against this invoice and apply them (used when a webhook was missed)',
+  })
+  async reconcilePaymentLink(@Param('id') id: string) {
+    const results = await this.paymentsService.pollPaymentsForInvoice(id);
+    const applied: any[] = [];
+    for (const { link, payments } of results) {
+      for (const p of payments) {
+        if (p.status !== 'captured') continue;
+        const r = await this.reconciliation.handleQrCredited({
+          providerQrId: link.providerQrId,
+          providerPaymentId: p.providerPaymentId,
+          amount: p.amount,
+          invoiceIdFromNotes: link.invoiceId,
+          paidAtUnix: p.capturedAt ? Math.floor(p.capturedAt.getTime() / 1000) : null,
+        });
+        applied.push(r);
+      }
+    }
+    return { ok: true, applied };
   }
 
   @Patch(':id')

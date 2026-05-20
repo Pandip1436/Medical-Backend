@@ -40,6 +40,10 @@ export class SettingsService {
         email: data.email,
         gstin: data.gstin,
         drugLicense: data.drugLicense,
+        // @deprecated — use NumberingConfig (POST /numbering/configs/:docType).
+        // Kept writable so older clients that still send invoicePrefix don't 400.
+        // DocumentNumberingService no longer reads this column.
+        invoicePrefix: data.invoicePrefix,
       },
     });
   }

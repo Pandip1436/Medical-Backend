@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { APP_INTERCEPTOR } from '@nestjs/core';
+import { EventEmitterModule } from '@nestjs/event-emitter';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { AuthModule } from './auth/auth.module';
@@ -23,6 +24,7 @@ import { DoctorsModule } from './doctors/doctors.module';
 import { BranchesModule } from './branches/branches.module';
 import { SalespersonsModule } from './salespersons/salespersons.module';
 import { SettingsModule } from './settings/settings.module';
+import { NumberingModule } from './numbering/numbering.module';
 import { QuotationsModule } from './quotations/quotations.module';
 import { CategoriesModule } from './categories/categories.module';
 import { NotificationsModule } from './notifications/notifications.module';
@@ -37,12 +39,19 @@ import { LeadsModule } from './leads/leads.module';
 import { LeadActivitiesModule } from './lead-activities/lead-activities.module';
 import { IndiamartModule } from './indiamart/indiamart.module';
 import { CommonServicesModule } from './common/services/common-services.module';
+import { PaymentsModule } from './payments/payments.module';
+import { WhatsAppModule } from './whatsapp/whatsapp.module';
+import { WebhooksModule } from './webhooks/webhooks.module';
+import { PdfModule } from './pdf/pdf.module';
+import { EventsModule } from './events/events.module';
+import { PublicPayModule } from './public-pay/public-pay.module';
 import { ServeStaticModule } from '@nestjs/serve-static';
 import { join } from 'path';
 
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
+    EventEmitterModule.forRoot(),
     ServeStaticModule.forRoot({
       rootPath: join(process.cwd(), 'uploads'),
       serveRoot: '/uploads',
@@ -67,6 +76,7 @@ import { join } from 'path';
     BranchesModule,
     SalespersonsModule,
     SettingsModule,
+    NumberingModule,
     QuotationsModule,
     CategoriesModule,
     NotificationsModule,
@@ -80,6 +90,12 @@ import { join } from 'path';
     LeadsModule,
     LeadActivitiesModule,
     IndiamartModule,
+    PdfModule,
+    PaymentsModule,
+    WhatsAppModule,
+    WebhooksModule,
+    EventsModule,
+    PublicPayModule,
   ],
   controllers: [AppController],
   providers: [

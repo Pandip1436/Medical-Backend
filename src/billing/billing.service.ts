@@ -1,9 +1,11 @@
 import { Injectable, BadRequestException, NotFoundException } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { PrismaService } from '../prisma/prisma.service';
 import { ApprovalsService } from '../approvals/approvals.service';
 import { DocumentNumberingService } from '../common/services/document-numbering.service';
 import { CreateInvoiceDto } from './dto/create-invoice.dto';
 import { PaymentMode, Prisma } from '@prisma/client';
+import { INVOICE_CREATED, InvoiceCreatedPayload } from '../events/invoice-events';
 
 @Injectable()
 export class BillingService {
@@ -11,6 +13,7 @@ export class BillingService {
     private readonly prisma: PrismaService,
     private readonly approvalsService: ApprovalsService,
     private readonly numbering: DocumentNumberingService,
+    private readonly events: EventEmitter2,
   ) {}
 
   // Schedule H, H1, and X are prescription-only drugs under the Drugs &
@@ -166,7 +169,7 @@ export class BillingService {
     // ledger update, no loyalty, no notifications, no credit-limit check.
     // The draft only becomes "real" when finalizeDraft() runs.
     const isDraft = createInvoiceDto.status === 'DRAFT';
-    return this.prisma.$transaction(async (tx) => {
+    const created = await this.prisma.$transaction(async (tx) => {
       // 1. Credit limit check — behaviour differs by role. Skipped for drafts
       // (a draft hasn't extended credit to anyone yet).
       if (
@@ -371,6 +374,45 @@ export class BillingService {
       }
 
       return invoice;
+    });
+
+    // Fire AFTER the transaction commits. Listeners (WhatsApp send,
+    // payment-QR creation) run async — they must not block invoice creation.
+    // Skip the emit when `created` is the approval-redirect path: that path
+    // saves the invoice as DRAFT and queues an ApprovalRequest, so there is
+    // no real invoice to send out yet. The listener gates on type / status /
+    // outstanding for the normal-invoice path.
+    if (!('approvalRequested' in created)) {
+      const payload: InvoiceCreatedPayload = {
+        invoiceId: created.id,
+        branchId: created.branchId ?? null,
+        customerId: created.customerId ?? null,
+        type: created.type as InvoiceCreatedPayload['type'],
+        status: created.status as InvoiceCreatedPayload['status'],
+        grandTotal: Number(created.grandTotal),
+        amountPaid: Number(created.amountPaid),
+      };
+      this.events.emit(INVOICE_CREATED, payload);
+    }
+    return created;
+  }
+
+  // Public helper so the manual `POST /:id/send-whatsapp` controller endpoint
+  // can re-fire the listener flow for an existing invoice.
+  emitInvoiceCreatedById(invoiceId: string) {
+    return this.prisma.invoice.findUnique({ where: { id: invoiceId } }).then((inv) => {
+      if (!inv) throw new NotFoundException('Invoice not found');
+      const payload: InvoiceCreatedPayload = {
+        invoiceId: inv.id,
+        branchId: inv.branchId ?? null,
+        customerId: inv.customerId ?? null,
+        type: inv.type as any,
+        status: inv.status as any,
+        grandTotal: Number(inv.grandTotal),
+        amountPaid: Number(inv.amountPaid),
+      };
+      this.events.emit(INVOICE_CREATED, payload);
+      return { ok: true, queued: inv.invoiceNumber };
     });
   }
 

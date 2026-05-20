@@ -365,6 +365,7 @@ export class ApprovalsService {
           batchId: string;
           adjustedQty: number;
           reason: string;
+          notes?: string;
         }>) ?? [];
         await this.prisma.$transaction(async (tx) => {
           const adjustmentNo = await this.numbering.nextNumber(
@@ -409,6 +410,7 @@ export class ApprovalsService {
                 previousQty: batch.quantity,
                 adjustedQty: item.adjustedQty,
                 diff,
+                notes: item.notes ?? null,
                 branchId: product.branchId ?? branchId ?? null,
               },
             });

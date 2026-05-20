@@ -40,6 +40,10 @@ export class BulkAdjustStockItemDto {
   @IsString()
   @IsNotEmpty()
   reason: string;
+
+  @IsString()
+  @IsOptional()
+  notes?: string;
 }
 
 export class BulkAdjustStockDto {

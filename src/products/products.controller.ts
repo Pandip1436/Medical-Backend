@@ -103,6 +103,40 @@ export class ProductsController {
     });
   }
 
+  @Get('disposals')
+  @Roles('ADMIN', 'PHARMACIST', 'INVENTORY_MANAGER', 'ACCOUNTANT')
+  @ApiOperation({ summary: 'List historical write-offs / disposals from the stock-adjustment log, filtered by reason, paginated' })
+  @ApiQuery({ name: 'reason', required: true, enum: ['Expired Removal', 'Damaged'] })
+  @ApiQuery({ name: 'skip', required: false })
+  @ApiQuery({ name: 'take', required: false })
+  listDisposals(
+    @Request() req: any,
+    @Query('reason') reason: 'Expired Removal' | 'Damaged',
+    @Query('skip') skip?: string,
+    @Query('take') take?: string,
+  ) {
+    return this.productsService.listDisposals(req.user.branchId, reason, {
+      skip: skip !== undefined ? Number(skip) : undefined,
+      take: take !== undefined ? Number(take) : undefined,
+    });
+  }
+
+  @Get('adjustments')
+  @Roles('ADMIN', 'PHARMACIST', 'INVENTORY_MANAGER', 'ACCOUNTANT')
+  @ApiOperation({ summary: 'List historical stock adjustments grouped by adjustment number, paginated' })
+  @ApiQuery({ name: 'skip', required: false })
+  @ApiQuery({ name: 'take', required: false })
+  listAdjustments(
+    @Request() req: any,
+    @Query('skip') skip?: string,
+    @Query('take') take?: string,
+  ) {
+    return this.productsService.listAdjustments(req.user.branchId, {
+      skip: skip !== undefined ? Number(skip) : undefined,
+      take: take !== undefined ? Number(take) : undefined,
+    });
+  }
+
   @Get(':id/history')
   @Roles('ADMIN', 'PHARMACIST', 'INVENTORY_MANAGER', 'ACCOUNTANT')
   @ApiOperation({ summary: 'Get full sales and purchase history for a product' })
