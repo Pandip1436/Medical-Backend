@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { APP_INTERCEPTOR } from '@nestjs/core';
 import { EventEmitterModule } from '@nestjs/event-emitter';
+import { ScheduleModule } from '@nestjs/schedule';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { AuthModule } from './auth/auth.module';
@@ -25,6 +26,7 @@ import { BranchesModule } from './branches/branches.module';
 import { SalespersonsModule } from './salespersons/salespersons.module';
 import { SettingsModule } from './settings/settings.module';
 import { NumberingModule } from './numbering/numbering.module';
+import { BackupModule } from './backups/backup.module';
 import { QuotationsModule } from './quotations/quotations.module';
 import { CategoriesModule } from './categories/categories.module';
 import { NotificationsModule } from './notifications/notifications.module';
@@ -52,6 +54,7 @@ import { join } from 'path';
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
     EventEmitterModule.forRoot(),
+    ScheduleModule.forRoot(),
     ServeStaticModule.forRoot({
       rootPath: join(process.cwd(), 'uploads'),
       serveRoot: '/uploads',
@@ -77,6 +80,7 @@ import { join } from 'path';
     SalespersonsModule,
     SettingsModule,
     NumberingModule,
+    BackupModule,
     QuotationsModule,
     CategoriesModule,
     NotificationsModule,

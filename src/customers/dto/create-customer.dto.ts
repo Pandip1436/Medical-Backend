@@ -1,4 +1,4 @@
-import { IsString, IsNotEmpty, IsOptional, IsEnum, IsNumber, Min } from 'class-validator';
+import { IsString, IsNotEmpty, IsOptional, IsEnum, IsNumber, Min, IsBoolean } from 'class-validator';
 import { CustomerType } from '@prisma/client';
 
 export class CreateCustomerDto {
@@ -54,4 +54,13 @@ export class CreateCustomerDto {
   @IsString()
   @IsOptional()
   referredBy?: string;
+
+  // Customer-level consent for transactional WhatsApp messages (invoice +
+  // payment QR delivery via Meta Cloud API). Default true so existing rows
+  // and new customers are auto-opted-in unless the user explicitly toggles
+  // it off. Meta also auto-flips this to false if the customer's number
+  // returns the "user opt-out" error code (131048 / 131049).
+  @IsBoolean()
+  @IsOptional()
+  whatsappOptIn?: boolean;
 }

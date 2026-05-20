@@ -82,6 +82,7 @@ model User {
   ownedContacts        Contact[]          @relation("ContactOwner")
   leadActivities       LeadActivity[]
   invoiceEdits         InvoiceEditAudit[] @relation("InvoiceEdits")
+  backups              Backup[]
 }
 
 enum Role {
@@ -757,6 +758,11 @@ model DocumentSequence {
 }
 
 // ── Discount Rules ────────────────────────────────────────────
+/// @deprecated — no longer wired to billing. Table stays (empty in production)
+/// in case a future schema-aware rebuild reuses it; the current shape is
+/// insufficient (no FK to Product/Category/Customer, `applicableTo` is free
+/// text). Backend CRUD endpoints and the Settings UI tab were removed
+/// 2026-05-20.
 model DiscountRule {
   id           String       @id @default(cuid())
   name         String
@@ -1339,4 +1345,34 @@ model NumberingConfig {
   branch    Branch?  @relation(fields: [branchId], references: [id], onDelete: SetNull)
   @@unique([branchId, docType])
   @@index([docType])
+}
+
+// ── Backups ───────────────────────────────────────────────────
+// Manual + scheduled database snapshots, serialized as JSONL via Prisma and
+// stored in Cloudflare R2 (private). See BackupService for the run pipeline.
+model Backup {
+  id           String         @id @default(cuid())
+  filename     String         // human-readable file name, e.g. "pbims-2026-05-20-1430.jsonl.gz"
+  r2Key        String         // object key in the R2 bucket, e.g. "backups/<cuid>.jsonl.gz"
+  sizeBytes    Int            @default(0)
+  rowCount     Int            @default(0) // total records across all backed-up tables
+  trigger      BackupTrigger
+  status       BackupStatus
+  errorMessage String?
+  createdById  String?        // null for SCHEDULED runs
+  createdBy    User?          @relation(fields: [createdById], references: [id], onDelete: SetNull)
+  createdAt    DateTime       @default(now())
+  completedAt  DateTime?
+  @@index([createdAt])
+}
+
+enum BackupTrigger {
+  MANUAL
+  SCHEDULED
+}
+
+enum BackupStatus {
+  IN_PROGRESS
+  COMPLETED
+  FAILED
 }
