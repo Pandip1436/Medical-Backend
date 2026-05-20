@@ -128,6 +128,50 @@ export class CustomersController {
     return this.customersService.summary(effectiveBranchId);
   }
 
+  // Powers the Export → edit → Re-import workflow. Returns the full nested
+  // data tree (customers + every history entity) so the frontend can build
+  // a workbook that mirrors the import template exactly.
+  @Get('export')
+  @Roles('ADMIN', 'PHARMACIST', 'ACCOUNTANT')
+  @ApiOperation({
+    summary:
+      'Bulk export — every customer matching the active filters plus their full history (invoices, payments, activities, prescriptions, quotations, credit notes). Designed to round-trip through the import flow.',
+  })
+  @ApiQuery({ name: 'q', required: false })
+  @ApiQuery({ name: 'branchId', required: false })
+  @ApiQuery({
+    name: 'customerType',
+    required: false,
+    enum: ['RETAIL', 'WHOLESALE', 'DOCTOR'],
+  })
+  @ApiQuery({ name: 'hasOutstanding', required: false, type: Boolean })
+  @ApiQuery({ name: 'hasGstin', required: false, type: Boolean })
+  exportData(
+    @Request() req: AuthenticatedRequest,
+    @Query('q') q?: string,
+    @Query('branchId') branchId?: string,
+    @Query('customerType') customerType?: 'RETAIL' | 'WHOLESALE' | 'DOCTOR',
+    @Query('hasOutstanding') hasOutstanding?: string,
+    @Query('hasGstin') hasGstin?: string,
+  ) {
+    const effectiveBranchId = req.user.branchId ?? branchId ?? undefined;
+    return this.customersService.exportData(effectiveBranchId, {
+      q: q?.trim() || undefined,
+      customerType:
+        customerType === 'RETAIL' ||
+        customerType === 'WHOLESALE' ||
+        customerType === 'DOCTOR'
+          ? customerType
+          : undefined,
+      hasOutstanding:
+        typeof hasOutstanding === 'string'
+          ? hasOutstanding === 'true'
+          : undefined,
+      hasGstin:
+        typeof hasGstin === 'string' ? hasGstin === 'true' : undefined,
+    });
+  }
+
   @Get('outstanding')
   @Roles('ADMIN', 'PHARMACIST', 'ACCOUNTANT')
   @ApiOperation({

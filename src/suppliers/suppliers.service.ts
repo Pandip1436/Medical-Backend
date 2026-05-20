@@ -255,6 +255,135 @@ export class SuppliersService {
     return supplier;
   }
 
+  // Bulk export for the Export → edit → Re-import workflow. Returns the full
+  // data tree (suppliers + every history entity) so the client can build a
+  // workbook matching the import template.
+  async exportData(
+    branchId?: string,
+    filters?: {
+      q?: string;
+      isActive?: boolean;
+      paymentTerms?: string;
+      hasGstin?: boolean;
+      outstandingMin?: number;
+      outstandingMax?: number;
+    },
+  ) {
+    const conditions: Prisma.SupplierWhereInput[] = [];
+    if (branchId && branchId !== 'all') {
+      conditions.push({ OR: [{ branchId }, { branchId: null }] });
+    }
+    if (filters?.q) {
+      conditions.push({
+        OR: [
+          { name: { contains: filters.q, mode: 'insensitive' } },
+          { gstin: { contains: filters.q, mode: 'insensitive' } },
+          { phone: { contains: filters.q } },
+        ],
+      });
+    }
+    if (typeof filters?.isActive === 'boolean') {
+      conditions.push({ isActive: filters.isActive });
+    }
+    if (filters?.paymentTerms) {
+      conditions.push({
+        paymentTerms:
+          filters.paymentTerms as Prisma.SupplierWhereInput['paymentTerms'],
+      });
+    }
+    if (typeof filters?.hasGstin === 'boolean') {
+      conditions.push(
+        filters.hasGstin ? { NOT: [{ gstin: '' }] } : { OR: [{ gstin: '' }] },
+      );
+    }
+    if (typeof filters?.outstandingMin === 'number') {
+      conditions.push({ currentOutstanding: { gte: filters.outstandingMin } });
+    }
+    if (typeof filters?.outstandingMax === 'number') {
+      conditions.push({ currentOutstanding: { lte: filters.outstandingMax } });
+    }
+
+    const where: Prisma.SupplierWhereInput =
+      conditions.length > 0 ? { AND: conditions } : {};
+
+    const suppliers = await this.prisma.supplier.findMany({
+      where,
+      orderBy: { name: 'asc' },
+    });
+    const supplierIds = suppliers.map((s) => s.id);
+    if (supplierIds.length === 0) {
+      return {
+        suppliers,
+        purchaseOrders: [],
+        poItems: [],
+        grns: [],
+        grnItems: [],
+        debitNotes: [],
+        debitNoteItems: [],
+        activities: [],
+        batches: [],
+      };
+    }
+
+    // Parallel batched queries, one per child entity. Same pattern as the
+    // customers exportData method.
+    const [purchaseOrders, grns, debitNotes, activities, batches] =
+      await Promise.all([
+        this.prisma.purchaseOrder.findMany({
+          where: { supplierId: { in: supplierIds } },
+          include: { items: true },
+          orderBy: { date: 'asc' },
+        }),
+        this.prisma.gRN.findMany({
+          where: { supplierId: { in: supplierIds } },
+          include: { items: true },
+          orderBy: { date: 'asc' },
+        }),
+        this.prisma.purchaseReturn.findMany({
+          where: { supplierId: { in: supplierIds } },
+          include: { items: true },
+          orderBy: { date: 'asc' },
+        }),
+        this.prisma.supplierActivity.findMany({
+          where: { supplierId: { in: supplierIds } },
+          orderBy: { createdAt: 'desc' },
+        }),
+        this.prisma.batch.findMany({
+          where: { supplierId: { in: supplierIds } },
+          include: { product: { select: { id: true, name: true } } },
+          orderBy: { expiryDate: 'asc' },
+        }),
+      ]);
+
+    const poItems = purchaseOrders.flatMap((po) =>
+      po.items.map((item) => ({ ...item, poNumber: po.poNumber })),
+    );
+    const grnItems = grns.flatMap((g) =>
+      g.items.map((item) => ({ ...item, grnNumber: g.grnNumber })),
+    );
+    const debitNoteItems = debitNotes.flatMap((d) =>
+      d.items.map((item) => ({ ...item, debitNoteNo: d.debitNoteNo })),
+    );
+
+    const stripItems = <T extends { items: unknown }>(row: T) => {
+      const { items: _items, ...rest } = row;
+      void _items;
+      return rest;
+    };
+
+    return {
+      suppliers,
+      purchaseOrders: purchaseOrders.map(stripItems),
+      poItems,
+      grns: grns.map(stripItems),
+      grnItems,
+      debitNotes: debitNotes.map(stripItems),
+      debitNoteItems,
+      activities,
+      batches,
+    };
+  }
+
   async update(
     id: string,
     updateSupplierDto: UpdateSupplierDto,

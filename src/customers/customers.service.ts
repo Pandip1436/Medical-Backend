@@ -226,6 +226,130 @@ export class CustomersService {
     };
   }
 
+  // Bulk export for the Export → edit → Re-import workflow. Returns the
+  // full data tree (customers + every history entity) in one batched-query
+  // shot so the client can build a workbook that mirrors the import template.
+  //
+  // Filters mirror findAll() exactly so the operator's current filter UI
+  // narrows the export. Branch-scoped just like the rest of the app.
+  async exportData(
+    branchId?: string,
+    filters?: {
+      customerType?: 'RETAIL' | 'WHOLESALE' | 'DOCTOR';
+      hasOutstanding?: boolean;
+      hasGstin?: boolean;
+      q?: string;
+    },
+  ) {
+    const where: any = {};
+    if (branchId) where.branchId = branchId;
+    if (filters?.q) {
+      where.OR = [
+        { name: { contains: filters.q, mode: 'insensitive' } },
+        { phone: { contains: filters.q } },
+        { gstin: { contains: filters.q, mode: 'insensitive' } },
+      ];
+    }
+    if (filters?.customerType) where.type = filters.customerType;
+    if (typeof filters?.hasOutstanding === 'boolean') {
+      where.currentOutstanding = filters.hasOutstanding
+        ? { gt: 0 }
+        : { lte: 0 };
+    }
+    if (typeof filters?.hasGstin === 'boolean') {
+      where.AND = [
+        ...(where.AND ?? []),
+        filters.hasGstin
+          ? { NOT: [{ gstin: '' }, { gstin: null as any }] }
+          : { OR: [{ gstin: '' }, { gstin: null as any }] },
+      ];
+    }
+
+    const customers = await this.prisma.customer.findMany({
+      where,
+      orderBy: { name: 'asc' },
+    });
+    const customerIds = customers.map((c) => c.id);
+    if (customerIds.length === 0) {
+      return {
+        customers,
+        invoices: [],
+        invoiceItems: [],
+        payments: [],
+        activities: [],
+        prescriptions: [],
+        quotations: [],
+        quotationItems: [],
+        creditNotes: [],
+        creditNoteItems: [],
+      };
+    }
+
+    // One batched query per child table. Each is independent so we run them
+    // in parallel — completes in a single round-trip's worth of latency.
+    const [invoices, payments, activities, prescriptions, quotations, creditNotes] =
+      await Promise.all([
+        this.prisma.invoice.findMany({
+          where: { customerId: { in: customerIds } },
+          include: { items: true },
+          orderBy: { date: 'asc' },
+        }),
+        this.prisma.payment.findMany({
+          where: { customerId: { in: customerIds } },
+          orderBy: { createdAt: 'asc' },
+        }),
+        this.prisma.customerActivity.findMany({
+          where: { customerId: { in: customerIds } },
+          orderBy: { createdAt: 'desc' },
+        }),
+        this.prisma.prescription.findMany({
+          where: { customerId: { in: customerIds } },
+          orderBy: { createdAt: 'desc' },
+        }),
+        this.prisma.quotation.findMany({
+          where: { customerId: { in: customerIds } },
+          include: { items: true },
+          orderBy: { date: 'asc' },
+        }),
+        this.prisma.creditNote.findMany({
+          where: { customerId: { in: customerIds } },
+          include: { items: true },
+          orderBy: { date: 'asc' },
+        }),
+      ]);
+
+    // Flatten item arrays — frontend transformer wants them on a separate
+    // sheet linked by invoice/quotation/credit-note ref, not nested.
+    const invoiceItems = invoices.flatMap((i) =>
+      i.items.map((item) => ({ ...item, invoiceNumber: i.invoiceNumber })),
+    );
+    const quotationItems = quotations.flatMap((q) =>
+      q.items.map((item) => ({ ...item, quotationNumber: q.quotationNumber })),
+    );
+    const creditNoteItems = creditNotes.flatMap((cn) =>
+      cn.items.map((item) => ({ ...item, creditNoteNo: cn.creditNoteNo })),
+    );
+
+    const stripItems = <T extends { items: unknown }>(row: T) => {
+      const { items: _items, ...rest } = row;
+      void _items;
+      return rest;
+    };
+
+    return {
+      customers,
+      invoices: invoices.map(stripItems),
+      invoiceItems,
+      payments,
+      activities,
+      prescriptions,
+      quotations: quotations.map(stripItems),
+      quotationItems,
+      creditNotes: creditNotes.map(stripItems),
+      creditNoteItems,
+    };
+  }
+
   // Global summary across all customers (optionally scoped to a branch). Kept
   // unfiltered intentionally — these power top-of-page stat cards that should
   // remain stable as the user types in the search box below.

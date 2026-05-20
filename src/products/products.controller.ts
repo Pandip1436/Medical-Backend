@@ -103,6 +103,40 @@ export class ProductsController {
     });
   }
 
+  // Bulk export — every product matching the active filters + all
+  // categories. Powers the Export → edit → Re-import workflow.
+  @Get('export')
+  @Roles('ADMIN', 'INVENTORY_MANAGER', 'ACCOUNTANT')
+  @ApiOperation({
+    summary:
+      'Bulk export — every product matching the active filters plus the full category list. Round-trip compatible with the product import flow.',
+  })
+  @ApiQuery({ name: 'q', required: false })
+  @ApiQuery({ name: 'branchId', required: false })
+  @ApiQuery({ name: 'categoryId', required: false })
+  @ApiQuery({ name: 'schedule', required: false })
+  @ApiQuery({
+    name: 'status',
+    required: false,
+    enum: ['active', 'inactive'],
+  })
+  exportProducts(
+    @Request() req: any,
+    @Query('q') q?: string,
+    @Query('branchId') branchId?: string,
+    @Query('categoryId') categoryId?: string,
+    @Query('schedule') schedule?: string,
+    @Query('status') status?: string,
+  ) {
+    const effectiveBranchId = req.user?.branchId ?? branchId ?? undefined;
+    return this.productsService.exportData(effectiveBranchId, {
+      query: q?.trim() || undefined,
+      categoryId: categoryId || undefined,
+      schedule: schedule || undefined,
+      status: status === 'active' || status === 'inactive' ? status : undefined,
+    });
+  }
+
   @Get('disposals')
   @Roles('ADMIN', 'PHARMACIST', 'INVENTORY_MANAGER', 'ACCOUNTANT')
   @ApiOperation({ summary: 'List historical write-offs / disposals from the stock-adjustment log, filtered by reason, paginated' })

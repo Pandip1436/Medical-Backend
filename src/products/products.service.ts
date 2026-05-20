@@ -259,6 +259,55 @@ export class ProductsService {
     return this.prisma.product.findMany({ where, include, orderBy: { name: 'asc' } });
   }
 
+  // Bulk export for the Export → edit → Re-import workflow. Mirrors the
+  // findAll filter shape but returns the full result set (no pagination) +
+  // every category referenced so the workbook is self-contained.
+  async exportData(
+    branchId?: string,
+    filters?: {
+      query?: string;
+      categoryId?: string;
+      schedule?: string;
+      status?: string;
+    },
+  ) {
+    const where: any = {};
+    if (filters?.status === 'active') where.isActive = true;
+    else if (filters?.status === 'inactive') where.isActive = false;
+    // No status filter → include everything (active + inactive) for a true
+    // backup. The list page defaults to active-only, but for export we want
+    // the round-trip to cover archived rows too unless explicitly filtered.
+    if (branchId) where.branchId = branchId;
+    if (filters?.query) {
+      where.OR = [
+        { name: { contains: filters.query, mode: 'insensitive' } },
+        { genericName: { contains: filters.query, mode: 'insensitive' } },
+        { manufacturer: { contains: filters.query, mode: 'insensitive' } },
+        { hsnCode: { contains: filters.query, mode: 'insensitive' } },
+        { barcode: { contains: filters.query, mode: 'insensitive' } },
+      ];
+    }
+    if (filters?.categoryId) where.categoryId = filters.categoryId;
+    if (filters?.schedule) where.schedule = filters.schedule;
+
+    const products = await this.prisma.product.findMany({
+      where,
+      include: { category: { select: { id: true, name: true } } },
+      orderBy: { name: 'asc' },
+    });
+
+    // Pull every category (not just referenced ones) so the operator can see
+    // / edit unused categories too. Branch-scoped + globals.
+    const categoryWhere: any = {};
+    if (branchId) categoryWhere.OR = [{ branchId }, { branchId: null }];
+    const categories = await this.prisma.category.findMany({
+      where: categoryWhere,
+      orderBy: { name: 'asc' },
+    });
+
+    return { products, categories };
+  }
+
   // ── Batches ───────────────────────────────────────────────────
   // Paginated/filtered batch listing. Frontend pages (Expiry Management,
   // Stock Overview, Stock Adjustment) used to derive batches from the master
