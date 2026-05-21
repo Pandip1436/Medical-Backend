@@ -56,7 +56,13 @@ const PAYMENT_GROWTH_PCT = 0.10;    // outstanding grew 10%+ since last alert
 const PAYMENT_AGE_BUMP_DAYS = 30;   // OR invoice aged 30+ more days
 
 function shouldEscalateLowStock(prev: LowStockState | null, next: LowStockState): boolean {
-  if (!prev) return true; // legacy row, treat as needing refresh
+  // Legacy rows (entityState null — created before this field existed) used
+  // to fall through and force a refresh. That caused visible duplicates: the
+  // old null-state row stayed (active-alert suppression preserved it), and
+  // a brand-new row got stamped alongside it. We now treat null prev as
+  // "no change to escalate from" — the suppression clauses already keep us
+  // from spamming, and the legacy row will be cleaned up out-of-band.
+  if (!prev) return false;
   // Was above min, now below — definitely re-alert (the situation regressed).
   if (prev.totalStock > prev.minStock && next.totalStock <= next.minStock) return true;
   // Stock dropped meaningfully.
@@ -64,7 +70,8 @@ function shouldEscalateLowStock(prev: LowStockState | null, next: LowStockState)
   return false;
 }
 function shouldEscalatePaymentDue(prev: PaymentDueState | null, next: PaymentDueState): boolean {
-  if (!prev) return true;
+  // See note on shouldEscalateLowStock above: null prev no longer auto-fires.
+  if (!prev) return false;
   // Outstanding grew (e.g. extra credit added to the same invoice).
   if (next.outstanding > prev.outstanding * (1 + PAYMENT_GROWTH_PCT)) return true;
   // Invoice aged another month without payment — re-poke.
@@ -85,7 +92,31 @@ export class NotificationsService {
     return this.prisma.notification.create({ data: dto });
   }
 
-  async findAll(branchId?: string, onlyUnread?: boolean) {
+  // Filters:
+  //   branchId    — scope to a branch (also includes null-branch global rows)
+  //   onlyUnread  — drop isRead=true
+  //   type        — filter to a single NotificationType
+  //   reminders   — 'only' = SYSTEM rows with [reminderId:] marker (the
+  //                 Reminder folder); 'exclude' = everything else
+  //                 (the System folder, which is SYSTEM minus reminders).
+  //
+  // Pagination contract:
+  //   When BOTH `skip` and `take` are provided, returns the envelope
+  //   `{ data, total, hasMore }` and clamps `take` to 100. Otherwise returns
+  //   a raw array capped at 1000 — preserves backward compat for the
+  //   existing store fetch + 60s poller that don't know about pagination.
+  async findAll(opts: {
+    branchId?: string;
+    onlyUnread?: boolean;
+    /** Mirror of onlyUnread for the opposite filter — only ALREADY-read rows. */
+    onlyRead?: boolean;
+    type?: NotificationType;
+    reminders?: 'only' | 'exclude';
+    /** Free-text search across title + message (case-insensitive contains). */
+    q?: string;
+    skip?: number;
+    take?: number;
+  } = {}) {
     const now = new Date();
     // Each AND clause must be satisfied. Using an explicit array avoids the
     // top-level-OR-overrides-everything pitfall when mixing OR + branch + read filters.
@@ -93,10 +124,47 @@ export class NotificationsService {
       // Hide actively-snoozed; ones whose snooze window has elapsed come back automatically.
       { OR: [{ snoozedUntil: null }, { snoozedUntil: { lte: now } }] },
     ];
-    if (branchId) {
-      and.push({ OR: [{ branchId }, { branchId: null }] });
+    if (opts.branchId) {
+      and.push({ OR: [{ branchId: opts.branchId }, { branchId: null }] });
     }
-    if (onlyUnread) and.push({ isRead: false });
+    if (opts.onlyUnread) and.push({ isRead: false });
+    if (opts.onlyRead) and.push({ isRead: true });
+    if (opts.type) and.push({ type: opts.type });
+    // Reminders are SYSTEM rows tagged with `[reminderId:…]`. The "Reminder"
+    // folder wants just those; the "System" folder wants SYSTEM rows that are
+    // NOT reminders. Apply on top of any `type` filter.
+    if (opts.reminders === 'only') {
+      and.push({ type: NotificationType.SYSTEM, message: { contains: '[reminderId:' } });
+    } else if (opts.reminders === 'exclude') {
+      and.push({ NOT: { message: { contains: '[reminderId:' } } });
+    }
+    if (opts.q && opts.q.trim()) {
+      const q = opts.q.trim();
+      and.push({
+        OR: [
+          { title:   { contains: q, mode: 'insensitive' } },
+          { message: { contains: q, mode: 'insensitive' } },
+        ],
+      });
+    }
+
+    const paginated =
+      typeof opts.skip === 'number' && typeof opts.take === 'number';
+    if (paginated) {
+      const skip = Math.max(0, opts.skip!);
+      const take = Math.min(Math.max(1, opts.take!), 100);
+      const [data, total] = await Promise.all([
+        this.prisma.notification.findMany({
+          where: { AND: and },
+          orderBy: { createdAt: 'desc' },
+          skip,
+          take,
+        }),
+        this.prisma.notification.count({ where: { AND: and } }),
+      ]);
+      return { data, total, hasMore: skip + data.length < total };
+    }
+
     return this.prisma.notification.findMany({
       where: { AND: and },
       orderBy: { createdAt: 'desc' },

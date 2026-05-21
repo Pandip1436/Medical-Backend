@@ -31,10 +31,14 @@ export class SettingsService {
     const id = await this.getTargetBranchId(branchId);
     if (!id) throw new Error('No branch found to update');
 
+    // Trim the incoming name so a stray leading/trailing space in the
+    // Settings → Business Profile form doesn't end up persisted as the
+    // branch name (then leaking into /api/auth/me responses). See BUGS.md SEV-4.
+    const rawName = data.companyName || data.name;
     return this.prisma.branch.update({
       where: { id },
       data: {
-        name: data.companyName || data.name,
+        name: typeof rawName === 'string' ? rawName.trim() : rawName,
         address: data.address,
         phone: data.phone,
         email: data.email,

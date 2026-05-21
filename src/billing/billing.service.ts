@@ -4,8 +4,42 @@ import { PrismaService } from '../prisma/prisma.service';
 import { ApprovalsService } from '../approvals/approvals.service';
 import { DocumentNumberingService } from '../common/services/document-numbering.service';
 import { CreateInvoiceDto } from './dto/create-invoice.dto';
+import { CreateInvoiceItemDto } from './dto/create-invoice-item.dto';
 import { PaymentMode, Prisma } from '@prisma/client';
 import { INVOICE_CREATED, InvoiceCreatedPayload } from '../events/invoice-events';
+
+// Round to 2 decimal places before persisting any rupee/percent column. The
+// frontend often hands us raw IEEE-754 products like 5.399999999999999 which,
+// once written to a Decimal column as-is, leak into Tally/GSTR exports.
+// Centralised here so every write path (create, draft, finalize, edit) gets
+// the same treatment.
+function r2(n: number | null | undefined): number {
+  if (n === null || n === undefined) return 0;
+  const v = Number(n);
+  if (!Number.isFinite(v)) return 0;
+  return Math.round(v * 100) / 100;
+}
+
+// Mirror of r2 for invoice line items — keeps quantity as an integer and
+// rounds every Decimal field. Also snapshots a non-zero mrp when the caller
+// hands us 0 (see findItemMrpFallback). Kept inline so the create/draft/
+// finalize/edit paths share one shape.
+function normalizeItem(item: CreateInvoiceItemDto, mrpFallback: number) {
+  const mrp = r2(item.mrp);
+  return {
+    productId: item.productId,
+    productName: item.productName,
+    batchId: item.batchId,
+    batchNumber: item.batchNumber,
+    expiryDate: new Date(item.expiryDate),
+    quantity: item.quantity,
+    mrp: mrp > 0 ? mrp : r2(mrpFallback),
+    rate: r2(item.rate),
+    discountPercent: r2(item.discountPercent),
+    gstPercent: r2(item.gstPercent),
+    amount: r2(item.amount),
+  };
+}
 
 @Injectable()
 export class BillingService {
@@ -155,6 +189,70 @@ export class BillingService {
     }
   }
 
+  // Look up MRP from the chosen batch (preferred — that's what was on the
+  // strip at sale time) or the product master (fallback) so we can snapshot
+  // a sane mrp onto InvoiceItem even when the frontend forgets to send one.
+  // Returns 0 only when neither row has an mrp on file.
+  private async resolveItemMrpFallbacks(
+    tx: Prisma.TransactionClient,
+    items: Array<{ productId: string; batchId?: string; mrp?: number }>,
+  ): Promise<Map<string, number>> {
+    const fallbacks = new Map<string, number>();
+    const batchIds = Array.from(
+      new Set(
+        items
+          .filter((i) => !(Number(i.mrp) > 0) && i.batchId)
+          .map((i) => i.batchId!)
+          .filter(Boolean),
+      ),
+    );
+    const productIds = Array.from(
+      new Set(
+        items
+          .filter((i) => !(Number(i.mrp) > 0))
+          .map((i) => i.productId)
+          .filter(Boolean),
+      ),
+    );
+    if (batchIds.length === 0 && productIds.length === 0) return fallbacks;
+    const [batches, products] = await Promise.all([
+      batchIds.length
+        ? tx.batch.findMany({
+            where: { id: { in: batchIds } },
+            select: { id: true, mrp: true, productId: true },
+          })
+        : Promise.resolve([] as Array<{ id: string; mrp: any; productId: string }>),
+      productIds.length
+        ? tx.product.findMany({
+            where: { id: { in: productIds } },
+            select: { id: true, mrp: true },
+          })
+        : Promise.resolve([] as Array<{ id: string; mrp: any }>),
+    ]);
+    const productMrp = new Map<string, number>(
+      products.map((p) => [p.id, Number(p.mrp ?? 0)]),
+    );
+    const batchMrp = new Map<string, number>(
+      batches.map((b) => [b.id, Number(b.mrp ?? 0)]),
+    );
+    for (const it of items) {
+      const k = `${it.productId}::${it.batchId ?? ''}`;
+      const fromBatch = it.batchId ? batchMrp.get(it.batchId) ?? 0 : 0;
+      const fromProduct = productMrp.get(it.productId) ?? 0;
+      fallbacks.set(k, fromBatch > 0 ? fromBatch : fromProduct);
+    }
+    return fallbacks;
+  }
+
+  // Pull the right fallback for a single item using the same key shape
+  // resolveItemMrpFallbacks uses.
+  private mrpFallbackFor(
+    fallbacks: Map<string, number>,
+    item: { productId: string; batchId?: string },
+  ): number {
+    return fallbacks.get(`${item.productId}::${item.batchId ?? ''}`) ?? 0;
+  }
+
   async create(
     createInvoiceDto: CreateInvoiceDto,
     userId: string,
@@ -194,6 +292,7 @@ export class BillingService {
               'INV',
               branchId ?? null,
             );
+            const mrpFallbacks = await this.resolveItemMrpFallbacks(tx, createInvoiceDto.items);
             const draftInvoice = await tx.invoice.create({
               data: {
                 invoiceNumber,
@@ -201,19 +300,19 @@ export class BillingService {
                 billingType: createInvoiceDto.billingType,
                 branchId,
                 customerId: createInvoiceDto.customerId ?? null,
-                customerName: createInvoiceDto.customerName,
+                customerName: (createInvoiceDto.customerName ?? '').trim(),
                 doctorName: createInvoiceDto.doctorName ?? null,
                 salespersonId: createInvoiceDto.salespersonId ?? null,
                 salespersonName: createInvoiceDto.salespersonName ?? null,
-                subtotal: createInvoiceDto.subtotal,
-                productDiscount: createInvoiceDto.productDiscount ?? 0,
-                taxableAmount: createInvoiceDto.taxableAmount ?? createInvoiceDto.subtotal,
-                cgst: createInvoiceDto.cgst ?? 0,
-                sgst: createInvoiceDto.sgst ?? 0,
-                igst: createInvoiceDto.igst ?? 0,
-                deliveryCharge: createInvoiceDto.deliveryCharge ?? 0,
-                roundOff: createInvoiceDto.roundOff ?? 0,
-                grandTotal: createInvoiceDto.grandTotal,
+                subtotal: r2(createInvoiceDto.subtotal),
+                productDiscount: r2(createInvoiceDto.productDiscount),
+                taxableAmount: r2(createInvoiceDto.taxableAmount ?? createInvoiceDto.subtotal),
+                cgst: r2(createInvoiceDto.cgst),
+                sgst: r2(createInvoiceDto.sgst),
+                igst: r2(createInvoiceDto.igst),
+                deliveryCharge: r2(createInvoiceDto.deliveryCharge),
+                roundOff: r2(createInvoiceDto.roundOff),
+                grandTotal: r2(createInvoiceDto.grandTotal),
                 paymentMode: 'CREDIT',
                 status: 'DRAFT',
                 amountPaid: 0,
@@ -223,19 +322,9 @@ export class BillingService {
                 // created via "Create Invoice" from the lead detail panel.
                 ...(createInvoiceDto.leadId && { leadId: createInvoiceDto.leadId }),
                 items: {
-                  create: createInvoiceDto.items.map(item => ({
-                    productId: item.productId,
-                    productName: item.productName,
-                    batchId: item.batchId,
-                    batchNumber: item.batchNumber,
-                    expiryDate: new Date(item.expiryDate),
-                    quantity: item.quantity,
-                    rate: item.rate,
-                    mrp: item.mrp,
-                    amount: item.amount,
-                    gstPercent: item.gstPercent ?? 0,
-                    discountPercent: item.discountPercent ?? 0,
-                  })),
+                  create: createInvoiceDto.items.map((item) =>
+                    normalizeItem(item, this.mrpFallbackFor(mrpFallbacks, item)),
+                  ),
                 },
               } as any,
             });
@@ -284,6 +373,7 @@ export class BillingService {
       }
 
       // 3. Create the Invoice and InvoiceItems
+      const mrpFallbacks = await this.resolveItemMrpFallbacks(tx, createInvoiceDto.items);
       const invoice = await tx.invoice.create({
         data: {
           invoiceNumber,
@@ -291,42 +381,32 @@ export class BillingService {
           billingType: createInvoiceDto.billingType,
           branchId,
           customerId: createInvoiceDto.customerId,
-          customerName: createInvoiceDto.customerName,
+          customerName: (createInvoiceDto.customerName ?? '').trim(),
           doctorName: createInvoiceDto.doctorName,
-          subtotal: createInvoiceDto.subtotal,
-          productDiscount: createInvoiceDto.productDiscount,
-          taxableAmount: createInvoiceDto.taxableAmount,
-          cgst: createInvoiceDto.cgst,
-          sgst: createInvoiceDto.sgst,
-          igst: createInvoiceDto.igst || 0,
-          deliveryCharge: createInvoiceDto.deliveryCharge ?? 0,
-          roundOff: createInvoiceDto.roundOff,
-          grandTotal: createInvoiceDto.grandTotal,
+          subtotal: r2(createInvoiceDto.subtotal),
+          productDiscount: r2(createInvoiceDto.productDiscount),
+          taxableAmount: r2(createInvoiceDto.taxableAmount),
+          cgst: r2(createInvoiceDto.cgst),
+          sgst: r2(createInvoiceDto.sgst),
+          igst: r2(createInvoiceDto.igst),
+          deliveryCharge: r2(createInvoiceDto.deliveryCharge),
+          roundOff: r2(createInvoiceDto.roundOff),
+          grandTotal: r2(createInvoiceDto.grandTotal),
           paymentMode: createInvoiceDto.paymentMode,
           paymentDetails: createInvoiceDto.paymentDetails,
           status: createInvoiceDto.status,
-          amountPaid: createInvoiceDto.amountPaid,
-          changeReturned: createInvoiceDto.changeReturned,
+          amountPaid: r2(createInvoiceDto.amountPaid),
+          changeReturned: r2(createInvoiceDto.changeReturned),
           salespersonId: createInvoiceDto.salespersonId ?? null,
           salespersonName: createInvoiceDto.salespersonName ?? null,
           createdById: userId,
           // Optional CRM Lead link — see DTO comment.
           ...(createInvoiceDto.leadId && { leadId: createInvoiceDto.leadId }),
           items: {
-            create: createInvoiceDto.items.map(item => ({
-              productId: item.productId,
-              productName: item.productName,
-              batchId: item.batchId,
-              batchNumber: item.batchNumber,
-              expiryDate: new Date(item.expiryDate),
-              quantity: item.quantity,
-              mrp: item.mrp,
-              rate: item.rate,
-              discountPercent: item.discountPercent,
-              gstPercent: item.gstPercent,
-              amount: item.amount
-            }))
-          }
+            create: createInvoiceDto.items.map((item) =>
+              normalizeItem(item, this.mrpFallbackFor(mrpFallbacks, item)),
+            ),
+          },
         },
         include: {
           items: true
@@ -399,21 +479,27 @@ export class BillingService {
 
   // Public helper so the manual `POST /:id/send-whatsapp` controller endpoint
   // can re-fire the listener flow for an existing invoice.
-  emitInvoiceCreatedById(invoiceId: string) {
-    return this.prisma.invoice.findUnique({ where: { id: invoiceId } }).then((inv) => {
-      if (!inv) throw new NotFoundException('Invoice not found');
-      const payload: InvoiceCreatedPayload = {
-        invoiceId: inv.id,
-        branchId: inv.branchId ?? null,
-        customerId: inv.customerId ?? null,
-        type: inv.type as any,
-        status: inv.status as any,
-        grandTotal: Number(inv.grandTotal),
-        amountPaid: Number(inv.amountPaid),
-      };
-      this.events.emit(INVOICE_CREATED, payload);
-      return { ok: true, queued: inv.invoiceNumber };
-    });
+  async emitInvoiceCreatedById(invoiceId: string) {
+    const inv = await this.prisma.invoice.findUnique({ where: { id: invoiceId } });
+    if (!inv) throw new NotFoundException('Invoice not found');
+    const payload: InvoiceCreatedPayload = {
+      invoiceId: inv.id,
+      branchId: inv.branchId ?? null,
+      customerId: inv.customerId ?? null,
+      type: inv.type as any,
+      status: inv.status as any,
+      grandTotal: Number(inv.grandTotal),
+      amountPaid: Number(inv.amountPaid),
+    };
+    // DIAGNOSTIC: await listener so its errors surface in the HTTP response
+    // instead of being silently swallowed by the fire-and-forget emit().
+    // Revert to this.events.emit(...) once we've identified the failure.
+    try {
+      await this.events.emitAsync(INVOICE_CREATED, payload);
+    } catch (e: any) {
+      throw new Error(`Listener failed: ${e?.message ?? e} :: stack: ${e?.stack ?? '(no stack)'}`);
+    }
+    return { ok: true, queued: inv.invoiceNumber };
   }
 
   // Match the customers/suppliers pattern: legacy plain-array path when no
@@ -619,44 +705,35 @@ export class BillingService {
       // frontend sends the full item set every save.
       await tx.invoiceItem.deleteMany({ where: { invoiceId: id } });
 
+      const mrpFallbacks = await this.resolveItemMrpFallbacks(tx, dto.items);
       return tx.invoice.update({
         where: { id },
         data: {
           billingType: dto.billingType,
           customerId: dto.customerId ?? null,
-          customerName: dto.customerName,
+          customerName: (dto.customerName ?? '').trim(),
           doctorName: dto.doctorName ?? null,
           salespersonId: dto.salespersonId ?? null,
           salespersonName: dto.salespersonName ?? null,
-          subtotal: dto.subtotal,
-          productDiscount: dto.productDiscount ?? 0,
-          taxableAmount: dto.taxableAmount ?? dto.subtotal,
-          cgst: dto.cgst ?? 0,
-          sgst: dto.sgst ?? 0,
-          igst: dto.igst ?? 0,
-          deliveryCharge: dto.deliveryCharge ?? 0,
-          roundOff: dto.roundOff ?? 0,
-          grandTotal: dto.grandTotal,
+          subtotal: r2(dto.subtotal),
+          productDiscount: r2(dto.productDiscount),
+          taxableAmount: r2(dto.taxableAmount ?? dto.subtotal),
+          cgst: r2(dto.cgst),
+          sgst: r2(dto.sgst),
+          igst: r2(dto.igst),
+          deliveryCharge: r2(dto.deliveryCharge),
+          roundOff: r2(dto.roundOff),
+          grandTotal: r2(dto.grandTotal),
           paymentMode: dto.paymentMode,
           paymentDetails: dto.paymentDetails,
-          amountPaid: dto.amountPaid ?? 0,
-          changeReturned: dto.changeReturned ?? 0,
+          amountPaid: r2(dto.amountPaid),
+          changeReturned: r2(dto.changeReturned),
           // Status pinned to DRAFT — finalization goes through finalizeDraft().
           status: 'DRAFT',
           items: {
-            create: dto.items.map((item) => ({
-              productId: item.productId,
-              productName: item.productName,
-              batchId: item.batchId,
-              batchNumber: item.batchNumber,
-              expiryDate: new Date(item.expiryDate),
-              quantity: item.quantity,
-              mrp: item.mrp,
-              rate: item.rate,
-              discountPercent: item.discountPercent ?? 0,
-              gstPercent: item.gstPercent ?? 0,
-              amount: item.amount,
-            })),
+            create: dto.items.map((item) =>
+              normalizeItem(item, this.mrpFallbackFor(mrpFallbacks, item)),
+            ),
           },
         },
         include: { items: true },
@@ -688,43 +765,34 @@ export class BillingService {
 
       // Replace items, flip status, write final payment fields.
       await tx.invoiceItem.deleteMany({ where: { invoiceId: id } });
+      const mrpFallbacks = await this.resolveItemMrpFallbacks(tx, dto.items);
       const finalized = await tx.invoice.update({
         where: { id },
         data: {
           billingType: dto.billingType,
           customerId: dto.customerId ?? null,
-          customerName: dto.customerName,
+          customerName: (dto.customerName ?? '').trim(),
           doctorName: dto.doctorName ?? null,
           salespersonId: dto.salespersonId ?? null,
           salespersonName: dto.salespersonName ?? null,
-          subtotal: dto.subtotal,
-          productDiscount: dto.productDiscount ?? 0,
-          taxableAmount: dto.taxableAmount ?? dto.subtotal,
-          cgst: dto.cgst ?? 0,
-          sgst: dto.sgst ?? 0,
-          igst: dto.igst ?? 0,
-          deliveryCharge: dto.deliveryCharge ?? 0,
-          roundOff: dto.roundOff ?? 0,
-          grandTotal: dto.grandTotal,
+          subtotal: r2(dto.subtotal),
+          productDiscount: r2(dto.productDiscount),
+          taxableAmount: r2(dto.taxableAmount ?? dto.subtotal),
+          cgst: r2(dto.cgst),
+          sgst: r2(dto.sgst),
+          igst: r2(dto.igst),
+          deliveryCharge: r2(dto.deliveryCharge),
+          roundOff: r2(dto.roundOff),
+          grandTotal: r2(dto.grandTotal),
           paymentMode: dto.paymentMode,
           paymentDetails: dto.paymentDetails,
-          amountPaid: dto.amountPaid ?? 0,
-          changeReturned: dto.changeReturned ?? 0,
+          amountPaid: r2(dto.amountPaid),
+          changeReturned: r2(dto.changeReturned),
           status: dto.status,
           items: {
-            create: dto.items.map((item) => ({
-              productId: item.productId,
-              productName: item.productName,
-              batchId: item.batchId,
-              batchNumber: item.batchNumber,
-              expiryDate: new Date(item.expiryDate),
-              quantity: item.quantity,
-              mrp: item.mrp,
-              rate: item.rate,
-              discountPercent: item.discountPercent ?? 0,
-              gstPercent: item.gstPercent ?? 0,
-              amount: item.amount,
-            })),
+            create: dto.items.map((item) =>
+              normalizeItem(item, this.mrpFallbackFor(mrpFallbacks, item)),
+            ),
           },
         },
         include: { items: true },
@@ -922,24 +990,25 @@ export class BillingService {
             : 'UNPAID';
 
       // 6) Write the updated invoice and recreate items.
+      const mrpFallbacks = await this.resolveItemMrpFallbacks(tx, dto.items);
       const updated = await tx.invoice.update({
         where: { id },
         data: {
           billingType: dto.billingType,
           customerId: dto.customerId ?? null,
-          customerName: dto.customerName,
+          customerName: (dto.customerName ?? '').trim(),
           doctorName: dto.doctorName ?? null,
           salespersonId: dto.salespersonId ?? null,
           salespersonName: dto.salespersonName ?? null,
-          subtotal: dto.subtotal,
-          productDiscount: dto.productDiscount ?? 0,
-          taxableAmount: dto.taxableAmount ?? dto.subtotal,
-          cgst: dto.cgst ?? 0,
-          sgst: dto.sgst ?? 0,
-          igst: dto.igst ?? 0,
-          deliveryCharge: dto.deliveryCharge ?? 0,
-          roundOff: dto.roundOff ?? 0,
-          grandTotal: dto.grandTotal,
+          subtotal: r2(dto.subtotal),
+          productDiscount: r2(dto.productDiscount),
+          taxableAmount: r2(dto.taxableAmount ?? dto.subtotal),
+          cgst: r2(dto.cgst),
+          sgst: r2(dto.sgst),
+          igst: r2(dto.igst),
+          deliveryCharge: r2(dto.deliveryCharge),
+          roundOff: r2(dto.roundOff),
+          grandTotal: r2(dto.grandTotal),
           paymentMode: dto.paymentMode,
           paymentDetails: dto.paymentDetails,
           status: newStatus,
@@ -947,19 +1016,9 @@ export class BillingService {
           // of what the customer actually handed over and lives independently
           // of the invoice's billed amount.
           items: {
-            create: dto.items.map((item) => ({
-              productId: item.productId,
-              productName: item.productName,
-              batchId: item.batchId,
-              batchNumber: item.batchNumber,
-              expiryDate: new Date(item.expiryDate),
-              quantity: item.quantity,
-              mrp: item.mrp,
-              rate: item.rate,
-              discountPercent: item.discountPercent ?? 0,
-              gstPercent: item.gstPercent ?? 0,
-              amount: item.amount,
-            })),
+            create: dto.items.map((item) =>
+              normalizeItem(item, this.mrpFallbackFor(mrpFallbacks, item)),
+            ),
           },
         },
         include: { items: true },

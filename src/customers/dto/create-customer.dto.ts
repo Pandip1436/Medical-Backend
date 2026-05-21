@@ -1,9 +1,18 @@
 import { IsString, IsNotEmpty, IsOptional, IsEnum, IsNumber, Min, IsBoolean } from 'class-validator';
+import { Transform } from 'class-transformer';
 import { CustomerType } from '@prisma/client';
+
+// Trim every string at the DTO boundary so a stray trailing space typed by
+// the operator (or pasted in from a spreadsheet) doesn't survive into the
+// Customer.name column — which then gets denormalised onto Invoice.customerName
+// and breaks CSV exports + downstream joins. Bug #7.
+const trim = ({ value }: { value: unknown }) =>
+  typeof value === 'string' ? value.trim() : value;
 
 export class CreateCustomerDto {
   @IsString()
   @IsNotEmpty()
+  @Transform(trim)
   name!: string;
 
   @IsString()

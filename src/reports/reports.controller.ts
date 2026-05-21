@@ -13,7 +13,7 @@ export class ReportsController {
   constructor(private readonly reportsService: ReportsService) {}
 
   @Get('dashboard')
-  @Roles('ADMIN', 'PHARMACIST', 'INVENTORY_MANAGER', 'ACCOUNTANT')
+  @Roles('ADMIN', 'PHARMACIST', 'INVENTORY_MANAGER', 'ACCOUNTANT', 'SALESPERSON')
   @ApiOperation({ summary: 'KPI data for the main dashboard' })
   getDashboardKpis(@Request() req: any, @Query('branchId') branchId?: string) {
     return this.reportsService.getDashboardKpis(req.user.branchId ?? branchId);
@@ -21,14 +21,14 @@ export class ReportsController {
 
   // ── Sales ────────────────────────────────────────────────────
   @Get('sales/daily')
-  @Roles('ADMIN', 'PHARMACIST', 'ACCOUNTANT', 'INVENTORY_MANAGER')
+  @Roles('ADMIN', 'PHARMACIST', 'ACCOUNTANT', 'INVENTORY_MANAGER', 'SALESPERSON')
   @ApiOperation({ summary: 'Hourly sales for the current day' })
   getDailySales(@Request() req: any, @Query('branchId') branchId?: string) {
     return this.reportsService.getDailySales(req.user.branchId ?? branchId);
   }
 
   @Get('sales/monthly')
-  @Roles('ADMIN', 'PHARMACIST', 'ACCOUNTANT', 'INVENTORY_MANAGER')
+  @Roles('ADMIN', 'PHARMACIST', 'ACCOUNTANT', 'INVENTORY_MANAGER', 'SALESPERSON')
   @ApiOperation({ summary: 'Monthly sales for a year' })
   @ApiQuery({ name: 'year', required: false })
   getMonthlySales(@Request() req: any, @Query('year') year?: string, @Query('branchId') branchId?: string) {
@@ -36,7 +36,7 @@ export class ReportsController {
   }
 
   @Get('sales/range')
-  @Roles('ADMIN', 'PHARMACIST', 'ACCOUNTANT', 'INVENTORY_MANAGER')
+  @Roles('ADMIN', 'PHARMACIST', 'ACCOUNTANT', 'INVENTORY_MANAGER', 'SALESPERSON')
   @ApiOperation({ summary: 'Sales totals bucketed by day or month within an arbitrary range' })
   @ApiQuery({ name: 'from', required: true })
   @ApiQuery({ name: 'to', required: true })

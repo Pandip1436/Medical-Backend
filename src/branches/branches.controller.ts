@@ -39,7 +39,7 @@ export class BranchesController {
   // Plain array when no skip/take provided (used by header switcher + branchStore).
   // Paginated { data, total, hasMore } with embedded stats when skip+take are provided.
   @Get()
-  @Roles('ADMIN', 'PHARMACIST', 'INVENTORY_MANAGER', 'ACCOUNTANT')
+  @Roles('ADMIN', 'PHARMACIST', 'INVENTORY_MANAGER', 'ACCOUNTANT', 'SALESPERSON')
   @ApiOperation({ summary: 'Get branches (paginated/filterable if skip+take provided)' })
   @ApiQuery({ name: 'q', required: false })
   @ApiQuery({ name: 'isActive', required: false, type: Boolean })
@@ -73,7 +73,7 @@ export class BranchesController {
   }
 
   @Get(':id')
-  @Roles('ADMIN', 'PHARMACIST', 'INVENTORY_MANAGER', 'ACCOUNTANT')
+  @Roles('ADMIN', 'PHARMACIST', 'INVENTORY_MANAGER', 'ACCOUNTANT', 'SALESPERSON')
   @ApiOperation({ summary: 'Get a branch by ID' })
   findOne(@Param('id') id: string) {
     return this.branchesService.findOne(id);

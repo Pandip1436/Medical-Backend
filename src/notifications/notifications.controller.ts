@@ -11,7 +11,7 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { NotificationsService } from './notifications.service';
-import { CreateNotificationDto } from './dto/create-notification.dto';
+import { CreateNotificationDto, NotificationType } from './dto/create-notification.dto';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
 import { Roles } from '../common/decorators/roles.decorator';
@@ -27,19 +27,50 @@ import type { AuthenticatedRequest } from '../common/types/authenticated-request
 export class NotificationsController {
   constructor(private readonly service: NotificationsService) {}
 
+  // Pagination params (`skip` / `take`) are optional. When both are present
+  // the service returns `{ data, total, hasMore }` (used by the notifications
+  // folder view's infinite scroll). When omitted, returns a raw array — the
+  // shape the store's initial fetch + 60s poller still expect.
+  //
+  // `type` narrows to one NotificationType. `reminders=only|exclude` splits
+  // the SYSTEM type into the Reminder vs System folders (reminders are
+  // SYSTEM rows tagged with a `[reminderId:…]` marker).
   @Get()
-  @Roles('ADMIN', 'PHARMACIST', 'INVENTORY_MANAGER', 'ACCOUNTANT')
+  @Roles('ADMIN', 'PHARMACIST', 'INVENTORY_MANAGER', 'ACCOUNTANT', 'SALESPERSON')
   findAll(
     @Request() req: AuthenticatedRequest,
     @Query('branchId') queryBranchId?: string,
     @Query('unread') unread?: string,
+    @Query('read') read?: string,
+    @Query('type') type?: string,
+    @Query('reminders') reminders?: string,
+    @Query('q') q?: string,
+    @Query('skip') skip?: string,
+    @Query('take') take?: string,
   ) {
     const branchId = req.user.branchId ?? queryBranchId ?? undefined;
-    return this.service.findAll(branchId, unread === 'true');
+    const typedType =
+      type && (Object.values(NotificationType) as string[]).includes(type)
+        ? (type as NotificationType)
+        : undefined;
+    const remindersFilter =
+      reminders === 'only' || reminders === 'exclude' ? reminders : undefined;
+    const skipN = skip !== undefined ? Number(skip) : undefined;
+    const takeN = take !== undefined ? Number(take) : undefined;
+    return this.service.findAll({
+      branchId,
+      onlyUnread: unread === 'true',
+      onlyRead: read === 'true',
+      type: typedType,
+      reminders: remindersFilter,
+      q: q && q.trim() ? q.trim() : undefined,
+      skip: Number.isFinite(skipN) ? skipN : undefined,
+      take: Number.isFinite(takeN) ? takeN : undefined,
+    });
   }
 
   @Post()
-  @Roles('ADMIN', 'PHARMACIST', 'INVENTORY_MANAGER', 'ACCOUNTANT')
+  @Roles('ADMIN', 'PHARMACIST', 'INVENTORY_MANAGER', 'ACCOUNTANT', 'SALESPERSON')
   create(
     @Body() dto: CreateNotificationDto,
     @Request() req: AuthenticatedRequest,
@@ -51,13 +82,13 @@ export class NotificationsController {
   }
 
   @Patch(':id/read')
-  @Roles('ADMIN', 'PHARMACIST', 'INVENTORY_MANAGER', 'ACCOUNTANT')
+  @Roles('ADMIN', 'PHARMACIST', 'INVENTORY_MANAGER', 'ACCOUNTANT', 'SALESPERSON')
   markAsRead(@Param('id') id: string) {
     return this.service.markAsRead(id);
   }
 
   @Patch('read-all')
-  @Roles('ADMIN', 'PHARMACIST', 'INVENTORY_MANAGER', 'ACCOUNTANT')
+  @Roles('ADMIN', 'PHARMACIST', 'INVENTORY_MANAGER', 'ACCOUNTANT', 'SALESPERSON')
   markAllAsRead(
     @Request() req: AuthenticatedRequest,
     @Query('branchId') queryBranchId?: string,
@@ -67,31 +98,31 @@ export class NotificationsController {
   }
 
   @Patch('read-bulk')
-  @Roles('ADMIN', 'PHARMACIST', 'INVENTORY_MANAGER', 'ACCOUNTANT')
+  @Roles('ADMIN', 'PHARMACIST', 'INVENTORY_MANAGER', 'ACCOUNTANT', 'SALESPERSON')
   markManyAsRead(@Body() body: { ids: string[] }) {
     return this.service.markManyAsRead(body?.ids ?? []);
   }
 
   @Patch(':id/snooze')
-  @Roles('ADMIN', 'PHARMACIST', 'INVENTORY_MANAGER', 'ACCOUNTANT')
+  @Roles('ADMIN', 'PHARMACIST', 'INVENTORY_MANAGER', 'ACCOUNTANT', 'SALESPERSON')
   snooze(@Param('id') id: string, @Body() body: { until: string }) {
     return this.service.snooze(id, new Date(body.until));
   }
 
   @Patch(':id/resolve')
-  @Roles('ADMIN', 'PHARMACIST', 'INVENTORY_MANAGER', 'ACCOUNTANT')
+  @Roles('ADMIN', 'PHARMACIST', 'INVENTORY_MANAGER', 'ACCOUNTANT', 'SALESPERSON')
   resolve(@Param('id') id: string, @Request() req: AuthenticatedRequest) {
     return this.service.resolve(id, req.user.userId);
   }
 
   @Delete(':id')
-  @Roles('ADMIN', 'PHARMACIST', 'INVENTORY_MANAGER', 'ACCOUNTANT')
+  @Roles('ADMIN', 'PHARMACIST', 'INVENTORY_MANAGER', 'ACCOUNTANT', 'SALESPERSON')
   remove(@Param('id') id: string) {
     return this.service.remove(id);
   }
 
   @Post('delete-bulk')
-  @Roles('ADMIN', 'PHARMACIST', 'INVENTORY_MANAGER', 'ACCOUNTANT')
+  @Roles('ADMIN', 'PHARMACIST', 'INVENTORY_MANAGER', 'ACCOUNTANT', 'SALESPERSON')
   removeMany(@Body() body: { ids: string[] }) {
     return this.service.removeMany(body?.ids ?? []);
   }

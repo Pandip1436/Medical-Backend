@@ -28,7 +28,7 @@ export class BranchesService {
   async create(dto: CreateBranchDto) {
     const existing = await this.prisma.branch.findUnique({ where: { code: dto.code } });
     if (existing) throw new ConflictException('Branch code already exists');
-    return this.prisma.branch.create({ data: dto });
+    return this.prisma.branch.create({ data: { ...dto, name: dto.name.trim() } });
   }
 
   // findAll mirrors the suppliers pattern:
@@ -194,7 +194,8 @@ export class BranchesService {
         data: { isDefault: false },
       });
     }
-    return this.prisma.branch.update({ where: { id }, data: dto });
+    const data = dto.name !== undefined ? { ...dto, name: dto.name.trim() } : dto;
+    return this.prisma.branch.update({ where: { id }, data });
   }
 
   async remove(id: string) {

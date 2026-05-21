@@ -65,9 +65,16 @@ export class CustomersService {
     user?: { userId: string; role: string },
   ) {
     // Canonicalise phone before storing so future lookups + the unique check
-    // both work even if the user pasted in a formatted number.
+    // both work even if the user pasted in a formatted number. Belt-and-braces
+    // trim on `name` too (the DTO already does this — this guards the
+    // approval-replay path that calls this method directly with payloads
+    // that were stored before the DTO trim landed). Bug #7.
     const normalizedPhone = this.normalizePhone(createCustomerDto.phone);
-    const dto = { ...createCustomerDto, phone: normalizedPhone };
+    const dto = {
+      ...createCustomerDto,
+      phone: normalizedPhone,
+      name: typeof createCustomerDto.name === 'string' ? createCustomerDto.name.trim() : createCustomerDto.name,
+    };
     // Block phone-duplicate before either path (direct create or approval).
     // For the approval path we want the pharmacist to see the conflict
     // immediately rather than having admin discover it later.
@@ -397,6 +404,10 @@ export class CustomersService {
       }
       data.phone = normalized;
     }
+    // Bug #7 belt-and-braces: trim name on edit too, even though the DTO
+    // already trims via @Transform — guards admin tools that hit this
+    // service with a raw object instead of going through the controller.
+    if (typeof data.name === 'string') data.name = data.name.trim();
     return this.prisma.customer.update({ where: { id }, data });
   }
 
