@@ -479,27 +479,21 @@ export class BillingService {
 
   // Public helper so the manual `POST /:id/send-whatsapp` controller endpoint
   // can re-fire the listener flow for an existing invoice.
-  async emitInvoiceCreatedById(invoiceId: string) {
-    const inv = await this.prisma.invoice.findUnique({ where: { id: invoiceId } });
-    if (!inv) throw new NotFoundException('Invoice not found');
-    const payload: InvoiceCreatedPayload = {
-      invoiceId: inv.id,
-      branchId: inv.branchId ?? null,
-      customerId: inv.customerId ?? null,
-      type: inv.type as any,
-      status: inv.status as any,
-      grandTotal: Number(inv.grandTotal),
-      amountPaid: Number(inv.amountPaid),
-    };
-    // DIAGNOSTIC: await listener so its errors surface in the HTTP response
-    // instead of being silently swallowed by the fire-and-forget emit().
-    // Revert to this.events.emit(...) once we've identified the failure.
-    try {
-      await this.events.emitAsync(INVOICE_CREATED, payload);
-    } catch (e: any) {
-      throw new Error(`Listener failed: ${e?.message ?? e} :: stack: ${e?.stack ?? '(no stack)'}`);
-    }
-    return { ok: true, queued: inv.invoiceNumber };
+  emitInvoiceCreatedById(invoiceId: string) {
+    return this.prisma.invoice.findUnique({ where: { id: invoiceId } }).then((inv) => {
+      if (!inv) throw new NotFoundException('Invoice not found');
+      const payload: InvoiceCreatedPayload = {
+        invoiceId: inv.id,
+        branchId: inv.branchId ?? null,
+        customerId: inv.customerId ?? null,
+        type: inv.type as any,
+        status: inv.status as any,
+        grandTotal: Number(inv.grandTotal),
+        amountPaid: Number(inv.amountPaid),
+      };
+      this.events.emit(INVOICE_CREATED, payload);
+      return { ok: true, queued: inv.invoiceNumber };
+    });
   }
 
   // Match the customers/suppliers pattern: legacy plain-array path when no

@@ -6,9 +6,16 @@
 
 const { PrismaClient } = require('@prisma/client')
 require('dotenv').config()
-const url = (process.env.DATABASE_URL || '') +
-  (process.env.DATABASE_URL?.includes('?') ? '&' : '?') +
-  'connection_limit=1&pool_timeout=60'
+// Allow overriding the DATABASE_URL via the first CLI arg or PROD_DATABASE_URL
+// env var, so we can point at the prod Neon DB without polluting the dev .env.
+// Usage:
+//   node scripts/diagnose-whatsapp.js                       (uses .env DATABASE_URL — DEV)
+//   node scripts/diagnose-whatsapp.js "postgresql://..."    (uses arg — PROD)
+//   PROD_DATABASE_URL=... node scripts/diagnose-whatsapp.js (uses env — PROD)
+const overrideUrl = process.argv[2] || process.env.PROD_DATABASE_URL
+const baseUrl = overrideUrl || process.env.DATABASE_URL || ''
+const url = baseUrl + (baseUrl.includes('?') ? '&' : '?') + 'connection_limit=1&pool_timeout=60'
+console.log(`Connecting to: ${baseUrl.replace(/:[^:@]+@/, ':***@').slice(0, 80)}...\n`)
 const prisma = new PrismaClient({ datasources: { db: { url } } })
 
 async function main() {
