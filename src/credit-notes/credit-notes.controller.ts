@@ -1,6 +1,17 @@
-import { Controller, Get, Post, Body, Param, Query, UseGuards, Request } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  Post,
+  Body,
+  Param,
+  Query,
+  UseGuards,
+  Request,
+} from '@nestjs/common';
 import { CreditNotesService } from './credit-notes.service';
 import { CreateCreditNoteDto } from './dto/create-credit-note.dto';
+import { ApproveCreditNoteDto } from './dto/approve-credit-note.dto';
+import { RejectCreditNoteDto } from './dto/reject-credit-note.dto';
 import { ApiTags, ApiOperation, ApiBearerAuth, ApiQuery } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
@@ -15,9 +26,50 @@ export class CreditNotesController {
 
   @Post()
   @Roles('ADMIN', 'PHARMACIST')
-  @ApiOperation({ summary: 'Create a credit note (sales return) for an invoice' })
+  @ApiOperation({
+    summary:
+      'File a credit note (sales return) — lands in PENDING_REVIEW until an admin approves on the detail page',
+  })
   create(@Body() dto: CreateCreditNoteDto, @Request() req: any) {
-    return this.creditNotesService.create(dto, req.user.userId, req.user.branchId, req.user.role);
+    return this.creditNotesService.create(dto, req.user.userId, req.user.branchId);
+  }
+
+  @Post(':id/approve')
+  @Roles('ADMIN')
+  @ApiOperation({
+    summary:
+      'Approve a pending credit note. Executes settlement side effects (stock restore, customer-balance adjust if CREDIT, invoice flip to RETURNED if fully returned). Reviewer may override settlementMode.',
+  })
+  approve(
+    @Param('id') id: string,
+    @Body() dto: ApproveCreditNoteDto,
+    @Request() req: any,
+  ) {
+    return this.creditNotesService.approve(
+      id,
+      req.user.userId,
+      dto,
+      req.user.branchId,
+    );
+  }
+
+  @Post(':id/reject')
+  @Roles('ADMIN')
+  @ApiOperation({
+    summary:
+      'Reject a pending credit note. Records reviewer + reason; does NOT mutate inventory or balances.',
+  })
+  reject(
+    @Param('id') id: string,
+    @Body() dto: RejectCreditNoteDto,
+    @Request() req: any,
+  ) {
+    return this.creditNotesService.reject(
+      id,
+      req.user.userId,
+      dto,
+      req.user.branchId,
+    );
   }
 
   @Get()
@@ -25,16 +77,36 @@ export class CreditNotesController {
   @ApiOperation({ summary: 'List credit notes or search' })
   @ApiQuery({ name: 'q', required: false })
   @ApiQuery({ name: 'customerId', required: false })
-  findAll(@Request() req: any, @Query('q') q?: string, @Query('customerId') customerId?: string, @Query('branchId') branchId?: string) {
+  @ApiQuery({
+    name: 'status',
+    required: false,
+    enum: ['PENDING_REVIEW', 'APPROVED', 'REJECTED'],
+  })
+  findAll(
+    @Request() req: any,
+    @Query('q') q?: string,
+    @Query('customerId') customerId?: string,
+    @Query('branchId') branchId?: string,
+    @Query('status') status?: string,
+  ) {
     const effectiveBranchId = req.user.branchId ?? branchId;
-    return this.creditNotesService.findAll(q, customerId, effectiveBranchId);
+    return this.creditNotesService.findAll(q, customerId, effectiveBranchId, status);
   }
 
   @Get('invoice/:invoiceId/returned-qty')
   @Roles('ADMIN', 'PHARMACIST', 'ACCOUNTANT')
-  @ApiOperation({ summary: 'Already-returned qty per (productId, batchId) for an invoice (includes pending approvals)' })
-  getReturnedQtyByInvoice(@Param('invoiceId') invoiceId: string, @Request() req: any) {
-    return this.creditNotesService.getReturnedQtyByInvoice(invoiceId, req.user.branchId);
+  @ApiOperation({
+    summary:
+      'Already-returned qty per (productId, batchId) for an invoice (counts APPROVED + PENDING_REVIEW)',
+  })
+  getReturnedQtyByInvoice(
+    @Param('invoiceId') invoiceId: string,
+    @Request() req: any,
+  ) {
+    return this.creditNotesService.getReturnedQtyByInvoice(
+      invoiceId,
+      req.user.branchId,
+    );
   }
 
   @Get(':id')

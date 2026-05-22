@@ -264,95 +264,23 @@ export class ApprovalsService {
       }
 
       case 'SALES_RETURN': {
-        // Re-execute the credit note creation from stored payload, with the
-        // same cumulative-return guard the direct create flow uses.
-        await this.prisma.$transaction(async (tx) => {
-          const creditNoteNo = await this.numbering.nextNumber(
-            tx,
-            'CN',
-            branchId,
-          );
-          // Re-validate cumulative returned qty per (productId, batchId) so a
-          // prior credit note that landed between request + approval doesn't
-          // let us over-restore stock.
-          if (payload.invoiceId) {
-            const invoice = await tx.invoice.findUnique({
-              where: { id: payload.invoiceId },
-              include: { items: true },
-            });
-            if (!invoice) throw new NotFoundException('Invoice not found');
-            const priorReturns = await tx.creditNoteItem.findMany({
-              where: { creditNote: { invoiceId: invoice.id } },
-              select: { productId: true, batchId: true, returnedQty: true },
-            });
-            const priorByKey = new Map<string, number>();
-            for (const r of priorReturns) {
-              const k = `${r.productId}::${r.batchId}`;
-              priorByKey.set(k, (priorByKey.get(k) ?? 0) + r.returnedQty);
-            }
-            for (const item of payload.items ?? []) {
-              const sold = invoice.items.find(
-                (i) => i.productId === item.productId && i.batchId === item.batchId,
-              );
-              if (!sold) {
-                throw new BadRequestException(
-                  `Item ${item.productName} (batch ${item.batchNumber}) not found on invoice`,
-                );
-              }
-              const alreadyReturned =
-                priorByKey.get(`${item.productId}::${item.batchId}`) ?? 0;
-              const remaining = sold.quantity - alreadyReturned;
-              if (item.returnedQty > remaining) {
-                throw new BadRequestException(
-                  `Cannot approve return: only ${remaining} of ${item.productName} unreturned (sold ${sold.quantity}, already returned ${alreadyReturned})`,
-                );
-              }
-            }
-          }
-          // Restore stock for each item
-          for (const item of payload.items ?? []) {
-            await tx.batch.update({ where: { id: item.batchId }, data: { quantity: { increment: item.returnedQty } } });
-            await tx.product.update({ where: { id: item.productId }, data: { totalStock: { increment: item.returnedQty } } });
-          }
-          const cnSettlementMode = payload.settlementMode ?? 'REFUND';
-          await (tx as any).creditNote.create({
-            data: {
-              creditNoteNo,
-              invoiceId: payload.invoiceId,
-              invoiceNumber: payload.invoiceNumber,
-              customerId: payload.customerId,
-              customerName: payload.customerName,
-              reason: payload.reason,
-              subtotal: payload.subtotal,
-              cgst: payload.cgst ?? 0,
-              sgst: payload.sgst ?? 0,
-              igst: payload.igst ?? 0,
-              totalAmount: payload.totalAmount,
-              settlementMode: cnSettlementMode,
-              settledAt: cnSettlementMode === 'CREDIT' ? new Date() : null,
-              createdById: payload.createdById,
-              branchId: branchId ?? null,
-              items: { create: payload.items.map((i: any) => ({
-                productId: i.productId,
-                productName: i.productName,
-                batchId: i.batchId,
-                batchNumber: i.batchNumber,
-                expiryDate: new Date(i.expiryDate),
-                returnedQty: i.returnedQty,
-                rate: i.rate,
-                amount: i.amount,
-                gstPercent: i.gstPercent ?? 0,
-              })) },
-            },
-          });
-          if (payload.settlementMode === 'CREDIT' && payload.customerId) {
-            await tx.customer.update({
-              where: { id: payload.customerId },
-              data: { currentOutstanding: { decrement: payload.totalAmount } },
-            });
-          }
-        });
-        break;
+        // Retired. SALES_RETURN is no longer filed as an ApprovalRequest —
+        // both pharmacist and admin paths now create a CreditNote directly
+        // with status=PENDING_REVIEW, and approval happens at
+        // POST /credit-notes/:id/approve. This branch only exists to surface
+        // a clear error if an operator tries to action a legacy in-flight
+        // approval row that pre-dates the migration. Convert manually:
+        //
+        //   1. Read the stored payload from the ApprovalRequest row.
+        //   2. POST that payload to /credit-notes (creates a new
+        //      PENDING_REVIEW CN).
+        //   3. POST /credit-notes/:id/approve on the resulting row.
+        //   4. Mark the original ApprovalRequest REJECTED with a note
+        //      explaining the conversion.
+        throw new BadRequestException(
+          'SALES_RETURN approvals are retired. Use POST /credit-notes/:id/approve on the corresponding credit note instead. ' +
+            'Any pre-existing PENDING SALES_RETURN approval rows must be converted manually — see approvals.service.ts comments.',
+        );
       }
 
       case 'INVENTORY_ADJUSTMENT' as any: {

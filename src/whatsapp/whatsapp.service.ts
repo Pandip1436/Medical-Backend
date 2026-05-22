@@ -14,6 +14,12 @@ export interface SendTemplateInput {
   templateName: string;                // for audit
   mediaUrl?: string;                   // for audit
   bodySnapshot?: string;               // rendered text for audit
+  // Serialized template input vars. Persisted so the retry sweeper can
+  // rebuild the Meta template payload without re-firing the source event —
+  // required for notification-driven senders (low-stock supplier, sale
+  // reminder) where re-firing would risk duplicating the underlying
+  // notification row.
+  templateVars?: Record<string, any>;
   relatedEntityType?: string;
   relatedEntityId?: string;
   branchId?: string | null;
@@ -59,6 +65,7 @@ export class WhatsAppService {
         templateName: input.templateName,
         messageBody: input.bodySnapshot,
         mediaUrl: input.mediaUrl,
+        templateVars: (input.templateVars ?? undefined) as any,
         status: WhatsAppMessageStatus.QUEUED,
         relatedEntityType: input.relatedEntityType,
         relatedEntityId: input.relatedEntityId,

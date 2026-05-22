@@ -4,6 +4,8 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 import { PrismaService } from '../prisma/prisma.service';
 import { INVOICE_CREATED } from '../events/invoice-events';
 import type { InvoiceCreatedPayload } from '../events/invoice-events';
+import { TEMPLATE_BUILDERS } from './templates';
+import { WhatsAppService } from './whatsapp.service';
 
 // Exponential backoff schedule. Index is `attempts - 1`. Capped past the last
 // entry so we never wait more than 12 hours.
@@ -50,6 +52,7 @@ export class WhatsAppRetryService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly events: EventEmitter2,
+    private readonly whatsapp: WhatsAppService,
   ) {}
 
   @Cron('*/5 * * * *')
@@ -96,11 +99,18 @@ export class WhatsAppRetryService {
       if (msg.relatedEntityType === 'invoice' && msg.relatedEntityId) {
         const ok = await this.retryInvoiceMessage(msg.id, msg.relatedEntityId);
         if (ok) retried++;
+      } else if (msg.templateVars && TEMPLATE_BUILDERS[msg.templateName]) {
+        // Notification-driven senders (supplier_low_stock, sale_reminder,
+        // etc.): we can't re-fire the source event without risking a
+        // duplicate notification row. Rebuild the template payload directly
+        // from the stored vars and call sendTemplate again. The new send
+        // creates a fresh WhatsAppMessage row, so we also mark the old one
+        // terminally failed to keep the sweeper from picking it up forever.
+        const ok = await this.retryFromTemplateVars(msg);
+        if (ok) retried++;
       } else {
-        // Future: handle other entity types (quotation, credit_note, etc.).
-        // For v1 we only auto-retry invoice deliveries.
         this.logger.debug(
-          `Skipping retry for ${msg.id}: unsupported entity type ${msg.relatedEntityType}`,
+          `Skipping retry for ${msg.id}: unsupported entity type ${msg.relatedEntityType} (no templateVars)`,
         );
       }
     }
@@ -148,6 +158,57 @@ export class WhatsAppRetryService {
       `re-fired invoice.created for ${invoice.invoiceNumber} (msg ${messageId})`,
     );
     return true;
+  }
+
+  // Retry path for notification-driven senders. The original send already
+  // created a WhatsAppMessage row; on success we leave that row as-is (the
+  // new sendTemplate call writes a fresh row with status=SENT). We mark
+  // the failed predecessor with attempts=MAX so the sweeper stops picking
+  // it up — keeps the audit trail intact while removing it from the queue.
+  private async retryFromTemplateVars(msg: {
+    id: string;
+    to: string;
+    templateName: string;
+    templateVars: unknown;
+    bodySnapshot?: string | null;
+    mediaUrl?: string | null;
+    relatedEntityType: string | null;
+    relatedEntityId: string | null;
+    branchId: string | null;
+  }): Promise<boolean> {
+    const builder = TEMPLATE_BUILDERS[msg.templateName];
+    if (!builder) {
+      this.logger.warn(`no template builder registered for ${msg.templateName}; giving up on ${msg.id}`);
+      await this.markTerminallyFailed(msg.id);
+      return false;
+    }
+    const vars = msg.templateVars as Record<string, any>;
+    try {
+      await this.whatsapp.sendTemplate({
+        to: msg.to,
+        template: builder(vars),
+        templateName: msg.templateName,
+        templateVars: vars,
+        bodySnapshot: msg.bodySnapshot ?? undefined,
+        mediaUrl: msg.mediaUrl ?? undefined,
+        relatedEntityType: msg.relatedEntityType ?? undefined,
+        relatedEntityId: msg.relatedEntityId ?? undefined,
+        branchId: msg.branchId,
+      });
+      // The new attempt got its own row; retire the failed predecessor.
+      await this.markTerminallyFailed(msg.id);
+      this.logger.log(`re-sent ${msg.templateName} from templateVars (msg ${msg.id})`);
+      return true;
+    } catch (e: any) {
+      // Bump attempts on the failed row so backoff progresses; sendTemplate
+      // itself already wrote a fresh FAILED row if Meta rejected.
+      await this.prisma.whatsAppMessage.update({
+        where: { id: msg.id },
+        data: { attempts: { increment: 1 }, lastAttemptAt: new Date() },
+      });
+      this.logger.error(`retryFromTemplateVars failed for ${msg.id}: ${e?.message ?? e}`);
+      return false;
+    }
   }
 
   private async markTerminallyFailed(messageId: string) {

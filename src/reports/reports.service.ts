@@ -1,12 +1,16 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { CustomersService } from '../customers/customers.service';
 import dayjs from 'dayjs';
 
 type PeriodQuery = { from?: string; to?: string; branchId?: string };
 
 @Injectable()
 export class ReportsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly customersService: CustomersService,
+  ) {}
 
   // ── Shared helpers ─────────────────────────────────────────────
   private resolvePeriod(q: PeriodQuery) {
@@ -23,6 +27,15 @@ export class ReportsService {
     return value.toLocaleString('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 });
   }
 
+  // Round a money value to 2 decimal places. Use at every aggregation
+  // projection step that derives a value by division/multiplication (e.g.
+  // taxable = amount / (1 + rate/100)) before it leaves the service —
+  // otherwise IEEE-754 noise leaks into JSON/CSV exports that accountants
+  // use for GST filing.
+  private roundCurrency(value: number): number {
+    return Math.round((value + Number.EPSILON) * 100) / 100;
+  }
+
   // ── Dashboard ──────────────────────────────────────────────────
   async getDashboardKpis(branchId?: string) {
     const today = dayjs().startOf('day').toDate();
@@ -37,10 +50,10 @@ export class ReportsService {
       where: { date: { gte: today }, ...bFilter },
       _sum: { grandTotal: true },
     });
-    const outstanding = await this.prisma.customer.aggregate({
-      where: branchId ? { branchId } : undefined,
-      _sum: { currentOutstanding: true },
-    });
+    // Canonical "outstanding" rolls up the same live invoice query used by
+    // /customers/summary and /customers/outstanding. See
+    // CustomersService.computeLiveOutstanding() for the rule. (Phase 3 bug #1.)
+    const outstanding = await this.customersService.computeLiveOutstanding(branchId);
     const now = new Date();
     const ninetyDaysFromNow = dayjs().add(90, 'days').toDate();
     const expiryCount = await this.prisma.batch.count({
@@ -67,10 +80,17 @@ export class ReportsService {
       },
     });
     const products = await this.prisma.product.findMany({
-      where: branchId ? { branchId } : undefined,
+      where: { isActive: true, ...(branchId ? { branchId } : {}) },
       select: { id: true, name: true, packSize: true, totalStock: true, minStock: true, reorderQty: true },
     });
-    const lowStock = products.filter((p) => p.totalStock <= p.minStock);
+    // Canonical "low stock" definition — shared with /reports/inventory/stats
+    // and consumed by the three KPI tiles (dashboard, products, stock overview).
+    // A product is "low stock" iff it is active, currently has stock (totalStock
+    // > 0), AND has dropped below its configured reorder level (totalStock <
+    // minStock). Products with no stock are "out of stock" — a separate state
+    // counted independently. Products with minStock = 0 (no reorder level set)
+    // are not low-stock regardless of totalStock.
+    const lowStock = products.filter((p) => p.totalStock > 0 && p.totalStock < p.minStock);
     const outOfStockCount = products.filter((p) => p.totalStock <= 0).length;
     const lowStockItems = lowStock
       .map((p) => ({
@@ -149,7 +169,7 @@ export class ReportsService {
     return {
       monthlySales: sales._sum.grandTotal || 0,
       todaysSales: todaysSales._sum.grandTotal || 0,
-      totalOutstanding: outstanding._sum.currentOutstanding || 0,
+      totalOutstanding: outstanding.totalOutstanding,
       expiringBatchesCount: expiryCount,
       lowStockAlertsCount: lowStock.length,
       outOfStockCount,
@@ -341,9 +361,11 @@ export class ReportsService {
     const chartData = Array.from(productStats.values())
       .map((ps) => ({
         product: ps.product,
-        revenue: ps.revenue,
+        revenue: this.roundCurrency(ps.revenue),
         qtySold: ps.qtySold,
-        margin: ps.revenue > 0 ? ((ps.revenue - ps.cost) / ps.revenue) * 100 : 0,
+        margin: ps.revenue > 0
+          ? this.roundCurrency(((ps.revenue - ps.cost) / ps.revenue) * 100)
+          : 0,
       }))
       .sort((a, b) => b.revenue - a.revenue)
       .slice(0, 20);
@@ -582,6 +604,9 @@ export class ReportsService {
 
     const totalProducts = stockBucket.length;
     const outOfStockItems = stockBucket.filter((p) => p.totalStock === 0).length;
+    // Same canonical "low stock" rule used by getDashboardKpis — see comment
+    // there. Both endpoints must filter identically so the Dashboard, Products,
+    // and Stock Overview KPI tiles never drift apart.
     const lowStockItems = stockBucket.filter((p) => p.totalStock > 0 && p.totalStock < p.minStock).length;
     const sellableStockValue = activeBatches.reduce((s, b) => s + b.quantity * Number(b.mrp), 0);
     const expiredStockValue = expiredBatchesRaw.reduce((s, b) => s + b.quantity * Number(b.mrp), 0);
@@ -810,18 +835,27 @@ export class ReportsService {
       });
     });
 
-    const tableData = Array.from(bySlab.values()).sort((a, b) => a.gstRate - b.gstRate);
+    const rawTable = Array.from(bySlab.values()).sort((a, b) => a.gstRate - b.gstRate);
+    const tableData = rawTable.map((r) => ({
+      gstRate: r.gstRate,
+      taxable: this.roundCurrency(r.taxable),
+      cgst: this.roundCurrency(r.cgst),
+      sgst: this.roundCurrency(r.sgst),
+      igst: this.roundCurrency(r.igst),
+    }));
     const totals = tableData.reduce(
       (s, t) => ({
-        taxable: s.taxable + t.taxable,
-        cgst: s.cgst + t.cgst,
-        sgst: s.sgst + t.sgst,
-        igst: s.igst + t.igst,
+        taxable: this.roundCurrency(s.taxable + t.taxable),
+        cgst: this.roundCurrency(s.cgst + t.cgst),
+        sgst: this.roundCurrency(s.sgst + t.sgst),
+        igst: this.roundCurrency(s.igst + t.igst),
       }),
       { taxable: 0, cgst: 0, sgst: 0, igst: 0 },
     );
 
-    const creditNoteTotal = creditNotes.reduce((s, c) => s + Number(c.totalAmount), 0);
+    const creditNoteTotal = this.roundCurrency(
+      creditNotes.reduce((s, c) => s + Number(c.totalAmount), 0),
+    );
 
     return {
       period: { from, to },
@@ -848,26 +882,28 @@ export class ReportsService {
       _sum: { totalAmount: true },
     });
 
-    const cgst = Number(outward._sum.cgst ?? 0);
-    const sgst = Number(outward._sum.sgst ?? 0);
-    const igst = Number(outward._sum.igst ?? 0);
+    const cgst = this.roundCurrency(Number(outward._sum.cgst ?? 0));
+    const sgst = this.roundCurrency(Number(outward._sum.sgst ?? 0));
+    const igst = this.roundCurrency(Number(outward._sum.igst ?? 0));
+    const outwardTaxable = this.roundCurrency(Number(outward._sum.taxableAmount ?? 0));
+    const inwardTotal = this.roundCurrency(Number(inward._sum.totalAmount ?? 0));
 
     return {
       period: { from, to },
       outwardSupplies: {
-        taxableValue: Number(outward._sum.taxableAmount ?? 0),
+        taxableValue: outwardTaxable,
         cgst,
         sgst,
         igst,
-        totalTax: cgst + sgst + igst,
+        totalTax: this.roundCurrency(cgst + sgst + igst),
       },
       inwardSupplies: {
-        totalValue: Number(inward._sum.totalAmount ?? 0),
+        totalValue: inwardTotal,
       },
       kpis: [
-        { label: 'Outward Taxable', value: this.inr(Number(outward._sum.taxableAmount ?? 0)) },
+        { label: 'Outward Taxable', value: this.inr(outwardTaxable) },
         { label: 'Tax Payable', value: this.inr(cgst + sgst + igst) },
-        { label: 'Inward Supplies', value: this.inr(Number(inward._sum.totalAmount ?? 0)) },
+        { label: 'Inward Supplies', value: this.inr(inwardTotal) },
       ],
     };
   }
@@ -897,9 +933,21 @@ export class ReportsService {
       byHsn.set(hsn, cur);
     });
 
-    const tableData = Array.from(byHsn.values()).sort((a, b) => b.taxable - a.taxable);
+    const rawHsnTable = Array.from(byHsn.values()).sort((a, b) => b.taxable - a.taxable);
+    const tableData = rawHsnTable.map((r) => ({
+      hsn: r.hsn,
+      uqc: r.uqc,
+      qty: r.qty,
+      gstRate: r.gstRate,
+      taxable: this.roundCurrency(r.taxable),
+      tax: this.roundCurrency(r.tax),
+    }));
     const totals = tableData.reduce(
-      (s, t) => ({ taxable: s.taxable + t.taxable, tax: s.tax + t.tax, qty: s.qty + t.qty }),
+      (s, t) => ({
+        taxable: this.roundCurrency(s.taxable + t.taxable),
+        tax: this.roundCurrency(s.tax + t.tax),
+        qty: s.qty + t.qty,
+      }),
       { taxable: 0, tax: 0, qty: 0 },
     );
 

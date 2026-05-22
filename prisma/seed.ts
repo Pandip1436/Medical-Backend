@@ -247,14 +247,20 @@ async function main() {
   ];
   // Seed categories at the global scope (branchId: null) so both branches see
   // them via the branchScope union in CategoriesService.findAll.
+  //
+  // Use findFirst + create rather than upsert: Prisma's upsert on a compound
+  // unique that includes a nullable column (name + branchId where branchId
+  // can be null) rejects `branchId: null` in the where clause with
+  // "Argument `branchId` must not be null." — PostgreSQL allows the duplicate
+  // technically (NULLs aren't equal under UNIQUE), so we manually check.
   const seededCats = await Promise.all(
-    categoryDefs.map(c =>
-      prisma.category.upsert({
-        where: { name_branchId: { name: c.name, branchId: null as any } },
-        update: {},
-        create: c,
-      }),
-    ),
+    categoryDefs.map(async (c) => {
+      const existing = await prisma.category.findFirst({
+        where: { name: c.name, branchId: null },
+      });
+      if (existing) return existing;
+      return prisma.category.create({ data: c });
+    }),
   );
   const catId = (name: string) => seededCats.find(c => c.name === name)!.id;
 
@@ -466,6 +472,14 @@ async function main() {
         sgst: 25.5,
         totalAmount: 476,
         settlementMode: SettlementMode.REFUND,
+        // Seeded historical CNs are pre-feature returns that were already
+        // settled by hand. Mark them APPROVED so they don't pollute the
+        // Pending Review KPI on day one. New CNs created through the wizard
+        // still go through the inspection flow.
+        status: 'APPROVED',
+        reviewedAt: daysAgo(85),
+        reviewedById: admin.id,
+        reviewNote: 'Seeded historical record — settled before pending-review lifecycle existed.',
         createdById: hqPharmacist.id,
         items: {
           create: [{
@@ -692,6 +706,12 @@ async function main() {
         sgst: 1344,
         totalAmount: 25088,
         settlementMode: SettlementMode.CREDIT,
+        // Seeded historical CN — see HQ-CN-0001 above. Marked APPROVED so it
+        // doesn't pollute the Pending Review KPI.
+        status: 'APPROVED',
+        reviewedAt: daysAgo(75),
+        reviewedById: admin.id,
+        reviewNote: 'Seeded historical record — settled before pending-review lifecycle existed.',
         createdById: br1Pharmacist.id,
         items: {
           create: [{

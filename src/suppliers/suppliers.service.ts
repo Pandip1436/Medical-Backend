@@ -74,9 +74,22 @@ export class SuppliersService {
     }
   }
 
+  // Belt-and-braces name guard. DTO `@IsNotEmpty()` already rejects empty
+  // strings at the controller boundary, but historical data showed three
+  // orphan supplier rows with name="" that surfaced in the directory as
+  // "Admin · phone" subtitles (the row's contactPerson rendered first).
+  // Catching it here covers any internal caller that bypasses class-validator.
+  private assertNameNonEmpty(name: string | null | undefined) {
+    if (!name || !String(name).trim()) {
+      throw new BadRequestException('Supplier name is required.');
+    }
+  }
+
   async create(createSupplierDto: CreateSupplierDto & { branchId?: string }) {
+    this.assertNameNonEmpty(createSupplierDto.name);
     const dto = {
       ...createSupplierDto,
+      name: createSupplierDto.name.trim(),
       phone: this.normalizePhone(createSupplierDto.phone),
     };
     await this.assertNoDuplicate({
@@ -106,8 +119,9 @@ export class SuppliersService {
 
     for (const [index, s] of suppliers.entries()) {
       try {
+        this.assertNameNonEmpty(s.name);
         const normalizedPhone = this.normalizePhone(s.phone);
-        
+
         if (s.gstin && existingGstins.has(s.gstin)) {
           throw new ConflictException(`GSTIN ${s.gstin} already exists.`);
         }
@@ -125,6 +139,7 @@ export class SuppliersService {
         
         toCreate.push({
           ...s,
+          name: s.name.trim(),
           phone: normalizedPhone,
           branchId: branchId ?? null,
         });
@@ -391,6 +406,10 @@ export class SuppliersService {
   ) {
     const existing = await this.findOne(id, branchId);
     const data = { ...updateSupplierDto } as UpdateSupplierDto;
+    if (data.name !== undefined) {
+      this.assertNameNonEmpty(data.name);
+      data.name = data.name.trim();
+    }
     if (data.phone !== undefined) {
       data.phone = this.normalizePhone(data.phone);
     }

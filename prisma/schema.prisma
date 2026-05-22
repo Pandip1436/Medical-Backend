@@ -83,6 +83,7 @@ model User {
   leadActivities       LeadActivity[]
   invoiceEdits         InvoiceEditAudit[] @relation("InvoiceEdits")
   backups              Backup[]
+  creditNoteReviews    CreditNote[]       @relation("CreditNoteReviews")
 }
 
 enum Role {
@@ -211,6 +212,11 @@ model Product {
   isActive         Boolean          @default(true)
   branchId         String?
   branch           Branch?          @relation(fields: [branchId], references: [id])
+  // Optional explicit override for which supplier to ping when stock runs low.
+  // When null the LowStockNotificationListener falls back to the most recent
+  // Batch.supplierId for this product.
+  preferredSupplierId String?
+  preferredSupplier   Supplier?     @relation("ProductPreferredSupplier", fields: [preferredSupplierId], references: [id])
   batches          Batch[]
   alternatives     Product[]        @relation("Alternatives")
   alternativesOf   Product[]        @relation("Alternatives")
@@ -282,6 +288,8 @@ model Supplier {
   isActive            Boolean          @default(true)
   // Money WE OWE this supplier — increases on GRN (received goods on credit), decreases on payment or ADJUST debit note
   currentOutstanding  Decimal          @default(0)
+  whatsappOptIn       Boolean          @default(true)  // supplier-level consent for low-stock WhatsApp alerts
+  whatsappNumber      String?          // override of `phone` if WhatsApp lives on a different number
   branchId            String?
   branch              Branch?          @relation(fields: [branchId], references: [id])
   batches             Batch[]
@@ -289,6 +297,7 @@ model Supplier {
   grns                GRN[]
   purchaseReturns     PurchaseReturn[]
   activities          SupplierActivity[]
+  preferredForProducts Product[]       @relation("ProductPreferredSupplier")
 }
 
 enum PaymentTerms {
@@ -627,10 +636,22 @@ model CreditNote {
   igst            Decimal          @default(0)
   totalAmount     Decimal
   settlementMode  SettlementMode   @default(REFUND)
+  // Lifecycle status separate from settlement. PENDING_REVIEW = staff hasn't
+  // physically inspected the returned goods yet, no inventory/balance effects
+  // have fired. APPROVED = inspection passed, side effects executed. REJECTED
+  // = goods didn't match the claimed reason, CN is kept as historical record.
+  status          CreditNoteStatus @default(PENDING_REVIEW)
+  reviewedById    String?
+  reviewedBy      User?            @relation("CreditNoteReviews", fields: [reviewedById], references: [id])
+  reviewedAt      DateTime?
+  // Free-text inspection note. Optional on approve (reviewer may not need to
+  // explain a clean acceptance); required on reject so the reason is auditable.
+  reviewNote      String?
   // Set when the credit note is fully settled — i.e. customer has received
   // the refund (REFUND), the credit has been applied (CREDIT — auto-set on
-  // create), or the replacement invoice has been issued (REPLACEMENT).
-  // Null = pending settlement.
+  // approve), or the replacement invoice has been issued (REPLACEMENT).
+  // Null = pending settlement. Distinct from `status`: a CN can be APPROVED
+  // but still have settledAt = null (e.g. REFUND mode pending cash payout).
   settledAt       DateTime?
   notes           String?
   createdById     String
@@ -656,6 +677,12 @@ enum SettlementMode {
   REFUND
   CREDIT
   REPLACEMENT
+}
+
+enum CreditNoteStatus {
+  PENDING_REVIEW
+  APPROVED
+  REJECTED
 }
 
 // ── Debit Notes / Purchase Returns (to Suppliers) ─────────────
@@ -912,6 +939,10 @@ enum ReminderContactStatus {
   DENIED
   NEED_TO_TALK
   SCHEDULED
+  // Written by ReminderDueNotificationListener after it auto-sends a
+  // monthly WhatsApp to the customer. Staff sees the entry in the
+  // RemindersPage contact log so they know not to also call.
+  WHATSAPP_AUTO_SENT
 }
 
 // ── Approval Requests ─────────────────────────────────────────
@@ -1276,13 +1307,19 @@ model WhatsAppMessage {
   templateName        String
   messageBody         String?               // rendered text snapshot for audit
   mediaUrl            String?               // PDF URL passed as document header
+  // Serialized template vars (the input to the template builder fn). The retry
+  // sweeper uses this to rebuild the Meta template payload without re-firing
+  // the source event — necessary for non-invoice senders (low-stock supplier,
+  // sale reminder, etc.) where re-firing the trigger event would risk
+  // duplicating the underlying notification.
+  templateVars        Json?
   providerMessageId   String?               @unique  // Meta wamid (e.g. wamid.HBgM...)
   status              WhatsAppMessageStatus @default(QUEUED)
   errorCode           String?
   errorMessage        String?
   attempts            Int                   @default(0)
   lastAttemptAt       DateTime?
-  relatedEntityType   String?               // "invoice" | "quotation" | "credit_note" | ...
+  relatedEntityType   String?               // "invoice" | "quotation" | "credit_note" | "supplier_low_stock" | ...
   relatedEntityId     String?
   branchId            String?
   branch              Branch?               @relation(fields: [branchId], references: [id])

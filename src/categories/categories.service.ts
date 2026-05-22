@@ -40,7 +40,10 @@ export class CategoriesService {
     const categories = await this.prisma.category.findMany({
       where: this.branchScope(branchId) as any,
       orderBy: { name: 'asc' },
-      include: { _count: { select: { products: true } } },
+      // _count.products is the source of truth for the "With Products" KPI on
+      // the Categories page. Scope it to active products so a category whose
+      // products have all been archived doesn't keep showing as "in use".
+      include: { _count: { select: { products: { where: { isActive: true } } } } },
     });
     return categories.map((c) => ({ ...c, productCount: c._count.products }));
   }
@@ -48,7 +51,10 @@ export class CategoriesService {
   async findOne(id: string, branchId?: string) {
     const category = await this.prisma.category.findUnique({
       where: { id },
-      include: { _count: { select: { products: true } } },
+      // _count.products is the source of truth for the "With Products" KPI on
+      // the Categories page. Scope it to active products so a category whose
+      // products have all been archived doesn't keep showing as "in use".
+      include: { _count: { select: { products: { where: { isActive: true } } } } },
     });
     if (!category) throw new NotFoundException('Category not found');
     if (branchId && (category as any).branchId && (category as any).branchId !== branchId) {

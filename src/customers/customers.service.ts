@@ -357,25 +357,84 @@ export class CustomersService {
     };
   }
 
+  // Canonical "outstanding" definition — shared by /customers/summary,
+  // /customers/outstanding, and /reports/dashboard. Computed LIVE from
+  // invoices (sum of grandTotal - amountPaid over UNPAID|PARTIAL invoices)
+  // rather than from the denormalized customer.currentOutstanding column,
+  // which drifts whenever a payment/return/edit path forgets to refresh it.
+  // The three KPI tiles previously disagreed (₹1,80,313 vs ₹2,04,043 with
+  // a 7-vs-8 customer-count delta) because two of them read the stale
+  // cached column and only OutstandingPage computed live. (Phase 3 bugs #1 + #3.)
+  //
+  // Returns the per-customer rollup so downstream callers can derive either
+  // total-by-customer (summary) or row-level aging (getOutstanding) without
+  // running the same query twice.
+  async computeLiveOutstanding(branchId?: string) {
+    const invoices = await this.prisma.invoice.findMany({
+      where: {
+        status: { in: ['UNPAID', 'PARTIAL'] },
+        ...(branchId ? { branchId } : {}),
+      },
+      select: {
+        id: true,
+        invoiceNumber: true,
+        customerId: true,
+        customerName: true,
+        grandTotal: true,
+        amountPaid: true,
+        date: true,
+        branchId: true,
+      },
+      orderBy: { date: 'asc' },
+    });
+
+    const map = new Map<string, {
+      customerId: string;
+      customerName: string;
+      outstanding: number;
+      invoices: typeof invoices;
+    }>();
+
+    for (const inv of invoices) {
+      if (!inv.customerId) continue;
+      const due = Number(inv.grandTotal) - Number(inv.amountPaid);
+      if (due <= 0) continue;
+      const key = inv.customerId;
+      if (!map.has(key)) {
+        map.set(key, {
+          customerId: inv.customerId,
+          customerName: inv.customerName,
+          outstanding: 0,
+          invoices: [],
+        });
+      }
+      const entry = map.get(key)!;
+      entry.outstanding += due;
+      entry.invoices.push(inv);
+    }
+
+    let totalOutstanding = 0;
+    for (const entry of map.values()) totalOutstanding += entry.outstanding;
+    return {
+      totalOutstanding,
+      withOutstanding: map.size,
+      byCustomer: map,
+    };
+  }
+
   // Global summary across all customers (optionally scoped to a branch). Kept
   // unfiltered intentionally — these power top-of-page stat cards that should
   // remain stable as the user types in the search box below.
   async summary(branchId?: string) {
     const where: any = branchId ? { branchId } : {};
-    const [total, withOutstanding, outstandingAgg] = await Promise.all([
+    const [total, live] = await Promise.all([
       this.prisma.customer.count({ where }),
-      this.prisma.customer.count({
-        where: { ...where, currentOutstanding: { gt: 0 } },
-      }),
-      this.prisma.customer.aggregate({
-        where,
-        _sum: { currentOutstanding: true },
-      }),
+      this.computeLiveOutstanding(branchId),
     ]);
     return {
       total,
-      withOutstanding,
-      totalOutstanding: Number(outstandingAgg._sum.currentOutstanding ?? 0),
+      withOutstanding: live.withOutstanding,
+      totalOutstanding: live.totalOutstanding,
     };
   }
 
@@ -444,44 +503,9 @@ export class CustomersService {
       minOutstanding?: number;
     },
   ) {
-    // Compute live from UNPAID/PARTIAL invoices — avoids stale currentOutstanding field
-    const invoices = await this.prisma.invoice.findMany({
-      where: {
-        status: { in: ['UNPAID', 'PARTIAL'] },
-        ...(branchId ? { branchId } : {}),
-      },
-      select: {
-        id: true,
-        invoiceNumber: true,
-        customerId: true,
-        customerName: true,
-        grandTotal: true,
-        amountPaid: true,
-        date: true,
-        branchId: true,
-      },
-      orderBy: { date: 'asc' },
-    });
-
-    const map = new Map<string, {
-      customerId: string | null;
-      customerName: string;
-      outstanding: number;
-      invoices: typeof invoices;
-    }>();
-
-    for (const inv of invoices) {
-      if (!inv.customerId) continue;
-      const key = inv.customerId;
-      const due = Number(inv.grandTotal) - Number(inv.amountPaid);
-      if (due <= 0) continue;
-      if (!map.has(key)) {
-        map.set(key, { customerId: inv.customerId, customerName: inv.customerName, outstanding: 0, invoices: [] });
-      }
-      const entry = map.get(key)!;
-      entry.outstanding += due;
-      entry.invoices.push(inv);
-    }
+    // Share the canonical live query with summary() / dashboard so the three
+    // KPI tiles can never disagree. See computeLiveOutstanding() for the rule.
+    const { byCustomer: map } = await this.computeLiveOutstanding(branchId);
 
     const now = Date.now();
     let rows = Array.from(map.values()).map((entry) => {

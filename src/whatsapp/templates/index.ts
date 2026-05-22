@@ -78,3 +78,89 @@ export function paymentReceivedTemplate(v: PaymentReceivedVars) {
     ],
   };
 }
+
+// Sent to the supplier when one of their products goes below minStock. Body-
+// only template (no document, no buttons) — keeps Meta review simple and
+// avoids needing a hosted PDF.
+//
+// Meta template literal to register (UTILITY category, en_US):
+//   Hello {{1}}, this is {{2}} pharmacy.
+//   We're running low on {{3}}.
+//   Current stock: {{4}} units (minimum: {{5}}).
+//   Suggested reorder: {{6}} units.
+//   Please confirm availability and price.
+export interface LowStockSupplierVars {
+  supplierContactName: string;  // contactPerson, fallback supplier.name
+  pharmacyName: string;          // branch name (fallback "the pharmacy")
+  productName: string;
+  currentStock: string;          // "12"
+  minStock: string;              // "20"
+  reorderQty: string;            // "40"
+  languageCode?: string;
+}
+
+export function lowStockSupplierTemplate(v: LowStockSupplierVars) {
+  return {
+    name: 'low_stock_supplier_alert',
+    language: { code: v.languageCode ?? 'en_US' },
+    components: [
+      {
+        type: 'body',
+        parameters: [
+          { type: 'text', text: v.supplierContactName },
+          { type: 'text', text: v.pharmacyName },
+          { type: 'text', text: v.productName },
+          { type: 'text', text: v.currentStock },
+          { type: 'text', text: v.minStock },
+          { type: 'text', text: v.reorderQty },
+        ],
+      },
+    ],
+  };
+}
+
+// Sent to a customer on the day-of-month their CustomerReminder is due
+// (e.g. "buys diabetes meds on the 15th every month"). Body-only template,
+// no media or buttons — keeps Meta review trivial.
+//
+// Meta template literal to register (UTILITY category, en_US):
+//   Hello {{1}}, this is your monthly reminder from {{2}}: {{3}}.
+//   Please let us know if you'd like us to prepare anything for you.
+export interface CustomerSaleReminderVars {
+  customerFirstName: string;
+  pharmacyName: string;         // branch name (fallback "your pharmacy")
+  reminderTitle: string;        // the CustomerReminder.title text
+  languageCode?: string;
+}
+
+export function customerSaleReminderTemplate(v: CustomerSaleReminderVars) {
+  return {
+    name: 'customer_sale_reminder',
+    language: { code: v.languageCode ?? 'en_US' },
+    components: [
+      {
+        type: 'body',
+        parameters: [
+          { type: 'text', text: v.customerFirstName },
+          { type: 'text', text: v.pharmacyName },
+          { type: 'text', text: v.reminderTitle },
+        ],
+      },
+    ],
+  };
+}
+
+// Registry of every template name → builder. The retry sweeper uses this to
+// rebuild a Meta template payload from the `templateVars` JSON stored on a
+// failed WhatsAppMessage row, without needing to re-fire the source event.
+// Required for senders where re-firing would risk duplicating downstream
+// state (e.g. notification-driven flows).
+//
+// When you add a new template builder above, also add it here.
+export type TemplateBuilder = (vars: any) => Record<string, any>;
+export const TEMPLATE_BUILDERS: Record<string, TemplateBuilder> = {
+  invoice_payment_request: invoicePaymentRequestTemplate,
+  payment_received: paymentReceivedTemplate,
+  low_stock_supplier_alert: lowStockSupplierTemplate,
+  customer_sale_reminder: customerSaleReminderTemplate,
+};

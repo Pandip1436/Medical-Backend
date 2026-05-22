@@ -13,6 +13,34 @@ const gzip = promisify(gzipCb);
 // get swept by the scheduler. FAILED rows are left alone for admin triage.
 const RETENTION_KEEP = 30;
 
+// Retry once on transient Prisma connection errors. Neon serverless drops
+// idle connections aggressively; the next query auto-reconnects but the
+// in-flight one throws. A single short retry usually clears it. Without
+// this, the scheduled 02:00 IST backup fails every time a table-loop pause
+// exceeds Neon's idle threshold.
+async function findManyWithRetry(
+  delegate: { findMany: () => Promise<unknown[]> },
+  modelName: string,
+  logger: Logger,
+): Promise<unknown[]> {
+  try {
+    return await delegate.findMany();
+  } catch (err) {
+    const msg = (err as Error).message ?? '';
+    const code = (err as { code?: string }).code;
+    const isTransient =
+      code === 'P1001' || // Can't reach database server
+      code === 'P1017' || // Server has closed the connection
+      /closed the connection|connection.*terminat|reset by peer/i.test(msg);
+    if (!isTransient) throw err;
+    logger.warn(
+      `Transient DB error on findMany(${modelName}) — retrying once after 500ms: ${msg}`,
+    );
+    await new Promise((r) => setTimeout(r, 500));
+    return delegate.findMany();
+  }
+}
+
 function formatStamp(d: Date): string {
   const pad = (n: number) => String(n).padStart(2, '0');
   return (
@@ -99,7 +127,7 @@ export class BackupService implements OnModuleInit {
           this.logger.warn(`Skipping ${m.name}: no findMany delegate on Prisma client`);
           continue;
         }
-        const rows = await delegate.findMany();
+        const rows = await findManyWithRetry(delegate, m.name, this.logger);
         totalRows += rows.length;
         for (const r of rows) lines.push(JSON.stringify(r));
       }

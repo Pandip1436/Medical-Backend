@@ -1,6 +1,12 @@
 import { Injectable } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateNotificationDto, NotificationType } from './dto/create-notification.dto';
+import {
+  NOTIFICATION_CREATED,
+  type NotificationCreatedPayload,
+  type NotificationKind,
+} from '../events/notification-events';
 
 // Window-based dedup: don't fire the same alert again within this many hours
 // when there's no stronger signal (user hasn't read/resolved/snoozed).
@@ -86,7 +92,31 @@ function shouldEscalateExpiry(_prev: ExpiryState | null, _next: ExpiryState): bo
 
 @Injectable()
 export class NotificationsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly events: EventEmitter2,
+  ) {}
+
+  // Centralised create+emit so every notification creation path (manual,
+  // low-stock, expiry, reminder, payment-due) consistently fires the
+  // NOTIFICATION_CREATED event for downstream channel listeners (WhatsApp,
+  // email, push). Listeners filter on `type` and re-fetch their own context
+  // from `entityId` — the payload itself stays minimal so it's stable as
+  // schemas evolve.
+  private async createAndEmit(
+    data: Parameters<PrismaService['notification']['create']>[0]['data'],
+    entityId: string | null,
+  ) {
+    const row = await this.prisma.notification.create({ data });
+    const payload: NotificationCreatedPayload = {
+      notificationId: row.id,
+      type: row.type as NotificationKind,
+      entityId,
+      branchId: row.branchId ?? null,
+    };
+    this.events.emit(NOTIFICATION_CREATED, payload);
+    return row;
+  }
 
   async create(dto: CreateNotificationDto) {
     return this.prisma.notification.create({ data: dto });
@@ -275,8 +305,8 @@ export class NotificationsService {
       const stockLabel = p.totalStock <= 0
         ? 'is out of stock'
         : `has only ${p.totalStock} units left (min: ${p.minStock})`;
-      await this.prisma.notification.create({
-        data: {
+      await this.createAndEmit(
+        {
           type: NotificationType.LOW_STOCK,
           title: 'Low Stock Alert',
           message: `${p.name} ${stockLabel}. [productId:${p.id}]`,
@@ -284,7 +314,8 @@ export class NotificationsService {
           branchId: p.branchId ?? branchId ?? null,  // tag with active branch if product has none
           entityState: nextState as any,
         },
-      });
+        p.id,
+      );
       created++;
     }
     return { created };
@@ -338,8 +369,8 @@ export class NotificationsService {
         continue;
       }
       const label = daysLeft <= 0 ? 'has already expired' : `expires in ${daysLeft} day(s)`;
-      await this.prisma.notification.create({
-        data: {
+      await this.createAndEmit(
+        {
           type: NotificationType.EXPIRY,
           title: daysLeft <= 0 ? 'Expired Stock' : 'Expiry Alert',
           message: `Batch ${b.batchNumber} of ${b.product.name} ${label}. [batchId:${b.id}]`,
@@ -347,7 +378,8 @@ export class NotificationsService {
           branchId: b.product.branchId ?? branchId ?? null,
           entityState: nextState as any,
         },
-      });
+        b.id,
+      );
       created++;
     }
     return { created };
@@ -376,15 +408,16 @@ export class NotificationsService {
         },
       });
       if (!existing) {
-        await this.prisma.notification.create({
-          data: {
+        await this.createAndEmit(
+          {
             type: NotificationType.SYSTEM,
             title: '📅 Customer Reminder',
             message: `${r.title} — Follow up with ${r.customer.name} today. ${dedupKey}`,
             actionUrl: `/reminders/detail?id=${r.id}`,
             branchId: r.branchId ?? null,
           },
-        });
+          r.id,
+        );
         created++;
       }
     }
@@ -431,8 +464,8 @@ export class NotificationsService {
       if (existing && !shouldEscalatePaymentDue(existing.entityState as PaymentDueState | null, nextState)) {
         continue;
       }
-      await this.prisma.notification.create({
-        data: {
+      await this.createAndEmit(
+        {
           type: NotificationType.PAYMENT_DUE,
           title: 'Payment Due',
           message: `Invoice ${inv.invoiceNumber} for ${inv.customerName} has ₹${outstanding.toFixed(2)} outstanding. [invoiceId:${inv.id}]`,
@@ -440,7 +473,8 @@ export class NotificationsService {
           branchId: inv.branchId ?? branchId ?? null,
           entityState: nextState as any,
         },
-      });
+        inv.id,
+      );
       created++;
     }
     return { created };

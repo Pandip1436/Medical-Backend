@@ -10,5 +10,6 @@ import { ApprovalsModule } from '../approvals/approvals.module';
   imports: [ApprovalsModule],
   providers: [CustomersService, CustomerImportService],
   controllers: [CustomersController, CustomerImportController],
+  exports: [CustomersService],
 })
 export class CustomersModule {}
