@@ -158,11 +158,61 @@ export class SuppliersController {
     });
   }
 
+  // NOTE: must be declared BEFORE `@Get(':id')` so "outstanding" isn't captured
+  // as a supplier id by the param route.
+  @Get('outstanding')
+  @Roles('ADMIN', 'INVENTORY_MANAGER', 'PHARMACIST', 'ACCOUNTANT')
+  @ApiOperation({ summary: 'Suppliers with an unpaid balance + aging buckets' })
+  @ApiQuery({ name: 'branchId', required: false })
+  @ApiQuery({ name: 'q', required: false })
+  @ApiQuery({
+    name: 'bucket',
+    required: false,
+    enum: ['current', '0-30', '31-60', '61-90', '90+'],
+  })
+  @ApiQuery({ name: 'minOutstanding', required: false, type: Number })
+  getOutstanding(
+    @Request() req: AuthenticatedRequest,
+    @Query('branchId') branchId?: string,
+    @Query('q') q?: string,
+    @Query('bucket') bucket?: string,
+    @Query('minOutstanding') minOutstanding?: string,
+  ) {
+    const effectiveBranchId = req.user.branchId ?? branchId ?? undefined;
+    const allowedBuckets = ['current', '0-30', '31-60', '61-90', '90+'] as const;
+    const safeBucket = (allowedBuckets as readonly string[]).includes(bucket ?? '')
+      ? (bucket as 'current' | '0-30' | '31-60' | '61-90' | '90+')
+      : undefined;
+    const minNum =
+      minOutstanding !== undefined ? Number(minOutstanding) : undefined;
+    return this.suppliersService.getOutstanding(effectiveBranchId, {
+      q: q?.trim() || undefined,
+      bucket: safeBucket,
+      minOutstanding: Number.isFinite(minNum) ? minNum : undefined,
+    });
+  }
+
   @Get(':id')
   @Roles('ADMIN', 'INVENTORY_MANAGER', 'PHARMACIST', 'ACCOUNTANT')
   @ApiOperation({ summary: 'Get supplier details including basic history' })
   findOne(@Param('id') id: string, @Request() req: AuthenticatedRequest) {
     return this.suppliersService.findOne(id, req.user.branchId ?? undefined);
+  }
+
+  @Get(':id/outstanding-grns')
+  @Roles('ADMIN', 'INVENTORY_MANAGER', 'PHARMACIST', 'ACCOUNTANT')
+  @ApiOperation({
+    summary:
+      "Get a single supplier's open GRNs (UNPAID / PARTIAL) — oldest first, with daysOverdue",
+  })
+  getSupplierOutstandingGrns(
+    @Param('id') id: string,
+    @Request() req: AuthenticatedRequest,
+  ) {
+    return this.suppliersService.getSupplierOutstandingGrns(
+      id,
+      req.user.branchId ?? undefined,
+    );
   }
 
   @Patch(':id')
@@ -177,6 +227,33 @@ export class SuppliersController {
       id,
       updateSupplierDto,
       req.user.branchId ?? undefined,
+    );
+  }
+
+  @Post(':id/payment')
+  @Roles('ADMIN', 'PHARMACIST', 'ACCOUNTANT')
+  @ApiOperation({
+    summary:
+      'Record a payment against supplier outstanding. Defaults to FIFO across open GRNs; pass grnIds to apply to specific GRNs only.',
+  })
+  recordPayment(
+    @Param('id') id: string,
+    @Body()
+    body: {
+      amount: number;
+      paymentMode: string;
+      referenceNumber?: string;
+      grnIds?: string[];
+    },
+    @Request() req: AuthenticatedRequest,
+  ) {
+    return this.suppliersService.recordPayment(
+      id,
+      Number(body.amount),
+      body.paymentMode,
+      body.referenceNumber,
+      req.user.branchId ?? undefined,
+      body.grnIds,
     );
   }
 

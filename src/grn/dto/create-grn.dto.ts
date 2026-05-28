@@ -50,6 +50,20 @@ export class CreateGrnDto {
 
   @IsEnum(GRNStatus)
   status: GRNStatus;
+
+  // Amount paid to the supplier at receive time. 0 (or omitted) = full credit.
+  // Must not exceed supplierInvoiceAmount. Drives the GRN's paymentStatus and
+  // books an initial SupplierPayment credit.
+  @IsNumber()
+  @Min(0)
+  @IsOptional()
+  amountPaid?: number;
+
+  // Payment mode for the receive-time payment (CASH | CHEQUE | NEFT_UPI | UPI | CARD).
+  @IsString()
+  @IsOptional()
+  paymentMode?: string;
+
   @IsString()
   @IsOptional()
   branchId?: string;

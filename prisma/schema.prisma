@@ -41,6 +41,7 @@ model Branch {
   prescriptions   Prescription[]
   notifications   Notification[]
   payments        Payment[]
+  supplierPayments SupplierPayment[]
   reminders       CustomerReminder[]
   categories      Category[]
   supplierActivities SupplierActivity[]
@@ -270,7 +271,14 @@ model Batch {
   purchaseRate Decimal
   supplierId   String
   supplier     Supplier @relation(fields: [supplierId], references: [id])
+  // The GRN line that received this batch. Nullable for batches created before
+  // this link existed; backfilled by tuple match. Lets a GRN edit find the exact
+  // batch it created without the fragile (product+batchNumber+expiry+supplier) match.
+  grnItemId    String?
+  grnItem      GRNItem? @relation(fields: [grnItemId], references: [id])
   createdAt    DateTime @default(now())
+
+  @@index([grnItemId])
 }
 
 // ── Suppliers ─────────────────────────────────────────────────
@@ -296,6 +304,7 @@ model Supplier {
   purchaseOrders      PurchaseOrder[]
   grns                GRN[]
   purchaseReturns     PurchaseReturn[]
+  payments            SupplierPayment[]
   activities          SupplierActivity[]
   preferredForProducts Product[]       @relation("ProductPreferredSupplier")
 }
@@ -574,9 +583,42 @@ model GRN {
   items                 GRNItem[]
   totalAmount           Decimal
   status                GRNStatus
+  // Money already paid to the supplier against this GRN's invoice. Outstanding
+  // contribution = supplierInvoiceAmount - amountPaid (mirrors invoice paid/grandTotal).
+  amountPaid            Decimal   @default(0)
+  // Derived from amountPaid vs supplierInvoiceAmount. Distinct from the GRNStatus
+  // receiving workflow (DRAFT/RECEIVED/VERIFIED).
+  paymentStatus         GrnPaymentStatus @default(UNPAID)
   // True if this GRN was created to receive replacement goods (does NOT add to supplier outstanding)
   isReplacement         Boolean   @default(false)
   purchaseReturns       PurchaseReturn[]
+  payments              SupplierPayment[]
+  editLogs              GrnEditLog[]
+}
+
+// Payment-state of a GRN's supplier invoice. Separate from the GRNStatus
+// receiving workflow — a GRN can be RECEIVED but still UNPAID.
+enum GrnPaymentStatus {
+  UNPAID
+  PARTIAL
+  PAID
+}
+
+// Audit trail of GRN edits. Mirrors InvoiceEditAudit but stores the editor as
+// plain strings (like StockAdjustmentLog) to avoid a User back-relation.
+model GrnEditLog {
+  id           String   @id @default(cuid())
+  grnId        String
+  grn          GRN      @relation(fields: [grnId], references: [id], onDelete: Cascade)
+  editedById   String
+  editedByName String
+  branchId     String?
+  before       Json
+  after        Json
+  editedAt     DateTime @default(now())
+
+  @@index([grnId])
+  @@index([editedAt])
 }
 
 model GRNItem {
@@ -594,6 +636,7 @@ model GRNItem {
   purchaseRate Decimal
   mrp          Decimal
   damageQty    Int      @default(0)
+  batches      Batch[]
 }
 
 enum GRNStatus {
@@ -747,17 +790,18 @@ enum PurchaseReturnStatus {
 
 // ── Audit Log ─────────────────────────────────────────────────
 model AuditLog {
-  id        String   @id @default(cuid())
-  userId    String
-  user      User     @relation(fields: [userId], references: [id])
-  module    String
-  action    String
-  entity    String
-  entityId  String?
-  oldValue  Json?
-  newValue  Json?
-  ipAddress String?
-  createdAt DateTime @default(now())
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id])
+  module      String
+  action      String
+  entity      String
+  entityId    String?
+  entityLabel String?
+  oldValue    Json?
+  newValue    Json?
+  ipAddress   String?
+  createdAt   DateTime @default(now())
 }
 
 // ── Global Settings ───────────────────────────────────────────
@@ -875,6 +919,28 @@ model Payment {
   branch          Branch?       @relation(fields: [branchId], references: [id])
   createdAt       DateTime      @default(now())
   @@index([referenceNumber])    // fast webhook reconciliation lookup
+}
+
+// ── Supplier Payment Records ──────────────────────────────────
+// Money WE PAY a supplier — the credit side of the supplier ledger. Mirrors the
+// customer-side Payment model. grnId links the payment to a specific received
+// invoice; null = lump payment allocated FIFO across the supplier's open GRNs.
+model SupplierPayment {
+  id              String        @id @default(cuid())
+  paymentNumber   String        @unique
+  supplierId      String
+  supplier        Supplier      @relation(fields: [supplierId], references: [id])
+  grnId           String?       // null = supplier-level lump payment (allocated FIFO)
+  grn             GRN?          @relation(fields: [grnId], references: [id])
+  amount          Decimal
+  paymentMode     String        // CASH | CHEQUE | NEFT_UPI | UPI | CARD
+  referenceNumber String?       // cheque #, UTR, txn ref
+  notes           String?
+  branchId        String?
+  branch          Branch?       @relation(fields: [branchId], references: [id])
+  createdAt       DateTime      @default(now())
+  @@index([supplierId])
+  @@index([grnId])
 }
 
 // ── Notifications ─────────────────────────────────────────────

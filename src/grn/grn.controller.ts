@@ -2,6 +2,7 @@ import {
   Controller,
   Get,
   Post,
+  Patch,
   Body,
   Param,
   Query,
@@ -124,10 +125,44 @@ export class GrnController {
     return this.grnService.reverseShortDeliveryStockDeduction();
   }
 
+  @Get('admin/backfill-batch-grnitem')
+  @Roles('ADMIN')
+  @ApiOperation({
+    summary:
+      'Link existing batches to the GRN line that created them (run once after migration)',
+  })
+  backfillBatchGrnItem() {
+    return this.grnService.backfillBatchGrnItemId();
+  }
+
   @Get(':id')
   @Roles('ADMIN', 'INVENTORY_MANAGER', 'PHARMACIST', 'ACCOUNTANT')
   @ApiOperation({ summary: 'Get specific GRN details' })
   findOne(@Param('id') id: string, @Request() req: AuthenticatedRequest) {
     return this.grnService.findOne(id, req.user.branchId ?? undefined);
+  }
+
+  @Patch(':id')
+  @Roles('ADMIN', 'INVENTORY_MANAGER')
+  @ApiOperation({
+    summary:
+      'Edit a GRN in place (only while its stock is untouched); reconciles batches, stock, payables and PO',
+  })
+  edit(
+    @Param('id') id: string,
+    @Body() updateGrnDto: CreateGrnDto,
+    @Request() req: AuthenticatedRequest,
+    @Query('branchId') branchId?: string,
+  ) {
+    const effectiveBranchId = req.user.branchId ?? branchId ?? undefined;
+    const editedByName =
+      (req.user as { name?: string }).name ?? req.user.email ?? 'Unknown';
+    return this.grnService.editGrn(
+      id,
+      updateGrnDto,
+      req.user.userId,
+      editedByName,
+      effectiveBranchId,
+    );
   }
 }

@@ -1218,7 +1218,7 @@ export class ReportsService {
     const grns = await this.prisma.gRN.findMany({
       where: { supplierId, ...(dateFilter ? { date: dateFilter } : {}), ...bFilter },
       orderBy: { date: 'asc' },
-      select: { id: true, date: true, totalAmount: true, grnNumber: true },
+      select: { id: true, date: true, supplierInvoiceAmount: true, isReplacement: true, grnNumber: true },
     });
 
     const purchaseReturns = await this.prisma.purchaseReturn.findMany({
@@ -1227,14 +1227,22 @@ export class ReportsService {
       select: { id: true, createdAt: true, totalAmount: true, debitNoteNo: true },
     });
 
-    type LedgerEntry = { date: Date | string; ref: string; description: string; debit: number; credit: number; balance?: number; sourceType: 'GRN' | 'PURCHASE_RETURN'; sourceId: string };
+    const payments = await this.prisma.supplierPayment.findMany({
+      where: { supplierId, ...(dateFilter ? { createdAt: dateFilter } : {}), ...bFilter },
+      orderBy: { createdAt: 'asc' },
+      select: { id: true, createdAt: true, amount: true, paymentNumber: true },
+    });
+
+    type LedgerEntry = { date: Date | string; ref: string; description: string; debit: number; credit: number; balance?: number; sourceType: 'GRN' | 'PURCHASE_RETURN' | 'SUPPLIER_PAYMENT'; sourceId: string };
     const entries: LedgerEntry[] = [];
 
+    // GRN debit = supplierInvoiceAmount (the figure that drives currentOutstanding;
+    // totalAmount can differ). Replacement GRNs are stock-back, never a payable.
     grns.forEach((g) => entries.push({
       date: g.date,
       ref: g.grnNumber,
       description: 'Purchase Received',
-      debit: Number(g.totalAmount),
+      debit: g.isReplacement ? 0 : Number(g.supplierInvoiceAmount),
       credit: 0,
       sourceType: 'GRN',
       sourceId: g.id,
@@ -1250,6 +1258,16 @@ export class ReportsService {
       sourceId: r.id,
     }));
 
+    payments.forEach((p) => entries.push({
+      date: p.createdAt,
+      ref: p.paymentNumber,
+      description: 'Payment Made',
+      debit: 0,
+      credit: Number(p.amount),
+      sourceType: 'SUPPLIER_PAYMENT',
+      sourceId: p.id,
+    }));
+
     entries.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
 
     let balance = 0;
@@ -1259,13 +1277,15 @@ export class ReportsService {
     });
 
     const totalPurchases = entries.reduce((s, e) => s + e.debit, 0);
-    const totalReturns = entries.reduce((s, e) => s + e.credit, 0);
+    const totalReturns = purchaseReturns.reduce((s, r) => s + Number(r.totalAmount), 0);
+    const totalPaid = payments.reduce((s, p) => s + Number(p.amount), 0);
 
     return {
       supplier,
       tableData: ledger,
       kpis: [
         { label: 'Total Purchases', value: this.inr(totalPurchases) },
+        { label: 'Total Paid', value: this.inr(totalPaid) },
         { label: 'Total Returns', value: this.inr(totalReturns) },
         { label: 'Net Payable', value: this.inr(balance) },
         { label: 'Open POs', value: String(openPOsCount) },

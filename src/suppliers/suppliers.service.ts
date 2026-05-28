@@ -6,12 +6,26 @@ import {
 } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { DocumentNumberingService } from '../common/services/document-numbering.service';
 import { CreateSupplierDto } from './dto/create-supplier.dto';
 import { UpdateSupplierDto } from './dto/update-supplier.dto';
 
 @Injectable()
 export class SuppliersService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly numbering: DocumentNumberingService,
+  ) {}
+
+  /** Derive a GRN's payment status from how much has been paid vs the invoice. */
+  private deriveGrnPaymentStatus(
+    amountPaid: number,
+    invoiceAmount: number,
+  ): 'UNPAID' | 'PARTIAL' | 'PAID' {
+    if (invoiceAmount <= 0 || amountPaid >= invoiceAmount - 0.01) return 'PAID';
+    if (amountPaid <= 0.01) return 'UNPAID';
+    return 'PARTIAL';
+  }
 
   // Strip everything except digits so "9876543210", "(987) 654-3210", and
   // "+91 98765 43210" collapse to a comparable form. Mirrors customers.service
@@ -227,10 +241,11 @@ export class SuppliersService {
     const safeSkip = paginated ? Math.max(skip, 0) : undefined;
 
     if (!paginated) {
-      return this.prisma.supplier.findMany({
+      const all = await this.prisma.supplier.findMany({
         where,
         orderBy: { name: 'asc' },
       });
+      return this.withLiveOutstanding(all, branchId);
     }
 
     const [data, total] = await Promise.all([
@@ -244,10 +259,39 @@ export class SuppliersService {
     ]);
 
     return {
-      data,
+      data: await this.withLiveOutstanding(data, branchId),
       total,
       hasMore: (safeSkip ?? 0) + data.length < total,
     };
+  }
+
+  // Overrides each supplier's `currentOutstanding` with the LIVE balance
+  // computed from open GRNs — the exact same basis as getOutstanding() — so
+  // the Suppliers list and the Outstanding aging page always agree. The
+  // stored `currentOutstanding` column is a denormalized cache that can drift
+  // (e.g. legacy/seeded GRNs created outside the increment flow); deriving the
+  // displayed value live makes the list immune to that drift.
+  private async withLiveOutstanding<T extends { id: string; currentOutstanding: unknown }>(
+    suppliers: T[],
+    branchId?: string,
+  ): Promise<T[]> {
+    if (suppliers.length === 0) return suppliers;
+    const grns = await this.prisma.gRN.findMany({
+      where: {
+        supplierId: { in: suppliers.map((s) => s.id) },
+        isReplacement: false,
+        paymentStatus: { in: ['UNPAID', 'PARTIAL'] },
+        ...(branchId ? { branchId } : {}),
+      },
+      select: { supplierId: true, supplierInvoiceAmount: true, amountPaid: true },
+    });
+    const liveMap = new Map<string, number>();
+    for (const g of grns) {
+      const due = Number(g.supplierInvoiceAmount) - Number(g.amountPaid);
+      if (due <= 0.01) continue;
+      liveMap.set(g.supplierId, (liveMap.get(g.supplierId) ?? 0) + due);
+    }
+    return suppliers.map((s) => ({ ...s, currentOutstanding: liveMap.get(s.id) ?? 0 }));
   }
 
   async findOne(id: string, branchId?: string) {
@@ -268,6 +312,272 @@ export class SuppliersService {
       throw new NotFoundException('Supplier not found');
     }
     return supplier;
+  }
+
+  // Suppliers with an unpaid balance + aging buckets, computed live from open
+  // GRN balances. Mirrors customers.service.getOutstanding. Aging is by GRN
+  // date (days since received) — simple and consistent with the customer view.
+  async getOutstanding(
+    branchId?: string,
+    filters?: {
+      q?: string;
+      bucket?: 'current' | '0-30' | '31-60' | '61-90' | '90+';
+      minOutstanding?: number;
+    },
+  ) {
+    const grns = await this.prisma.gRN.findMany({
+      where: {
+        isReplacement: false,
+        paymentStatus: { in: ['UNPAID', 'PARTIAL'] },
+        ...(branchId ? { branchId } : {}),
+      },
+      select: {
+        date: true,
+        supplierId: true,
+        supplierName: true,
+        supplierInvoiceAmount: true,
+        amountPaid: true,
+      },
+      orderBy: { date: 'asc' },
+    });
+
+    const now = Date.now();
+    const map = new Map<
+      string,
+      {
+        supplierId: string;
+        supplier: string;
+        outstanding: number;
+        current: number;
+        d0_30: number;
+        d31_60: number;
+        d61_90: number;
+        d90plus: number;
+        grnCount: number;
+      }
+    >();
+
+    for (const g of grns) {
+      const due = Number(g.supplierInvoiceAmount) - Number(g.amountPaid);
+      if (due <= 0.01) continue;
+      const entry = map.get(g.supplierId) ?? {
+        supplierId: g.supplierId,
+        supplier: g.supplierName,
+        outstanding: 0,
+        current: 0,
+        d0_30: 0,
+        d31_60: 0,
+        d61_90: 0,
+        d90plus: 0,
+        grnCount: 0,
+      };
+      const ageDays = Math.floor((now - new Date(g.date).getTime()) / 86400000);
+      if (ageDays <= 0) entry.current += due;
+      else if (ageDays <= 30) entry.d0_30 += due;
+      else if (ageDays <= 60) entry.d31_60 += due;
+      else if (ageDays <= 90) entry.d61_90 += due;
+      else entry.d90plus += due;
+      entry.outstanding += due;
+      entry.grnCount += 1;
+      map.set(g.supplierId, entry);
+    }
+
+    let rows = Array.from(map.values()).map((e) => ({
+      supplierId: e.supplierId,
+      supplier: e.supplier,
+      outstanding: e.outstanding,
+      current: e.current,
+      '0-30': e.d0_30,
+      '31-60': e.d31_60,
+      '61-90': e.d61_90,
+      '90+': e.d90plus,
+      grnCount: e.grnCount,
+    }));
+
+    if (filters?.q) {
+      const q = filters.q.toLowerCase();
+      rows = rows.filter((r) => r.supplier.toLowerCase().includes(q));
+    }
+    if (filters?.bucket) {
+      rows = rows.filter((r) => r[filters.bucket!] > 0);
+    }
+    if (typeof filters?.minOutstanding === 'number' && filters.minOutstanding > 0) {
+      rows = rows.filter((r) => r.outstanding >= filters.minOutstanding!);
+    }
+
+    rows.sort((a, b) => b.outstanding - a.outstanding);
+
+    return {
+      total: rows.reduce((s, r) => s + r.outstanding, 0),
+      rows,
+    };
+  }
+
+  // Per-supplier drill-down for the Outstanding page drawer: each open GRN with
+  // its unpaid balance + age in days, oldest-first (matches recordPayment FIFO).
+  async getSupplierOutstandingGrns(supplierId: string, branchId?: string) {
+    const grns = await this.prisma.gRN.findMany({
+      where: {
+        supplierId,
+        isReplacement: false,
+        paymentStatus: { in: ['UNPAID', 'PARTIAL'] },
+        ...(branchId ? { branchId } : {}),
+      },
+      select: {
+        id: true,
+        grnNumber: true,
+        date: true,
+        supplierInvoiceNo: true,
+        supplierInvoiceAmount: true,
+        amountPaid: true,
+        paymentStatus: true,
+      },
+      orderBy: { date: 'asc' },
+    });
+
+    const now = Date.now();
+    return grns
+      .map((g) => {
+        const invoiceAmount = Number(g.supplierInvoiceAmount);
+        const amountPaid = Number(g.amountPaid);
+        const balance = invoiceAmount - amountPaid;
+        const daysOverdue = Math.max(
+          0,
+          Math.floor((now - new Date(g.date).getTime()) / 86400000),
+        );
+        return {
+          id: g.id,
+          grnNumber: g.grnNumber,
+          date: g.date,
+          supplierInvoiceNo: g.supplierInvoiceNo,
+          invoiceAmount,
+          amountPaid,
+          balance,
+          status: g.paymentStatus,
+          daysOverdue,
+        };
+      })
+      .filter((g) => g.balance > 0.01);
+  }
+
+  // Record a payment we made to a supplier — the credit side of the supplier
+  // ledger. Mirrors customers.service.recordPayment: allocate FIFO across the
+  // supplier's open (UNPAID/PARTIAL) GRNs, or to specific GRNs when grnIds is
+  // given. Each touched GRN's amountPaid/paymentStatus advances; the supplier's
+  // currentOutstanding drops by the amount actually applied; one SupplierPayment
+  // record is written for the whole collection.
+  async recordPayment(
+    id: string,
+    amount: number,
+    paymentMode: string,
+    referenceNumber?: string,
+    branchId?: string,
+    grnIds?: string[],
+  ) {
+    if (amount <= 0)
+      throw new BadRequestException('Amount must be greater than zero');
+
+    const supplier = await this.findOne(id, branchId);
+
+    const useSpecific = Array.isArray(grnIds) && grnIds.length > 0;
+
+    const openGrns = await this.prisma.gRN.findMany({
+      where: {
+        supplierId: id,
+        isReplacement: false,
+        paymentStatus: { in: ['UNPAID', 'PARTIAL'] },
+        ...(useSpecific ? { id: { in: grnIds } } : {}),
+      },
+      orderBy: { date: 'asc' },
+    });
+
+    if (openGrns.length === 0) {
+      throw new BadRequestException(
+        useSpecific
+          ? 'Selected GRNs are not open or do not belong to this supplier'
+          : 'No outstanding GRNs for this supplier',
+      );
+    }
+
+    if (grnIds && useSpecific && openGrns.length !== grnIds.length) {
+      throw new BadRequestException(
+        'One or more selected GRNs are not open or do not belong to this supplier',
+      );
+    }
+
+    const totalOutstanding = openGrns.reduce(
+      (s, g) => s + Number(g.supplierInvoiceAmount) - Number(g.amountPaid),
+      0,
+    );
+
+    if (amount > totalOutstanding + 0.01) {
+      throw new BadRequestException(
+        useSpecific
+          ? `Payment amount (₹${amount.toFixed(2)}) exceeds balance of selected GRNs (₹${totalOutstanding.toFixed(2)})`
+          : `Payment amount (₹${amount.toFixed(2)}) exceeds outstanding balance (₹${totalOutstanding.toFixed(2)})`,
+      );
+    }
+
+    return this.prisma.$transaction(async (tx) => {
+      let remaining = amount;
+      const allocations: {
+        grnId: string;
+        applied: number;
+        newStatus: string;
+      }[] = [];
+
+      for (const g of openGrns) {
+        if (remaining <= 0.01) break;
+        const due = Number(g.supplierInvoiceAmount) - Number(g.amountPaid);
+        if (due <= 0.01) continue;
+        const applied = Math.min(remaining, due);
+        const newAmountPaid = Number(g.amountPaid) + applied;
+        const newStatus = this.deriveGrnPaymentStatus(
+          newAmountPaid,
+          Number(g.supplierInvoiceAmount),
+        );
+
+        await tx.gRN.update({
+          where: { id: g.id },
+          data: { amountPaid: newAmountPaid, paymentStatus: newStatus },
+        });
+
+        allocations.push({ grnId: g.id, applied, newStatus });
+        remaining -= applied;
+      }
+
+      // Decrement supplier outstanding by the amount actually applied.
+      const totalApplied = amount - Math.max(0, remaining);
+      await tx.supplier.update({
+        where: { id },
+        data: { currentOutstanding: { decrement: totalApplied } },
+      });
+
+      const paymentNumber = await this.numbering.nextNumber(
+        tx,
+        'SPAY',
+        supplier.branchId ?? branchId ?? null,
+      );
+
+      const payment = await tx.supplierPayment.create({
+        data: {
+          paymentNumber,
+          supplierId: id,
+          // link to the single GRN touched, else null (lump payment)
+          grnId: allocations.length === 1 ? allocations[0].grnId : null,
+          amount: totalApplied,
+          paymentMode,
+          referenceNumber: referenceNumber ?? null,
+          branchId: supplier.branchId ?? branchId ?? null,
+        },
+      });
+
+      return {
+        paymentNumber: payment.paymentNumber,
+        amount: totalApplied,
+        allocations,
+      };
+    });
   }
 
   // Bulk export for the Export → edit → Re-import workflow. Returns the full

@@ -2,7 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 
-export type DocType = 'PO' | 'GRN' | 'DN' | 'INV' | 'CN' | 'QTN' | 'RCPT' | 'ADJ';
+export type DocType = 'PO' | 'GRN' | 'DN' | 'INV' | 'CN' | 'QTN' | 'RCPT' | 'ADJ' | 'SPAY';
 
 export type FyFormat = 'YY-YY' | 'YYYY-YY' | 'YY' | 'YYYY';
 

@@ -44,7 +44,7 @@ export class PurchaseReturnsService {
         });
         if (grn) {
           if (userBranchId && grn.branchId && grn.branchId !== userBranchId) {
-            throw new NotFoundException('GRN not found');
+            throw new NotFoundException('Purchase Received record not found');
           }
           branchId = grn.branchId ?? userBranchId ?? null;
         }
@@ -290,14 +290,14 @@ export class PurchaseReturnsService {
       where: { id: replacementGrnId },
     });
     if (!replacementGrn) {
-      throw new BadRequestException('Replacement GRN not found');
+      throw new BadRequestException('Replacement PR not found');
     }
     if (
       branchId &&
       replacementGrn.branchId &&
       replacementGrn.branchId !== branchId
     ) {
-      throw new BadRequestException('Replacement GRN is not in this branch');
+      throw new BadRequestException('Replacement PR is not in this branch');
     }
     if (replacementGrn.supplierId !== pr.supplierId) {
       throw new BadRequestException(

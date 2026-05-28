@@ -8,12 +8,29 @@ import { PrismaService } from '../prisma/prisma.service';
 import { DocumentNumberingService } from '../common/services/document-numbering.service';
 import { CreateGrnDto } from './dto/create-grn.dto';
 
+// GRN create/edit run many sequential writes (item + batch + stock per line,
+// plus PO/supplier recompute and audit) inside one interactive transaction.
+// Over Neon's pooler the default 5s timeout is easily exceeded on multi-line
+// GRNs, surfacing as P2028 ("transaction not found / closed"). Give them more
+// headroom; maxWait covers waiting for a free pool connection.
+const GRN_TX_OPTIONS = { maxWait: 15000, timeout: 60000 } as const;
+
 @Injectable()
 export class GrnService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly numbering: DocumentNumberingService,
   ) {}
+
+  /** Derive a GRN's payment status from how much has been paid vs the invoice. */
+  private derivePaymentStatus(
+    amountPaid: number,
+    invoiceAmount: number,
+  ): 'UNPAID' | 'PARTIAL' | 'PAID' {
+    if (invoiceAmount <= 0 || amountPaid >= invoiceAmount - 0.01) return 'PAID';
+    if (amountPaid <= 0.01) return 'UNPAID';
+    return 'PARTIAL';
+  }
 
   async create(createGrnDto: CreateGrnDto, branchId?: string) {
     const effectiveBranchId = branchId ?? createGrnDto.branchId;
@@ -28,76 +45,15 @@ export class GrnService {
       // 1b. If linked to a PO, validate that no item over-receives the
       // remaining ordered qty across all GRNs for that PO.
       if (createGrnDto.poId) {
-        const po = await tx.purchaseOrder.findUnique({
-          where: { id: createGrnDto.poId },
-          include: { items: true },
-        });
-        if (!po)
-          throw new BadRequestException('Linked Purchase Order not found');
-
-        const priorGrns = await tx.gRN.findMany({
-          where: { poId: createGrnDto.poId },
-          include: { items: true },
-        });
-        const priorByProduct: Record<string, number> = {};
-        for (const g of priorGrns) {
-          for (const gi of g.items) {
-            priorByProduct[gi.productId] =
-              (priorByProduct[gi.productId] ?? 0) + gi.receivedQty + gi.freeQty;
-          }
-        }
-        const requiredByProduct: Record<string, number> = {};
-        for (const pi of po.items)
-          requiredByProduct[pi.productId] = pi.requiredQty;
-
-        for (const item of createGrnDto.items) {
-          const required = requiredByProduct[item.productId];
-          if (required === undefined) continue; // direct-add line not on PO — allowed
-          const alreadyReceived = priorByProduct[item.productId] ?? 0;
-          const remaining = Math.max(0, required - alreadyReceived);
-          const incoming = item.receivedQty + item.freeQty;
-          if (incoming > remaining) {
-            throw new BadRequestException(
-              `Cannot receive ${incoming} of ${item.productName}: only ${remaining} remaining on PO (ordered ${required}, already received ${alreadyReceived})`,
-            );
-          }
-        }
+        await this.validatePoOverReceipt(
+          tx,
+          createGrnDto.poId,
+          createGrnDto.items,
+        );
       }
 
-      // 2. Loop through GRN items and process Stock and Batches
-      for (const item of createGrnDto.items) {
-        const addedStock = item.receivedQty + item.freeQty;
-
-        if (addedStock > 0) {
-          // A. Create a new Batch mapped to this GRN and Product
-          // mfgDate is no longer captured at the form level — fall back to
-          // today when missing so the non-nullable DB column stays populated.
-          await tx.batch.create({
-            data: {
-              productId: item.productId,
-              batchNumber: item.batchNumber,
-              mfgDate: item.mfgDate ? new Date(item.mfgDate) : new Date(),
-              expiryDate: new Date(item.expiryDate),
-              quantity: addedStock,
-              mrp: item.mrp,
-              purchaseRate: item.purchaseRate,
-              supplierId: createGrnDto.supplierId,
-            },
-          });
-
-          // B. Update master Product totalStock, and maybe update lastPurchaseRate
-          await tx.product.update({
-            where: { id: item.productId },
-            data: {
-              totalStock: { increment: addedStock },
-              purchaseRate: item.purchaseRate, // Update to latest purchase rate
-              mrp: item.mrp, // Update to latest MRP
-            },
-          });
-        }
-      }
-
-      // 3. Create the GRN Header record
+      // 2. Create the GRN Header record (no items yet — items are created next
+      // so each batch can carry its grnItemId).
       const isReplacement = createGrnDto.isReplacement === true;
       const grn = await tx.gRN.create({
         data: {
@@ -112,82 +68,438 @@ export class GrnService {
           status: createGrnDto.status,
           branchId: effectiveBranchId,
           isReplacement,
-          items: {
-            create: createGrnDto.items.map((item) => ({
-              productId: item.productId,
-              productName: item.productName,
-              orderedQty: item.orderedQty,
-              receivedQty: item.receivedQty,
-              freeQty: item.freeQty,
-              batchNumber: item.batchNumber,
-              mfgDate: item.mfgDate ? new Date(item.mfgDate) : new Date(),
-              expiryDate: new Date(item.expiryDate),
-              purchaseRate: item.purchaseRate,
-              mrp: item.mrp,
-            })),
-          },
         },
-        include: { items: true },
       });
 
-      // 3.5 Increment supplier outstanding (we owe them for received goods on credit)
-      // Skip for replacement GRNs — those are stock-back, not new payables
-      if (!isReplacement && createGrnDto.supplierInvoiceAmount > 0) {
+      // 3. Create items + batches + stock increments (shared with editGrn).
+      await this.applyGrnItems(
+        tx,
+        grn.id,
+        createGrnDto.items,
+        createGrnDto.supplierId,
+      );
+
+      // 3.5 Record the payable + any payment captured at receive time.
+      // Outstanding rises by the FULL invoice amount; an initial payment (paid
+      // in full or partial at GRN time) is booked as a SupplierPayment credit,
+      // so the NET increase to outstanding is just the unpaid portion. This
+      // keeps the ledger double-entry (GRN debit + payment credit). Replacement
+      // GRNs are stock-back, never a payable.
+      const invoiceAmount = Number(createGrnDto.supplierInvoiceAmount) || 0;
+      const initialPaid = isReplacement
+        ? 0
+        : Number(createGrnDto.amountPaid ?? 0);
+      if (initialPaid > invoiceAmount + 0.01) {
+        throw new BadRequestException(
+          `Amount paid (₹${initialPaid.toFixed(2)}) exceeds the GRN invoice amount (₹${invoiceAmount.toFixed(2)})`,
+        );
+      }
+
+      if (!isReplacement && invoiceAmount > 0) {
         await tx.supplier.update({
           where: { id: createGrnDto.supplierId },
-          data: {
-            currentOutstanding: {
-              increment: createGrnDto.supplierInvoiceAmount,
-            },
-          },
+          data: { currentOutstanding: { increment: invoiceAmount } },
         });
       }
+
+      if (initialPaid > 0) {
+        const paymentNumber = await this.numbering.nextNumber(
+          tx,
+          'SPAY',
+          effectiveBranchId ?? null,
+        );
+        await tx.supplierPayment.create({
+          data: {
+            paymentNumber,
+            supplierId: createGrnDto.supplierId,
+            grnId: grn.id,
+            amount: initialPaid,
+            paymentMode: createGrnDto.paymentMode ?? 'CASH',
+            branchId: effectiveBranchId ?? null,
+          },
+        });
+        await tx.supplier.update({
+          where: { id: createGrnDto.supplierId },
+          data: { currentOutstanding: { decrement: initialPaid } },
+        });
+      }
+
+      // Stamp the GRN's payment state (derived from paid vs invoice amount).
+      await tx.gRN.update({
+        where: { id: grn.id },
+        data: {
+          amountPaid: initialPaid,
+          paymentStatus: isReplacement
+            ? 'PAID'
+            : this.derivePaymentStatus(initialPaid, invoiceAmount),
+        },
+      });
 
       // 4. Update PO status and PurchaseOrderItem.receivedQty
       if (createGrnDto.poId) {
-        const po = await tx.purchaseOrder.findUnique({
-          where: { id: createGrnDto.poId },
-          include: { items: true },
+        await this.recomputePo(tx, createGrnDto.poId);
+      }
+
+      return tx.gRN.findUnique({
+        where: { id: grn.id },
+        include: { items: true },
+      });
+    }, GRN_TX_OPTIONS);
+  }
+
+  /**
+   * Create the GRN line items and, for each, spawn its Batch (carrying the
+   * grnItemId back-reference) and increment Product.totalStock / latest rates.
+   * Shared by create() and editGrn() so the stock-write path lives in one place.
+   * The GRN header (grnId) must already exist.
+   */
+  private async applyGrnItems(
+    tx: Prisma.TransactionClient,
+    grnId: string,
+    items: CreateGrnDto['items'],
+    supplierId: string,
+  ) {
+    for (const item of items) {
+      // mfgDate is no longer captured at the form level — fall back to today
+      // when missing so the non-nullable DB column stays populated.
+      const mfgDate = item.mfgDate ? new Date(item.mfgDate) : new Date();
+      const expiryDate = new Date(item.expiryDate);
+
+      const grnItem = await tx.gRNItem.create({
+        data: {
+          grnId,
+          productId: item.productId,
+          productName: item.productName,
+          orderedQty: item.orderedQty,
+          receivedQty: item.receivedQty,
+          freeQty: item.freeQty,
+          batchNumber: item.batchNumber,
+          mfgDate,
+          expiryDate,
+          purchaseRate: item.purchaseRate,
+          mrp: item.mrp,
+        },
+      });
+
+      const addedStock = item.receivedQty + item.freeQty;
+      if (addedStock > 0) {
+        await tx.batch.create({
+          data: {
+            productId: item.productId,
+            batchNumber: item.batchNumber,
+            mfgDate,
+            expiryDate,
+            quantity: addedStock,
+            mrp: item.mrp,
+            purchaseRate: item.purchaseRate,
+            supplierId,
+            grnItemId: grnItem.id,
+          },
         });
-        if (po) {
-          // Sum all received qty across ALL grns linked to this PO per product
-          const allGrns = await tx.gRN.findMany({
-            where: { poId: createGrnDto.poId },
-            include: { items: true },
-          });
-          const receivedByProduct: Record<string, number> = {};
-          for (const g of allGrns) {
-            for (const gi of g.items) {
-              receivedByProduct[gi.productId] =
-                (receivedByProduct[gi.productId] ?? 0) +
-                gi.receivedQty +
-                gi.freeQty;
-            }
-          }
-          // Update each PO item's receivedQty
-          for (const pi of po.items) {
-            const totalReceived = receivedByProduct[pi.productId] ?? 0;
-            if (totalReceived !== pi.receivedQty) {
-              await tx.purchaseOrderItem.update({
-                where: { id: pi.id },
-                data: { receivedQty: totalReceived },
-              });
-            }
-          }
-          const allFulfilled = po.items.every(
-            (pi) => (receivedByProduct[pi.productId] ?? 0) >= pi.requiredQty,
+        await tx.product.update({
+          where: { id: item.productId },
+          data: {
+            totalStock: { increment: addedStock },
+            purchaseRate: item.purchaseRate, // Update to latest purchase rate
+            mrp: item.mrp, // Update to latest MRP
+          },
+        });
+      }
+    }
+  }
+
+  /**
+   * Validate that the incoming items don't over-receive the PO's remaining qty.
+   * `excludeGrnId` lets an edit ignore the GRN being edited so its own old
+   * contribution isn't double-counted against the remaining.
+   */
+  private async validatePoOverReceipt(
+    tx: Prisma.TransactionClient,
+    poId: string,
+    items: CreateGrnDto['items'],
+    excludeGrnId?: string,
+  ) {
+    const po = await tx.purchaseOrder.findUnique({
+      where: { id: poId },
+      include: { items: true },
+    });
+    if (!po) throw new BadRequestException('Linked Purchase Order not found');
+
+    const priorGrns = await tx.gRN.findMany({
+      where: {
+        poId,
+        ...(excludeGrnId ? { id: { not: excludeGrnId } } : {}),
+      },
+      include: { items: true },
+    });
+    const priorByProduct: Record<string, number> = {};
+    for (const g of priorGrns) {
+      for (const gi of g.items) {
+        priorByProduct[gi.productId] =
+          (priorByProduct[gi.productId] ?? 0) + gi.receivedQty + gi.freeQty;
+      }
+    }
+    const requiredByProduct: Record<string, number> = {};
+    for (const pi of po.items) requiredByProduct[pi.productId] = pi.requiredQty;
+
+    for (const item of items) {
+      const required = requiredByProduct[item.productId];
+      if (required === undefined) continue; // direct-add line not on PO — allowed
+      const alreadyReceived = priorByProduct[item.productId] ?? 0;
+      const remaining = Math.max(0, required - alreadyReceived);
+      const incoming = item.receivedQty + item.freeQty;
+      if (incoming > remaining) {
+        throw new BadRequestException(
+          `Cannot receive ${incoming} of ${item.productName}: only ${remaining} remaining on PO (ordered ${required}, already received ${alreadyReceived})`,
+        );
+      }
+    }
+  }
+
+  /**
+   * Recompute a PO's per-item receivedQty and overall status from the current
+   * set of GRNs linked to it.
+   */
+  private async recomputePo(tx: Prisma.TransactionClient, poId: string) {
+    const po = await tx.purchaseOrder.findUnique({
+      where: { id: poId },
+      include: { items: true },
+    });
+    if (!po) return;
+
+    const allGrns = await tx.gRN.findMany({
+      where: { poId },
+      include: { items: true },
+    });
+    const receivedByProduct: Record<string, number> = {};
+    for (const g of allGrns) {
+      for (const gi of g.items) {
+        receivedByProduct[gi.productId] =
+          (receivedByProduct[gi.productId] ?? 0) + gi.receivedQty + gi.freeQty;
+      }
+    }
+    for (const pi of po.items) {
+      const totalReceived = receivedByProduct[pi.productId] ?? 0;
+      if (totalReceived !== pi.receivedQty) {
+        await tx.purchaseOrderItem.update({
+          where: { id: pi.id },
+          data: { receivedQty: totalReceived },
+        });
+      }
+    }
+    const allFulfilled = po.items.every(
+      (pi) => (receivedByProduct[pi.productId] ?? 0) >= pi.requiredQty,
+    );
+    await tx.purchaseOrder.update({
+      where: { id: poId },
+      data: { status: allFulfilled ? 'FULLY_RECEIVED' : 'PARTIALLY_RECEIVED' },
+    });
+  }
+
+  /**
+   * Edit an existing GRN in place. Only allowed while none of the GRN's batches
+   * have been touched (sold / returned / stock-adjusted) — otherwise stock can't
+   * be reconciled safely and the caller is told to use a Purchase Return /
+   * Stock Adjustment instead. Reverses the old stock + payables, reapplies the
+   * new items, recomputes any linked PO, and writes a before/after audit row.
+   */
+  async editGrn(
+    id: string,
+    dto: CreateGrnDto,
+    userId: string,
+    userName: string,
+    branchId?: string,
+  ) {
+    return this.prisma.$transaction(async (tx) => {
+      // 1. Load existing GRN + items (+ branch guard, mirroring findOne).
+      const existing = await tx.gRN.findUnique({
+        where: { id },
+        include: { items: true },
+      });
+      if (!existing) throw new NotFoundException('Purchase Received record not found');
+      if (branchId && existing.branchId && existing.branchId !== branchId) {
+        throw new NotFoundException('Purchase Received record not found');
+      }
+
+      // 2. Untouched check — has any batch from this GRN moved? Counting
+      // references in the four tables that touch a batch is the truth source
+      // (Batch.quantity == received would be a false negative on sold-then-
+      // returned).
+      const grnBatches = await tx.batch.findMany({
+        where: { grnItemId: { in: existing.items.map((i) => i.id) } },
+        select: { id: true },
+      });
+      const batchIds = grnBatches.map((b) => b.id);
+      if (batchIds.length > 0) {
+        const [sold, customerReturns, purchaseReturns, adjustments] =
+          await Promise.all([
+            tx.invoiceItem.count({ where: { batchId: { in: batchIds } } }),
+            tx.creditNoteItem.count({ where: { batchId: { in: batchIds } } }),
+            tx.purchaseReturnItem.count({
+              where: { batchId: { in: batchIds } },
+            }),
+            tx.stockAdjustmentLog.count({
+              where: { batchId: { in: batchIds } },
+            }),
+          ]);
+        if (sold + customerReturns + purchaseReturns + adjustments > 0) {
+          throw new BadRequestException(
+            `Cannot edit PR ${existing.grnNumber}: its stock has already moved (sold, returned, or adjusted). Reverse it with a Purchase Return or Stock Adjustment instead.`,
           );
-          await tx.purchaseOrder.update({
-            where: { id: createGrnDto.poId },
-            data: {
-              status: allFulfilled ? 'FULLY_RECEIVED' : 'PARTIALLY_RECEIVED',
-            },
-          });
         }
       }
 
-      return grn;
-    });
+      // 3. PO over-receipt re-validation against the NEW payload, ignoring this
+      // GRN's old contribution so sibling GRNs on the same PO are respected.
+      if (existing.poId) {
+        await this.validatePoOverReceipt(tx, existing.poId, dto.items, id);
+      }
+
+      // 4. Snapshot "before" for the audit log.
+      const before = this.snapshotGrn(existing);
+
+      // Editing the invoice amount below what's already been paid would imply a
+      // supplier overpayment / refund — refuse and tell the user to handle that
+      // via a Purchase Return (REFUND) or by reversing the payment first. Keeps
+      // outstanding from silently going negative (mirrors the debit-note guard).
+      const existingPaid = Number(existing.amountPaid);
+      if (
+        !existing.isReplacement &&
+        existingPaid > Number(dto.supplierInvoiceAmount) + 0.01
+      ) {
+        throw new BadRequestException(
+          `Cannot set PR invoice amount to ₹${Number(dto.supplierInvoiceAmount).toFixed(2)}: ₹${existingPaid.toFixed(2)} has already been paid. Reverse the payment or raise a Purchase Return (REFUND) first.`,
+        );
+      }
+
+      // 5. Reverse old stock + payables. Safe to delete batches outright because
+      // the untouched check above proved nothing references them.
+      for (const old of existing.items) {
+        const oldStock = old.receivedQty + old.freeQty;
+        if (oldStock > 0) {
+          await tx.product.update({
+            where: { id: old.productId },
+            data: { totalStock: { decrement: oldStock } },
+          });
+        }
+      }
+      await tx.batch.deleteMany({
+        where: { grnItemId: { in: existing.items.map((i) => i.id) } },
+      });
+      await tx.gRNItem.deleteMany({ where: { grnId: id } });
+      if (
+        !existing.isReplacement &&
+        Number(existing.supplierInvoiceAmount) > 0
+      ) {
+        await tx.supplier.update({
+          where: { id: existing.supplierId },
+          data: {
+            currentOutstanding: { decrement: existing.supplierInvoiceAmount },
+          },
+        });
+      }
+
+      // 6. Reapply new items + header (supplier / PO linkage stay fixed).
+      await this.applyGrnItems(tx, id, dto.items, existing.supplierId);
+      await tx.gRN.update({
+        where: { id },
+        data: {
+          supplierInvoiceNo: dto.supplierInvoiceNo,
+          supplierInvoiceDate: new Date(dto.supplierInvoiceDate),
+          supplierInvoiceAmount: dto.supplierInvoiceAmount,
+          totalAmount: dto.totalAmount,
+          status: dto.status,
+          // amountPaid is preserved (payments are unchanged by an edit); only
+          // re-derive the payment status against the new invoice amount.
+          paymentStatus: existing.isReplacement
+            ? 'PAID'
+            : this.derivePaymentStatus(
+                existingPaid,
+                Number(dto.supplierInvoiceAmount),
+              ),
+        },
+      });
+      if (!existing.isReplacement && dto.supplierInvoiceAmount > 0) {
+        await tx.supplier.update({
+          where: { id: existing.supplierId },
+          data: {
+            currentOutstanding: { increment: dto.supplierInvoiceAmount },
+          },
+        });
+      }
+
+      // 7. Recompute the linked PO from the new item set.
+      if (existing.poId) await this.recomputePo(tx, existing.poId);
+
+      // 8. Audit before/after.
+      const updated = await tx.gRN.findUnique({
+        where: { id },
+        include: { items: true },
+      });
+      await tx.grnEditLog.create({
+        data: {
+          grnId: id,
+          editedById: userId,
+          editedByName: userName,
+          branchId: existing.branchId,
+          before,
+          after: updated ? this.snapshotGrn(updated) : Prisma.JsonNull,
+        },
+      });
+
+      return updated;
+    }, GRN_TX_OPTIONS);
+  }
+
+  /** JSON-safe snapshot of a GRN + its items for the edit audit log. */
+  private snapshotGrn(grn: {
+    grnNumber: string;
+    poId: string | null;
+    supplierId: string;
+    supplierName: string;
+    supplierInvoiceNo: string;
+    supplierInvoiceDate: Date;
+    supplierInvoiceAmount: Prisma.Decimal;
+    totalAmount: Prisma.Decimal;
+    status: string;
+    isReplacement: boolean;
+    items: Array<{
+      productId: string;
+      productName: string;
+      orderedQty: number;
+      receivedQty: number;
+      freeQty: number;
+      batchNumber: string;
+      mfgDate: Date;
+      expiryDate: Date;
+      purchaseRate: Prisma.Decimal;
+      mrp: Prisma.Decimal;
+    }>;
+  }): Prisma.InputJsonValue {
+    return {
+      grnNumber: grn.grnNumber,
+      poId: grn.poId,
+      supplierId: grn.supplierId,
+      supplierName: grn.supplierName,
+      supplierInvoiceNo: grn.supplierInvoiceNo,
+      supplierInvoiceDate: grn.supplierInvoiceDate.toISOString(),
+      supplierInvoiceAmount: Number(grn.supplierInvoiceAmount),
+      totalAmount: Number(grn.totalAmount),
+      status: grn.status,
+      isReplacement: grn.isReplacement,
+      items: grn.items.map((it) => ({
+        productId: it.productId,
+        productName: it.productName,
+        orderedQty: it.orderedQty,
+        receivedQty: it.receivedQty,
+        freeQty: it.freeQty,
+        batchNumber: it.batchNumber,
+        mfgDate: it.mfgDate.toISOString(),
+        expiryDate: it.expiryDate.toISOString(),
+        purchaseRate: Number(it.purchaseRate),
+        mrp: Number(it.mrp),
+      })),
+    };
   }
 
   async findAll(
@@ -357,7 +669,9 @@ export class GrnService {
 
   async backfillSupplierOutstanding() {
     // Recompute each supplier's outstanding from scratch:
-    // outstanding = sum(GRN.supplierInvoiceAmount where !isReplacement) - sum(PurchaseReturn.totalAmount where settlementMode = 'ADJUST')
+    // outstanding = sum(GRN.supplierInvoiceAmount where !isReplacement)
+    //             - sum(PurchaseReturn.totalAmount where settlementMode = 'ADJUST')
+    //             - sum(SupplierPayment.amount)
     const suppliers = await this.prisma.supplier.findMany();
     let updated = 0;
     for (const s of suppliers) {
@@ -376,7 +690,11 @@ export class GrnService {
         (acc, r) => acc + Number(r.totalAmount),
         0,
       );
-      const expected = Math.max(0, grnSum - adjustSum);
+      const payments = await this.prisma.supplierPayment.findMany({
+        where: { supplierId: s.id },
+      });
+      const paidSum = payments.reduce((acc, p) => acc + Number(p.amount), 0);
+      const expected = Math.max(0, grnSum - adjustSum - paidSum);
       if (Number(s.currentOutstanding) !== expected) {
         await this.prisma.supplier.update({
           where: { id: s.id },
@@ -483,14 +801,53 @@ export class GrnService {
     return { message: `Backfill complete. ${updated} PO items updated.` };
   }
 
+  async backfillBatchGrnItemId() {
+    // Link existing batches to the GRN line that created them, matching by
+    // (productId, batchNumber, expiryDate, supplierId). One-time pass for
+    // batches created before the grnItemId column existed.
+    const grns = await this.prisma.gRN.findMany({ include: { items: true } });
+    let linked = 0;
+    let unmatched = 0;
+    for (const grn of grns) {
+      for (const item of grn.items) {
+        const already = await this.prisma.batch.findFirst({
+          where: { grnItemId: item.id },
+        });
+        if (already) continue;
+        const candidate = await this.prisma.batch.findFirst({
+          where: {
+            grnItemId: null,
+            productId: item.productId,
+            batchNumber: item.batchNumber,
+            expiryDate: item.expiryDate,
+            supplierId: grn.supplierId,
+          },
+          orderBy: { createdAt: 'asc' },
+        });
+        if (candidate) {
+          await this.prisma.batch.update({
+            where: { id: candidate.id },
+            data: { grnItemId: item.id },
+          });
+          linked++;
+        } else {
+          unmatched++;
+        }
+      }
+    }
+    return {
+      message: `Batch→GRN backfill complete. ${linked} batches linked, ${unmatched} GRN items had no matching unlinked batch.`,
+    };
+  }
+
   async findOne(id: string, branchId?: string) {
     const grn = await this.prisma.gRN.findUnique({
       where: { id },
       include: { items: true },
     });
-    if (!grn) throw new NotFoundException('GRN not found');
+    if (!grn) throw new NotFoundException('Purchase Received record not found');
     if (branchId && grn.branchId && grn.branchId !== branchId) {
-      throw new NotFoundException('GRN not found');
+      throw new NotFoundException('Purchase Received record not found');
     }
     return grn;
   }
