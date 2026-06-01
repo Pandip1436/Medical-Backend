@@ -507,6 +507,21 @@ export class CustomersService {
     // KPI tiles can never disagree. See computeLiveOutstanding() for the rule.
     const { byCustomer: map } = await this.computeLiveOutstanding(branchId);
 
+    // Batch-fetch phones for every customer in the aggregate result so the
+    // Outstanding page can render "name + phone" per row. One query keyed on
+    // customerId is cheaper than including customer on every aggregated
+    // invoice in computeLiveOutstanding (which would re-fetch the same phone
+    // N times per customer).
+    const customerIds = Array.from(map.keys());
+    const phoneMap = new Map<string, string>();
+    if (customerIds.length) {
+      const customers = await this.prisma.customer.findMany({
+        where: { id: { in: customerIds } },
+        select: { id: true, phone: true },
+      });
+      for (const c of customers) phoneMap.set(c.id, c.phone);
+    }
+
     const now = Date.now();
     let rows = Array.from(map.values()).map((entry) => {
       let current = 0, d0_30 = 0, d31_60 = 0, d61_90 = 0, d90plus = 0;
@@ -522,6 +537,7 @@ export class CustomersService {
       return {
         customerId: entry.customerId,
         customer: entry.customerName,
+        customerPhone: phoneMap.get(entry.customerId) ?? null,
         outstanding: entry.outstanding,
         current,
         '0-30': d0_30,

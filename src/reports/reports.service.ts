@@ -37,9 +37,15 @@ export class ReportsService {
   }
 
   // ── Dashboard ──────────────────────────────────────────────────
+  // Default page size for the dashboard "Needs attention" / "Recent activity"
+  // cards. The first page ships inside getDashboardKpis(); subsequent pages are
+  // fetched lazily by the card's infinite scroll via the paginated endpoints.
+  private static readonly DASH_PAGE = 20;
+
   async getDashboardKpis(branchId?: string) {
     const today = dayjs().startOf('day').toDate();
     const startOfMonth = dayjs().startOf('month').toDate();
+    const take = ReportsService.DASH_PAGE;
 
     const bFilter = this.branchFilter(branchId);
     const sales = await this.prisma.invoice.aggregate({
@@ -54,45 +60,136 @@ export class ReportsService {
     // /customers/summary and /customers/outstanding. See
     // CustomersService.computeLiveOutstanding() for the rule. (Phase 3 bug #1.)
     const outstanding = await this.customersService.computeLiveOutstanding(branchId);
+
+    const expiring = await this.getDashboardExpiring(branchId, 0, take);
+    const low = await this.computeLowStock(branchId);
+    const overdue = await this.computeOverdueCustomers(branchId);
+
+    const recentInvoices = await this.prisma.invoice.findMany({
+      take,
+      orderBy: { date: 'desc' },
+      where: { ...bFilter },
+      include: { items: { select: { productName: true, quantity: true } } },
+    });
+    const recentInvoicesCount = await this.prisma.invoice.count({ where: { ...bFilter } });
+
+    return {
+      monthlySales: sales._sum.grandTotal || 0,
+      todaysSales: todaysSales._sum.grandTotal || 0,
+      totalOutstanding: outstanding.totalOutstanding,
+      expiringBatchesCount: expiring.total,
+      lowStockAlertsCount: low.total,
+      outOfStockCount: low.outOfStockCount,
+      totalProducts: low.totalProducts,
+      recentInvoices,
+      recentInvoicesCount,
+      lowStockItems: low.items.slice(0, take),
+      expiringBatches: expiring.items,
+      overdueCustomers: overdue.all.slice(0, take),
+      overdueCustomersCount: overdue.total,
+      overdueTotal: overdue.totalAmount,
+    };
+  }
+
+  // ── Dashboard cards: paginated lazy-load endpoints ─────────────
+  // Each returns { items, total } so the card can show "X of Y" and stop
+  // fetching once items.length === total. branchId/skip/take come from the
+  // controller; skip/take are coerced + clamped in normalizePage().
+  private normalizePage(skip?: number, take?: number) {
+    const s = Number.isFinite(skip) && (skip as number) > 0 ? Math.floor(skip as number) : 0;
+    const t = Number.isFinite(take) && (take as number) > 0 ? Math.min(Math.floor(take as number), 100) : ReportsService.DASH_PAGE;
+    return { skip: s, take: t };
+  }
+
+  async getDashboardActivity(branchId?: string, skip?: number, take?: number) {
+    const page = this.normalizePage(skip, take);
+    const bFilter = this.branchFilter(branchId);
+    const where = { ...bFilter };
+    const [rows, total] = await Promise.all([
+      this.prisma.invoice.findMany({
+        where,
+        orderBy: { date: 'desc' },
+        skip: page.skip,
+        take: page.take,
+        select: {
+          id: true,
+          invoiceNumber: true,
+          customerName: true,
+          date: true,
+          // Live phone via the customer relation so the activity timeline
+          // can render "name + phone" without a follow-up lookup.
+          customer: { select: { phone: true } },
+        },
+      }),
+      this.prisma.invoice.count({ where }),
+    ]);
+    const items = rows.map((r) => ({
+      id: r.id,
+      invoiceNumber: r.invoiceNumber,
+      customerName: r.customerName,
+      customerPhone: r.customer?.phone ?? null,
+      date: r.date,
+    }));
+    return { items, total };
+  }
+
+  async getDashboardExpiring(branchId?: string, skip?: number, take?: number) {
+    const page = this.normalizePage(skip, take);
     const now = new Date();
     const ninetyDaysFromNow = dayjs().add(90, 'days').toDate();
-    const expiryCount = await this.prisma.batch.count({
-      where: {
-        expiryDate: { lte: ninetyDaysFromNow, gte: now },
-        quantity: { gt: 0 },
-        ...(branchId ? { product: { branchId } } : {}),
-      },
-    });
-    const expiringBatches = await this.prisma.batch.findMany({
-      where: {
-        expiryDate: { lte: ninetyDaysFromNow, gte: now },
-        quantity: { gt: 0 },
-        ...(branchId ? { product: { branchId } } : {}),
-      },
-      orderBy: { expiryDate: 'asc' },
-      take: 20,
-      select: {
-        id: true,
-        batchNumber: true,
-        expiryDate: true,
-        quantity: true,
-        product: { select: { name: true, packSize: true } },
-      },
-    });
+    const where = {
+      expiryDate: { lte: ninetyDaysFromNow, gte: now },
+      quantity: { gt: 0 },
+      ...(branchId ? { product: { branchId } } : {}),
+    };
+    const [items, total] = await Promise.all([
+      this.prisma.batch.findMany({
+        where,
+        orderBy: { expiryDate: 'asc' },
+        skip: page.skip,
+        take: page.take,
+        select: {
+          id: true,
+          batchNumber: true,
+          expiryDate: true,
+          quantity: true,
+          product: { select: { name: true, packSize: true } },
+        },
+      }),
+      this.prisma.batch.count({ where }),
+    ]);
+    return { items, total };
+  }
+
+  async getDashboardLowStock(branchId?: string, skip?: number, take?: number) {
+    const page = this.normalizePage(skip, take);
+    const { items, total } = await this.computeLowStock(branchId);
+    return { items: items.slice(page.skip, page.skip + page.take), total };
+  }
+
+  async getDashboardOverdue(branchId?: string, skip?: number, take?: number) {
+    const page = this.normalizePage(skip, take);
+    const { all, total } = await this.computeOverdueCustomers(branchId);
+    return { items: all.slice(page.skip, page.skip + page.take), total };
+  }
+
+  // ── Shared dashboard computations ──────────────────────────────
+  // Canonical "low stock" definition — shared with /reports/inventory/stats
+  // and consumed by the three KPI tiles (dashboard, products, stock overview).
+  // A product is "low stock" iff it is active, currently has stock (totalStock
+  // > 0), AND has dropped below its configured reorder level (totalStock <
+  // minStock). Products with no stock are "out of stock" — a separate state
+  // counted independently. Products with minStock = 0 (no reorder level set)
+  // are not low-stock regardless of totalStock. Returns the FULL sorted list so
+  // both the first page (getDashboardKpis) and lazy pages slice from one source.
+  private async computeLowStock(branchId?: string) {
     const products = await this.prisma.product.findMany({
       where: { isActive: true, ...(branchId ? { branchId } : {}) },
       select: { id: true, name: true, packSize: true, totalStock: true, minStock: true, reorderQty: true },
     });
-    // Canonical "low stock" definition — shared with /reports/inventory/stats
-    // and consumed by the three KPI tiles (dashboard, products, stock overview).
-    // A product is "low stock" iff it is active, currently has stock (totalStock
-    // > 0), AND has dropped below its configured reorder level (totalStock <
-    // minStock). Products with no stock are "out of stock" — a separate state
-    // counted independently. Products with minStock = 0 (no reorder level set)
-    // are not low-stock regardless of totalStock.
     const lowStock = products.filter((p) => p.totalStock > 0 && p.totalStock < p.minStock);
     const outOfStockCount = products.filter((p) => p.totalStock <= 0).length;
-    const lowStockItems = lowStock
+    const items = lowStock
       .map((p) => ({
         id: p.id,
         name: p.name,
@@ -102,17 +199,16 @@ export class ReportsService {
         reorderQty: p.reorderQty,
         deficit: p.minStock - p.totalStock,
       }))
-      .sort((a, b) => b.deficit - a.deficit)
-      .slice(0, 20);
-    const totalProducts = products.length;
-    const recentInvoices = await this.prisma.invoice.findMany({
-      take: 20,
-      orderBy: { date: 'desc' },
-      where: { ...bFilter },
-      include: { items: { select: { productName: true, quantity: true } } },
-    });
+      .sort((a, b) => b.deficit - a.deficit);
+    return { items, total: lowStock.length, outOfStockCount, totalProducts: products.length };
+  }
 
-    // ── Overdue payments (invoices > 30d old, still unpaid) ────────
+  // Overdue payments (invoices > 30d old, still unpaid), rolled up per customer.
+  // Returns the FULL sorted list (by overdue amount desc) plus the customer
+  // count and total overdue amount, so the first page and lazy pages share one
+  // computation.
+  private async computeOverdueCustomers(branchId?: string) {
+    const bFilter = this.branchFilter(branchId);
     const overdueCutoff = dayjs().subtract(30, 'day').toDate();
     const overdueInvoices = await this.prisma.invoice.findMany({
       where: {
@@ -152,35 +248,34 @@ export class ReportsService {
       }
     });
 
-    const overdueCustomers = Array.from(overdueByCustomer.values())
+    // Batch-fetch phones for the customer ids so the dashboard inbox can
+    // render "name + phone" per row. Skip ids that came back empty
+    // (rare — represents an invoice whose customerId is null).
+    const idsForPhone = Array.from(overdueByCustomer.values())
+      .map((c) => c.customerId)
+      .filter(Boolean);
+    const phoneMap = new Map<string, string>();
+    if (idsForPhone.length) {
+      const customers = await this.prisma.customer.findMany({
+        where: { id: { in: idsForPhone } },
+        select: { id: true, phone: true },
+      });
+      for (const c of customers) phoneMap.set(c.id, c.phone);
+    }
+
+    const all = Array.from(overdueByCustomer.values())
       .map((c) => ({
         customerId: c.customerId,
         customerName: c.customerName,
+        customerPhone: c.customerId ? phoneMap.get(c.customerId) ?? null : null,
         overdueAmount: c.overdueAmount,
         daysOverdue: dayjs().diff(dayjs(c.oldestDate), 'day'),
         invoiceCount: c.invoiceCount,
       }))
-      .sort((a, b) => b.overdueAmount - a.overdueAmount)
-      .slice(0, 20);
+      .sort((a, b) => b.overdueAmount - a.overdueAmount);
 
-    const overdueCustomersCount = overdueByCustomer.size;
-    const overdueTotal = Array.from(overdueByCustomer.values()).reduce((s, c) => s + c.overdueAmount, 0);
-
-    return {
-      monthlySales: sales._sum.grandTotal || 0,
-      todaysSales: todaysSales._sum.grandTotal || 0,
-      totalOutstanding: outstanding.totalOutstanding,
-      expiringBatchesCount: expiryCount,
-      lowStockAlertsCount: lowStock.length,
-      outOfStockCount,
-      totalProducts,
-      recentInvoices,
-      lowStockItems,
-      expiringBatches,
-      overdueCustomers,
-      overdueCustomersCount,
-      overdueTotal,
-    };
+    const totalAmount = all.reduce((s, c) => s + c.overdueAmount, 0);
+    return { all, total: overdueByCustomer.size, totalAmount };
   }
 
   // ── Flexible sales range (powers the dashboard hero chart) ─────
@@ -1103,12 +1198,71 @@ export class ReportsService {
         paymentMode: true,
       },
     });
+    // Real payment timestamps come from the Payment table, not inv.amountPaid —
+    // a customer can pay weeks after the invoice, and the ledger needs to date
+    // the receipt on the day cash actually came in. Payments are filtered on
+    // their own createdAt so the ledger reflects what moved within the
+    // requested period rather than what was billed in it.
+    const payments = await this.prisma.payment.findMany({
+      where: {
+        customerId,
+        ...(dateFilter ? { createdAt: dateFilter } : {}),
+        ...bFilter,
+      },
+      orderBy: { createdAt: 'asc' },
+      select: {
+        id: true,
+        receiptNumber: true,
+        createdAt: true,
+        amount: true,
+        paymentMode: true,
+        invoiceId: true,
+        invoice: { select: { invoiceNumber: true } },
+      },
+    });
+    // Reconciliation: some historical invoices (notably seeded data, and any
+    // invoice created before the Payment table existed in this system) have a
+    // non-zero `amountPaid` but no corresponding Payment row. Without
+    // bridging those, the ledger's running balance would be inflated by the
+    // missing credits and stop matching customer.currentOutstanding. We sum
+    // real Payments per invoice and synthesise a "legacy payment" entry on
+    // the invoice date for whatever amountPaid the real Payments don't cover.
+    // The synthetic entry uses the invoice date because we don't know the
+    // real receipt date — it's the best approximation that keeps math right.
+    const realPaidByInvoice = new Map<string, number>();
+    for (const p of payments) {
+      if (!p.invoiceId) continue;
+      realPaidByInvoice.set(p.invoiceId, (realPaidByInvoice.get(p.invoiceId) ?? 0) + Number(p.amount));
+    }
+    // Only APPROVED + CREDIT-settlement credit notes hit the ledger. Pending /
+    // rejected CNs are not yet (or never) financial events. REFUND-settled CNs
+    // are reconciled against the original payment and don't post here.
+    // REPLACEMENT CNs are goods-for-goods, financially neutral.
     const creditNotes = await this.prisma.creditNote.findMany({
-      where: { customerId, ...(dateFilter ? { date: dateFilter } : {}), ...bFilter },
+      where: {
+        customerId,
+        status: 'APPROVED',
+        settlementMode: 'CREDIT',
+        ...(dateFilter ? { date: dateFilter } : {}),
+        ...bFilter,
+      },
       orderBy: { date: 'asc' },
     });
+    // Total Returns is a customer-facing stat ("how much have they ever
+    // returned"). Pending counts toward the staff inbox; rejected returns
+    // were not real returns. Settlement mode is irrelevant — the goods came
+    // back either way.
+    const approvedReturnsForStats = await this.prisma.creditNote.findMany({
+      where: {
+        customerId,
+        status: 'APPROVED',
+        ...(dateFilter ? { date: dateFilter } : {}),
+        ...bFilter,
+      },
+      select: { totalAmount: true },
+    });
 
-    const entries: Array<{ date: Date; ref: string; description: string; debit: number; credit: number; sourceType: 'INVOICE' | 'CREDIT_NOTE'; sourceId: string }> = [];
+    const entries: Array<{ date: Date; ref: string; description: string; debit: number; credit: number; sourceType: 'INVOICE' | 'PAYMENT' | 'CREDIT_NOTE'; sourceId: string }> = [];
 
     invoices.forEach((inv) => {
       entries.push({
@@ -1120,17 +1274,33 @@ export class ReportsService {
         sourceType: 'INVOICE',
         sourceId: inv.id,
       });
-      if (Number(inv.amountPaid) > 0) {
+      // Bridge invoices whose amountPaid wasn't captured as a Payment row.
+      const amountPaid = Number(inv.amountPaid);
+      const realPaid = realPaidByInvoice.get(inv.id) ?? 0;
+      const legacyGap = amountPaid - realPaid;
+      if (legacyGap > 0.01) {
         entries.push({
           date: inv.date,
           ref: inv.invoiceNumber,
-          description: `Payment (${inv.paymentMode})`,
+          description: `Payment (${inv.paymentMode ?? 'legacy'})`,
           debit: 0,
-          credit: Number(inv.amountPaid),
-          sourceType: 'INVOICE',
-          sourceId: inv.id,
+          credit: legacyGap,
+          sourceType: 'PAYMENT',
+          sourceId: `legacy-${inv.id}`,
         });
       }
+    });
+
+    payments.forEach((p) => {
+      entries.push({
+        date: p.createdAt,
+        ref: p.invoice?.invoiceNumber ?? p.receiptNumber,
+        description: `Payment (${p.paymentMode})`,
+        debit: 0,
+        credit: Number(p.amount),
+        sourceType: 'PAYMENT',
+        sourceId: p.id,
+      });
     });
 
     creditNotes.forEach((cn) => {
@@ -1154,9 +1324,7 @@ export class ReportsService {
 
     const totalDebit = entries.reduce((s, e) => s + e.debit, 0);
     const totalCredit = entries.reduce((s, e) => s + e.credit, 0);
-    // Total Returns isolated from Total Credit (which also includes payments)
-    // so the customer detail page can show a clean returns figure.
-    const totalReturns = creditNotes.reduce((s, cn) => s + Number(cn.totalAmount), 0);
+    const totalReturns = approvedReturnsForStats.reduce((s, cn) => s + Number(cn.totalAmount), 0);
 
     // Active Quotations is a current snapshot, not a period stat — must not be
     // date-filtered. Mirrors the Open POs fix on the supplier ledger.

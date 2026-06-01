@@ -207,14 +207,95 @@ export class CreditNotesService {
         });
       }
 
-      // CREDIT mode: apply the credit to outstanding now (was lines 170-173
-      // of the old create()).
+      // CREDIT mode ("Adjust Against Outstanding"): apply the credit to BOTH
+      // the customer's outstanding AND the source invoice's amountPaid so the
+      // per-invoice balances reconcile with the customer-level number.
+      //
+      // Allocation order:
+      //   1. The source invoice (cn.invoiceId) — the invoice the CN was
+      //      created against. Standard accounting practice.
+      //   2. If the source invoice can't absorb the full CN amount (already
+      //      fully paid, or remaining balance < CN amount), the leftover
+      //      cascades FIFO to the customer's other UNPAID / PARTIAL invoices.
+      //   3. Anything still leftover stays as customer-level credit
+      //      (currentOutstanding goes negative — we owe them future credit).
+      //
+      // currentOutstanding is decremented by the full CN amount up front;
+      // step (1) + (2) then sync each invoice's amountPaid so the sum of
+      // open-invoice balances stays in lockstep with currentOutstanding.
       const settledAt = finalSettlementMode === 'CREDIT' ? new Date() : null;
       if (finalSettlementMode === 'CREDIT' && cn.customerId) {
         await tx.customer.update({
           where: { id: cn.customerId },
           data: { currentOutstanding: { decrement: cn.totalAmount } },
         });
+
+        let remaining = Number(cn.totalAmount);
+
+        // Helper: apply as much of `remaining` as the invoice can absorb,
+        // update its amountPaid/status, and shrink `remaining` accordingly.
+        // Skips CANCELLED (financially void) but is fine to call on PAID
+        // invoices — they'll just contribute 0 and pass through.
+        const applyToInvoice = async (invoice: {
+          id: string;
+          grandTotal: any;
+          amountPaid: any;
+          status: string;
+        }) => {
+          if (remaining <= 0.01) return;
+          if (invoice.status === 'CANCELLED') return;
+          const grand = Number(invoice.grandTotal);
+          const currentPaid = Number(invoice.amountPaid);
+          const room = grand - currentPaid;
+          if (room <= 0.01) return; // already fully paid — nothing to absorb
+          const apply = Math.min(remaining, room);
+          const newPaid = currentPaid + apply;
+          const newStatus: 'PAID' | 'PARTIAL' | 'UNPAID' =
+            newPaid >= grand - 0.01 ? 'PAID' : newPaid > 0 ? 'PARTIAL' : 'UNPAID';
+          await tx.invoice.update({
+            where: { id: invoice.id },
+            // Don't overwrite RETURNED — set below when cumulative returns
+            // reach grandTotal and takes precedence over PAID.
+            data: {
+              amountPaid: newPaid,
+              ...(invoice.status !== 'RETURNED' ? { status: newStatus } : {}),
+            },
+          });
+          remaining -= apply;
+        };
+
+        // 1. Try the source invoice first.
+        if (cn.invoice) {
+          await applyToInvoice(cn.invoice);
+        }
+
+        // 2. Cascade leftover credit to the customer's other open invoices,
+        //    oldest first. Excludes the source (already handled) and only
+        //    touches financial INVOICEs (not quotations or drafts).
+        if (remaining > 0.01) {
+          const openInvoices = await tx.invoice.findMany({
+            where: {
+              customerId: cn.customerId,
+              type: 'INVOICE',
+              status: { in: ['UNPAID', 'PARTIAL'] },
+              id: { not: cn.invoiceId },
+            },
+            orderBy: { date: 'asc' },
+            select: {
+              id: true,
+              grandTotal: true,
+              amountPaid: true,
+              status: true,
+            },
+          });
+          for (const inv of openInvoices) {
+            if (remaining <= 0.01) break;
+            await applyToInvoice(inv);
+          }
+        }
+        // Anything still in `remaining` stays as customer-level credit
+        // (currentOutstanding already decremented). Next credit purchase
+        // will use it up.
       }
 
       const updated = await tx.creditNote.update({
@@ -283,7 +364,7 @@ export class CreditNotesService {
     });
   }
 
-  findAll(query?: string, customerId?: string, branchId?: string, status?: string) {
+  async findAll(query?: string, customerId?: string, branchId?: string, status?: string) {
     const where: any = {};
     if (customerId) where.customerId = customerId;
     if (branchId) where.branchId = branchId;
@@ -295,14 +376,18 @@ export class CreditNotesService {
         { customerName: { contains: query, mode: 'insensitive' } },
       ];
     }
-    return this.prisma.creditNote.findMany({
+    // Phone joined live from the Customer relation so the list can render
+    // "name + phone" rows for disambiguation. Same pattern as billing's findAll.
+    const rows = await this.prisma.creditNote.findMany({
       where,
       include: {
         reviewedBy: { select: { id: true, name: true } },
+        customer: { select: { phone: true } },
       },
       orderBy: { date: 'desc' },
       take: 100,
     });
+    return rows.map((r) => ({ ...r, customerPhone: r.customer?.phone ?? null }));
   }
 
   async findOne(id: string, branchId?: string) {
@@ -312,13 +397,14 @@ export class CreditNotesService {
         items: true,
         invoice: true,
         reviewedBy: { select: { id: true, name: true } },
+        customer: { select: { phone: true } },
       },
     });
     if (!cn) throw new NotFoundException('Credit note not found');
     if (branchId && cn.branchId && cn.branchId !== branchId) {
       throw new NotFoundException('Credit note not found');
     }
-    return cn;
+    return { ...cn, customerPhone: cn.customer?.phone ?? null };
   }
 
   // Returns already-returned quantity per (productId, batchId) for an invoice.
@@ -356,5 +442,83 @@ export class CreditNotesService {
       const [productId, batchId] = key.split('::');
       return { productId, batchId, alreadyReturned };
     });
+  }
+
+  // Returns every still-returnable line for a customer, flattened across all
+  // their invoices. Each row stays bound to its source invoice + batch because
+  // a credit note references exactly one invoice and returnable qty is capped
+  // per (invoiceId, productId, batchId) — see create(). Powers the
+  // customer-first Sales Returns flow. Only lines with remaining > 0 are
+  // emitted; already-returned qty counts APPROVED + PENDING_REVIEW (REJECTED
+  // excluded — those goods never went back).
+  async getReturnableItemsByCustomer(customerId: string, branchId?: string) {
+    const invoices = await this.prisma.invoice.findMany({
+      where: {
+        customerId,
+        type: 'INVOICE',
+        status: { notIn: ['DRAFT', 'CANCELLED', 'RETURNED'] },
+        ...(branchId ? { branchId } : {}),
+      },
+      include: { items: true },
+      orderBy: { date: 'desc' },
+    });
+
+    // One query for all prior returns on this customer's CNs. Key by
+    // invoiceId::productId::batchId so each invoice line is capped on its own
+    // (validation in create() is per-invoice).
+    const priorReturns = await this.prisma.creditNoteItem.findMany({
+      where: {
+        creditNote: {
+          customerId,
+          status: { in: ['PENDING_REVIEW', 'APPROVED'] },
+          ...(branchId ? { branchId } : {}),
+        },
+      },
+      select: {
+        productId: true,
+        batchId: true,
+        returnedQty: true,
+        creditNote: { select: { invoiceId: true } },
+      },
+    });
+    const priorByKey = new Map<string, number>();
+    for (const r of priorReturns) {
+      const k = `${r.creditNote.invoiceId}::${r.productId}::${r.batchId}`;
+      priorByKey.set(k, (priorByKey.get(k) ?? 0) + r.returnedQty);
+    }
+
+    const rows = invoices.flatMap((inv) =>
+      inv.items.map((item) => {
+        const alreadyReturned =
+          priorByKey.get(`${inv.id}::${item.productId}::${item.batchId}`) ?? 0;
+        const remaining = item.quantity - alreadyReturned;
+        return {
+          invoiceId: inv.id,
+          invoiceNumber: inv.invoiceNumber,
+          invoiceDate: inv.date,
+          invoiceItemId: item.id,
+          productId: item.productId,
+          productName: item.productName,
+          batchId: item.batchId,
+          batchNumber: item.batchNumber,
+          expiryDate: item.expiryDate,
+          soldQty: item.quantity,
+          alreadyReturned,
+          remaining,
+          mrp: item.mrp,
+          rate: item.rate,
+          discountPercent: item.discountPercent,
+          gstPercent: item.gstPercent,
+        };
+      }),
+    );
+
+    return rows
+      .filter((r) => r.remaining > 0)
+      .sort(
+        (a, b) =>
+          a.productName.localeCompare(b.productName) ||
+          b.invoiceDate.getTime() - a.invoiceDate.getTime(),
+      );
   }
 }

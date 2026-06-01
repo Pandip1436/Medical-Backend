@@ -108,7 +108,6 @@ model Customer {
   referredBy         String?        // salesperson name
   creditLimit        Decimal        @default(0)
   currentOutstanding Decimal        @default(0)
-  loyaltyPoints      Int            @default(0)
   gstin              String?
   dlNumber           String?
   registrationNumber String?   // For DOCTOR type: Medical Council Reg. No.
@@ -193,21 +192,21 @@ model Product {
   categoryId       String?
   category         Category?        @relation(fields: [categoryId], references: [id])
   subCategory      String?
-  packSize         String
-  unitOfMeasure    String
+  packSize         String           @default("")
+  unitOfMeasure    String           @default("")
   schedule         Schedule         @default(NONE)
   hsnCode          String
   isNarcotic       Boolean          @default(false)
-  storageCondition StorageCondition
+  storageCondition StorageCondition @default(ROOM_TEMP)
   mrp              Decimal
-  purchaseRate     Decimal
+  purchaseRate     Decimal          @default(0)
   sellingRate      Decimal
-  wholesaleRate    Decimal
+  wholesaleRate    Decimal          @default(0)
   gstRate          Decimal
   minStock         Int
-  maxStock         Int
-  reorderQty       Int
-  rackLocation     String
+  maxStock         Int              @default(0)
+  reorderQty       Int              @default(0)
+  rackLocation     String           @default("")
   barcode          String?
   totalStock       Int              @default(0)
   isActive         Boolean          @default(true)

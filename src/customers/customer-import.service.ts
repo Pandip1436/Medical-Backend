@@ -1369,7 +1369,6 @@ export class CustomerImportService {
       referredBy: row.referredBy?.trim() || null,
       creditLimit: new Prisma.Decimal(row.creditLimit ?? 0),
       currentOutstanding: new Prisma.Decimal(0), // set below if openingBalance present
-      loyaltyPoints: row.loyaltyPoints ?? 0,
       gstin: row.gstin?.trim() || null,
       dlNumber: row.dlNumber?.trim() || null,
       registrationNumber: row.registrationNumber?.trim() || null,
@@ -1400,7 +1399,6 @@ export class CustomerImportService {
       data.referredBy = row.referredBy?.trim() || null;
     if (row.creditLimit !== undefined)
       data.creditLimit = new Prisma.Decimal(row.creditLimit);
-    if (row.loyaltyPoints !== undefined) data.loyaltyPoints = row.loyaltyPoints;
     if (row.gstin !== undefined) data.gstin = row.gstin?.trim() || null;
     if (row.dlNumber !== undefined)
       data.dlNumber = row.dlNumber?.trim() || null;

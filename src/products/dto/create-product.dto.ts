@@ -27,12 +27,12 @@ export class CreateProductDto {
   subCategory?: string;
 
   @IsString()
-  @IsNotEmpty()
-  packSize: string;
+  @IsOptional()
+  packSize?: string;
 
   @IsString()
-  @IsNotEmpty()
-  unitOfMeasure: string;
+  @IsOptional()
+  unitOfMeasure?: string;
 
   @IsEnum(Schedule)
   schedule: Schedule;
@@ -45,8 +45,11 @@ export class CreateProductDto {
   @IsOptional()
   isNarcotic?: boolean;
 
+  // Storage condition is no longer collected in the UI — defaults to ROOM_TEMP
+  // in the Prisma schema when omitted.
   @IsEnum(StorageCondition)
-  storageCondition: StorageCondition;
+  @IsOptional()
+  storageCondition?: StorageCondition;
 
   @IsNumber()
   @Min(0)
@@ -54,7 +57,8 @@ export class CreateProductDto {
 
   @IsNumber()
   @Min(0)
-  purchaseRate: number;
+  @IsOptional()
+  purchaseRate?: number;
 
   @IsNumber()
   @Min(0)
@@ -62,25 +66,29 @@ export class CreateProductDto {
 
   @IsNumber()
   @Min(0)
-  wholesaleRate: number;
+  @IsOptional()
+  wholesaleRate?: number;
 
   @IsNumber()
   @Min(0)
   gstRate: number;
 
+  // Required — feeds the low-stock alert pipeline in BillingService.
   @IsNumber()
   @Min(0)
   minStock: number;
 
   @IsNumber()
   @Min(0)
-  maxStock: number;
+  @IsOptional()
+  maxStock?: number;
 
   @IsNumber()
   @Min(0)
-  reorderQty: number;
+  @IsOptional()
+  reorderQty?: number;
 
   @IsString()
-  @IsNotEmpty()
-  rackLocation: string;
+  @IsOptional()
+  rackLocation?: string;
 }

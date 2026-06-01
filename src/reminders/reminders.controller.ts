@@ -6,6 +6,7 @@ import {
   Delete,
   Body,
   Param,
+  Query,
   Request,
   UseGuards,
 } from '@nestjs/common';
@@ -30,8 +31,11 @@ export class RemindersController {
   constructor(private readonly service: RemindersService) {}
 
   @Get()
-  findAll(@Request() req: any) {
-    return this.service.findAll(req.user.branchId);
+  findAll(
+    @Request() req: any,
+    @Query('customerId') customerId?: string,
+  ) {
+    return this.service.findAll(req.user.branchId, customerId);
   }
 
   @Get('due-today')

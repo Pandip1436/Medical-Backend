@@ -18,6 +18,22 @@ export class ProductsService {
     private readonly numbering: DocumentNumberingService,
   ) {}
 
+  // MRP is the legal maximum retail price under the Drugs (Prices Control)
+  // Order — selling above it is non-negotiable. Enforced server-side too so
+  // a direct API call (CSV import, scripted update) can't bypass the form
+  // validation. Both args are coerced from the multitude of input shapes
+  // (Decimal | number | string) the various callers hand us.
+  private assertSellingPriceBelowMrp(sellingRate: unknown, mrp: unknown) {
+    const sr = Number(sellingRate);
+    const m = Number(mrp);
+    if (!Number.isFinite(sr) || !Number.isFinite(m)) return;
+    if (sr > m) {
+      throw new BadRequestException(
+        `Selling price (${sr}) cannot exceed MRP (${m}).`,
+      );
+    }
+  }
+
   // Reject duplicate product name within the same branch (case-insensitive).
   // Two products with identical names break FEFO selection (which one to ship?)
   // and confuse stock reporting. Barcode uniqueness alone isn't enough — many
@@ -39,6 +55,7 @@ export class ProductsService {
 
   async create(createProductDto: CreateProductDto & { branchId?: string }) {
     const { categoryId, branchId, ...rest } = createProductDto;
+    this.assertSellingPriceBelowMrp(rest.sellingRate, rest.mrp);
     await this.assertUniqueName(rest.name, branchId);
     return this.prisma.product.create({
       data: { ...rest, categoryId, ...(branchId ? { branchId } : {}) } as unknown as Prisma.ProductUncheckedCreateInput,
@@ -451,6 +468,12 @@ export class ProductsService {
         id,
       );
     }
+    // Validate the effective post-update price pair — either field may be
+    // absent on a partial update, in which case we fall back to whatever the
+    // row already had stored.
+    const effectiveSellingRate = updateProductDto.sellingRate ?? existing.sellingRate;
+    const effectiveMrp = updateProductDto.mrp ?? existing.mrp;
+    this.assertSellingPriceBelowMrp(effectiveSellingRate, effectiveMrp);
     return this.prisma.product.update({ where: { id }, data: updateProductDto });
   }
 

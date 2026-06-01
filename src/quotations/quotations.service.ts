@@ -112,10 +112,15 @@ export class QuotationsService {
       where.total = totalFilter;
     }
 
+    // Safety cap — same approach as billing.findAll. Quotations can grow
+    // unbounded over time (every sales lead generates one), so callers that
+    // don't paginate should never get more than 200 rows in a single response.
+    // List pages that need full pagination can extend this to accept skip/take.
     return this.prisma.quotation.findMany({
       where,
       orderBy: { date: 'desc' },
       include: { items: true },
+      take: 200,
     });
   }
 

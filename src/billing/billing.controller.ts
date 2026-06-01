@@ -86,6 +86,36 @@ export class BillingController {
     return this.billingService.summary(effectiveBranchId);
   }
 
+  // Past purchases of specific products by a customer. Queries InvoiceItem
+  // directly so it is NOT bound by the 200-invoice cap that the general
+  // findAll() applies — a customer who has 500 invoices but only bought 3
+  // products from us repeatedly will still see all their past purchases here.
+  // Used by the New Sale page's Product History tab.
+  @Get('product-purchases')
+  @Roles('ADMIN', 'PHARMACIST', 'ACCOUNTANT', 'SALESPERSON')
+  @ApiOperation({ summary: 'Past purchases of specific products by a customer (uncapped per product).' })
+  @ApiQuery({ name: 'customerId', required: true })
+  @ApiQuery({ name: 'productIds', required: true, description: 'Comma-separated product ids' })
+  @ApiQuery({ name: 'perProductLimit', required: false, type: Number, description: 'Max entries per product (default 100, max 500)' })
+  productPurchases(
+    @Request() req: any,
+    @Query('customerId') customerId: string,
+    @Query('productIds') productIds: string,
+    @Query('perProductLimit') perProductLimit?: string,
+  ) {
+    const ids = (productIds ?? '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const limitNum = perProductLimit !== undefined ? Number(perProductLimit) : 100;
+    return this.billingService.productPurchases(
+      customerId,
+      ids,
+      req.user.branchId,
+      Number.isFinite(limitNum) ? limitNum : 100,
+    );
+  }
+
   @Get(':id')
   @Roles('ADMIN', 'PHARMACIST', 'ACCOUNTANT', 'SALESPERSON')
   @ApiOperation({ summary: 'Get specific invoice by ID with items' })
@@ -109,14 +139,14 @@ export class BillingController {
 
   @Patch(':id/finalize')
   @Roles('ADMIN', 'PHARMACIST')
-  @ApiOperation({ summary: 'Finalize a draft invoice (deducts stock, updates ledger, awards loyalty).' })
+  @ApiOperation({ summary: 'Finalize a draft invoice (deducts stock, updates ledger).' })
   finalizeDraft(@Param('id') id: string, @Body() dto: CreateInvoiceDto, @Request() req: any) {
     return this.billingService.finalizeDraft(id, dto, req.user.branchId);
   }
 
   @Patch(':id/edit-invoice')
   @Roles('ADMIN', 'PHARMACIST')
-  @ApiOperation({ summary: 'Edit an UNPAID or PARTIAL invoice (reverses old stock/ledger/loyalty and re-applies).' })
+  @ApiOperation({ summary: 'Edit an UNPAID or PARTIAL invoice (reverses old stock/ledger and re-applies).' })
   editInvoice(@Param('id') id: string, @Body() dto: CreateInvoiceDto, @Request() req: any) {
     return this.billingService.editUnpaidInvoice(id, dto, req.user.userId, req.user.branchId);
   }

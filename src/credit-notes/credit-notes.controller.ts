@@ -109,6 +109,22 @@ export class CreditNotesController {
     );
   }
 
+  @Get('customer/:customerId/returnable-items')
+  @Roles('ADMIN', 'PHARMACIST', 'ACCOUNTANT')
+  @ApiOperation({
+    summary:
+      "Every still-returnable line for a customer, flattened across all their invoices (remaining > 0). Each row carries its source invoice + batch. Powers the customer-first returns flow.",
+  })
+  getReturnableItemsByCustomer(
+    @Param('customerId') customerId: string,
+    @Request() req: any,
+  ) {
+    return this.creditNotesService.getReturnableItemsByCustomer(
+      customerId,
+      req.user.branchId,
+    );
+  }
+
   @Get(':id')
   @Roles('ADMIN', 'PHARMACIST', 'ACCOUNTANT')
   @ApiOperation({ summary: 'Get specific credit note by ID' })

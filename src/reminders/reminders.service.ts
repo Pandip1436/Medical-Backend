@@ -33,9 +33,12 @@ export class RemindersService {
     return existing
   }
 
-  async findAll(branchId?: string) {
+  async findAll(branchId?: string, customerId?: string) {
+    const where: any = {}
+    if (branchId) where.branchId = branchId
+    if (customerId) where.customerId = customerId
     return this.prisma.customerReminder.findMany({
-      where: branchId ? { branchId } : undefined,
+      where: Object.keys(where).length ? where : undefined,
       include: {
         customer: { select: { id: true, name: true, phone: true, type: true, email: true } },
         contacts: { orderBy: { contactedAt: 'desc' }, take: 1 },

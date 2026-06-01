@@ -19,6 +19,63 @@ export class ReportsController {
     return this.reportsService.getDashboardKpis(req.user.branchId ?? branchId);
   }
 
+  // ── Dashboard cards: lazy-load pages for the inbox / activity feed ──
+  @Get('dashboard/activity')
+  @Roles('ADMIN', 'PHARMACIST', 'INVENTORY_MANAGER', 'ACCOUNTANT', 'SALESPERSON')
+  @ApiOperation({ summary: 'Paginated recent activity (sales) for the dashboard' })
+  @ApiQuery({ name: 'skip', required: false })
+  @ApiQuery({ name: 'take', required: false })
+  getDashboardActivity(
+    @Request() req: any,
+    @Query('skip') skip?: string,
+    @Query('take') take?: string,
+    @Query('branchId') branchId?: string,
+  ) {
+    return this.reportsService.getDashboardActivity(req.user.branchId ?? branchId, Number(skip), Number(take));
+  }
+
+  @Get('dashboard/low-stock')
+  @Roles('ADMIN', 'PHARMACIST', 'INVENTORY_MANAGER', 'ACCOUNTANT', 'SALESPERSON')
+  @ApiOperation({ summary: 'Paginated low-stock items for the dashboard inbox' })
+  @ApiQuery({ name: 'skip', required: false })
+  @ApiQuery({ name: 'take', required: false })
+  getDashboardLowStock(
+    @Request() req: any,
+    @Query('skip') skip?: string,
+    @Query('take') take?: string,
+    @Query('branchId') branchId?: string,
+  ) {
+    return this.reportsService.getDashboardLowStock(req.user.branchId ?? branchId, Number(skip), Number(take));
+  }
+
+  @Get('dashboard/expiring')
+  @Roles('ADMIN', 'PHARMACIST', 'INVENTORY_MANAGER', 'ACCOUNTANT', 'SALESPERSON')
+  @ApiOperation({ summary: 'Paginated expiring batches for the dashboard inbox' })
+  @ApiQuery({ name: 'skip', required: false })
+  @ApiQuery({ name: 'take', required: false })
+  getDashboardExpiring(
+    @Request() req: any,
+    @Query('skip') skip?: string,
+    @Query('take') take?: string,
+    @Query('branchId') branchId?: string,
+  ) {
+    return this.reportsService.getDashboardExpiring(req.user.branchId ?? branchId, Number(skip), Number(take));
+  }
+
+  @Get('dashboard/overdue')
+  @Roles('ADMIN', 'PHARMACIST', 'INVENTORY_MANAGER', 'ACCOUNTANT', 'SALESPERSON')
+  @ApiOperation({ summary: 'Paginated overdue customers for the dashboard inbox' })
+  @ApiQuery({ name: 'skip', required: false })
+  @ApiQuery({ name: 'take', required: false })
+  getDashboardOverdue(
+    @Request() req: any,
+    @Query('skip') skip?: string,
+    @Query('take') take?: string,
+    @Query('branchId') branchId?: string,
+  ) {
+    return this.reportsService.getDashboardOverdue(req.user.branchId ?? branchId, Number(skip), Number(take));
+  }
+
   // ── Sales ────────────────────────────────────────────────────
   @Get('sales/daily')
   @Roles('ADMIN', 'PHARMACIST', 'ACCOUNTANT', 'INVENTORY_MANAGER', 'SALESPERSON')

@@ -195,7 +195,7 @@ describe('BillingService.editUnpaidInvoice', () => {
     await expect(service.editUnpaidInvoice('inv-1', buildDto(), 'user-1', 'br-1')).rejects.toBeInstanceOf(NotFoundException);
   });
 
-  // ── Happy path: stock / ledger / loyalty reversal ─────────
+  // ── Happy path: stock / ledger reversal ─────────
 
   it('restores old stock and deducts new stock atomically', async () => {
     const existing = buildInvoice();
@@ -249,24 +249,6 @@ describe('BillingService.editUnpaidInvoice', () => {
     expect(customerOps).toEqual(
       expect.arrayContaining([{ currentOutstanding: { increment: 1344 } }]),
     );
-  });
-
-  it('reverses old loyalty points and grants new loyalty points (1 per ₹100)', async () => {
-    tx.invoice.findUnique.mockResolvedValue(buildInvoice());
-    tx.batch.findUnique.mockResolvedValue({
-      id: 'batch-A',
-      quantity: 50,
-      expiryDate: new Date('2030-12-31'),
-    });
-    tx.invoice.update.mockResolvedValue({ ...buildInvoice(), status: 'UNPAID', items: [] });
-
-    await service.editUnpaidInvoice('inv-1', buildDto({ grandTotal: 1344 }), 'user-1');
-
-    const customerOps = tx.customer.update.mock.calls.map((c: any[]) => c[0]?.data);
-    // floor(1120 / 100) = 11 old points to decrement
-    expect(customerOps).toEqual(expect.arrayContaining([{ loyaltyPoints: { decrement: 11 } }]));
-    // floor(1344 / 100) = 13 new points to increment
-    expect(customerOps).toEqual(expect.arrayContaining([{ loyaltyPoints: { increment: 13 } }]));
   });
 
   it('writes a before/after audit row', async () => {

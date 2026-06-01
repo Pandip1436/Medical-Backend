@@ -8,7 +8,6 @@ import {
   IsNumber,
   IsOptional,
   IsString,
-  Min,
   ValidateNested,
 } from 'class-validator';
 import { Type } from 'class-transformer';
@@ -197,7 +196,6 @@ export class ImportCustomerDto {
   // Customer.currentOutstanding verbatim — we don't synthesise a phantom
   // invoice for it (those would distort future ageing/reporting).
   @IsOptional() @IsNumber() openingBalance?: number;
-  @IsOptional() @IsInt() @Min(0) loyaltyPoints?: number;
   @IsOptional() @IsString() gstin?: string;
   @IsOptional() @IsString() dlNumber?: string;
   @IsOptional() @IsString() registrationNumber?: string;

@@ -264,7 +264,7 @@ export class BillingService {
     // in the environment to override; default 3.
     const maxPendingCredit = Number(process.env.MAX_PENDING_CREDIT ?? 3);
     // User-initiated drafts skip every side effect — no stock deduction, no
-    // ledger update, no loyalty, no notifications, no credit-limit check.
+    // ledger update, no notifications, no credit-limit check.
     // The draft only becomes "real" when finalizeDraft() runs.
     const isDraft = createInvoiceDto.status === 'DRAFT';
     const created = await this.prisma.$transaction(async (tx) => {
@@ -415,30 +415,56 @@ export class BillingService {
 
       // 4. If CREDIT or SPLIT payment and customer exists, update outstanding ledger.
       // Skipped for drafts — outstanding isn't extended until the draft is finalized.
+      //
+      // Side-effect: if the customer is sitting on a credit balance (negative
+      // currentOutstanding from a prior CN-Adjust whose cascade had nothing
+      // else to absorb), auto-apply that credit toward this new invoice's
+      // unpaid balance. We capture currentOutstanding BEFORE the increment so
+      // we know what credit was available pre-sale; bump invoice.amountPaid
+      // by min(credit, balance); record a PAYMENT row tagged CREDIT_APPLIED
+      // so the ledger has an auditable receipt for the credit consumption.
       if (!isDraft && (createInvoiceDto.paymentMode === 'CREDIT' || createInvoiceDto.paymentMode === 'SPLIT') && createInvoiceDto.customerId) {
         const amountAddedToCredit = createInvoiceDto.grandTotal - createInvoiceDto.amountPaid;
 
         if (amountAddedToCredit > 0) {
+          // Snapshot of customer credit BEFORE the standard increment fires.
+          const preCust = await tx.customer.findUnique({
+            where: { id: createInvoiceDto.customerId },
+            select: { currentOutstanding: true },
+          });
+          const preOutstanding = Number(preCust?.currentOutstanding ?? 0);
+
           await tx.customer.update({
             where: { id: createInvoiceDto.customerId },
             data: { currentOutstanding: { increment: amountAddedToCredit } }
           });
+
+          const creditAvailable = Math.max(0, -preOutstanding);
+          const applyFromCredit = Math.min(creditAvailable, amountAddedToCredit);
+          if (applyFromCredit > 0) {
+            const newAmountPaid = Number(createInvoiceDto.amountPaid) + applyFromCredit;
+            const newStatus: 'PAID' | 'PARTIAL' =
+              newAmountPaid >= Number(createInvoiceDto.grandTotal) - 0.01 ? 'PAID' : 'PARTIAL';
+            await tx.invoice.update({
+              where: { id: invoice.id },
+              data: { amountPaid: newAmountPaid, status: newStatus },
+            });
+            await tx.payment.create({
+              data: {
+                receiptNumber: `RCT-CR-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+                customerId: createInvoiceDto.customerId,
+                invoiceId: invoice.id,
+                amount: applyFromCredit,
+                paymentMode: 'CREDIT_APPLIED',
+                notes: `Auto-applied from customer credit balance (was ₹${creditAvailable.toFixed(2)})`,
+                branchId: branchId ?? null,
+              },
+            });
+          }
         }
       }
 
-      // 5. Award loyalty points (1 point per ₹100) for non-quotation invoices.
-      // Skipped for drafts — points accrue at finalize-time.
-      if (!isDraft && createInvoiceDto.type === 'INVOICE' && createInvoiceDto.customerId) {
-        const pointsEarned = Math.floor(Number(createInvoiceDto.grandTotal) / 100);
-        if (pointsEarned > 0) {
-          await tx.customer.update({
-            where: { id: createInvoiceDto.customerId },
-            data: { loyaltyPoints: { increment: pointsEarned } },
-          });
-        }
-      }
-
-      // 6. Auto-create a PAYMENT_DUE notification for new credit invoices.
+      // 5. Auto-create a PAYMENT_DUE notification for new credit invoices.
       // Skipped for drafts — nothing's due yet.
       if (!isQuotation && !isDraft && createInvoiceDto.paymentMode === 'CREDIT') {
         const outstanding = Number(createInvoiceDto.grandTotal) - Number(createInvoiceDto.amountPaid);
@@ -539,24 +565,40 @@ export class BillingService {
 
     const paginated = typeof skip === 'number' && typeof take === 'number';
 
+    // Pull the customer's current phone alongside each invoice so the
+    // Sales List / detail drawer / dashboard can render "name + phone" for
+    // disambiguating customers that share a common name. Live JOIN, not a
+    // snapshot — historical invoices reflect the customer's current phone.
+    const listInclude = {
+      items: true,
+      customer: { select: { phone: true } },
+    } as const;
+    // Surfaces customer.phone at the top level as `customerPhone` for the
+    // frontend, mirroring the existing `customerName` shape.
+    const mapPhone = <T extends { customer?: { phone: string } | null }>(row: T) => ({
+      ...row,
+      customerPhone: row.customer?.phone ?? null,
+    });
+
     if (!paginated) {
       // Legacy callers (NewSale, dashboard, customer detail) — keep the
       // lightweight array contract. Capped at 200 to avoid runaway responses.
-      return this.prisma.invoice.findMany({
+      const rows = await this.prisma.invoice.findMany({
         where,
-        include: { items: true },
+        include: listInclude,
         orderBy: { date: 'desc' },
         take: 200,
       });
+      return rows.map(mapPhone);
     }
 
     const safeTake = Math.min(Math.max(take!, 1), 100);
     const safeSkip = Math.max(skip!, 0);
 
-    const [data, total] = await Promise.all([
+    const [rows, total] = await Promise.all([
       this.prisma.invoice.findMany({
         where,
-        include: { items: true },
+        include: listInclude,
         orderBy: { date: 'desc' },
         skip: safeSkip,
         take: safeTake,
@@ -564,6 +606,7 @@ export class BillingService {
       this.prisma.invoice.count({ where }),
     ]);
 
+    const data = rows.map(mapPhone);
     return {
       data,
       total,
@@ -605,16 +648,99 @@ export class BillingService {
     };
   }
 
+  /**
+   * Past purchases of given products by a customer. Returns a map keyed by
+   * productId so the client can render per-product histories without further
+   * grouping. Queries InvoiceItem directly with a branch + customer + product
+   * filter — this means a customer with 500 invoices still gets full history
+   * for any product they bought, where the general findAll() would have only
+   * returned the most recent 200 invoices and silently dropped older entries.
+   */
+  async productPurchases(
+    customerId: string,
+    productIds: string[],
+    branchId?: string,
+    perProductLimit = 100,
+  ): Promise<Record<string, Array<{
+    date: string;
+    invoiceNumber: string;
+    batchNumber: string;
+    qty: number;
+    rate: number;
+    status: string;
+  }>>> {
+    if (!customerId || productIds.length === 0) return {};
+    const safeLimit = Math.min(Math.max(perProductLimit, 1), 500);
+
+    // Pull all matching InvoiceItem rows in one query — newer first so we can
+    // slice() per product after grouping. Total rows = productCount × safeLimit
+    // worst case, which is ~10 × 100 = 1000 max for a Product History view.
+    const rows = await this.prisma.invoiceItem.findMany({
+      where: {
+        productId: { in: productIds },
+        invoice: {
+          customerId,
+          ...(branchId ? { branchId } : {}),
+        },
+      },
+      include: {
+        invoice: {
+          select: {
+            invoiceNumber: true,
+            date: true,
+            createdAt: true,
+            status: true,
+          },
+        },
+      },
+      orderBy: { invoice: { date: 'desc' } },
+    });
+
+    const result: Record<string, Array<{
+      date: string;
+      invoiceNumber: string;
+      batchNumber: string;
+      qty: number;
+      rate: number;
+      status: string;
+    }>> = {};
+
+    for (const productId of productIds) {
+      result[productId] = [];
+    }
+
+    for (const r of rows) {
+      const productId = r.productId;
+      if (!productId) continue;
+      const bucket = result[productId];
+      if (!bucket || bucket.length >= safeLimit) continue;
+      bucket.push({
+        date: (r.invoice?.date ?? r.invoice?.createdAt ?? new Date()).toISOString(),
+        invoiceNumber: r.invoice?.invoiceNumber ?? '—',
+        batchNumber: r.batchNumber ?? '—',
+        qty: Number(r.quantity),
+        rate: Number(r.rate),
+        status: r.invoice?.status ?? 'UNKNOWN',
+      });
+    }
+
+    return result;
+  }
+
   async findOne(id: string, branchId?: string) {
     const invoice = await this.prisma.invoice.findUnique({
       where: { id },
-      include: { items: true, createdBy: { select: { name: true } } }
+      include: {
+        items: true,
+        createdBy: { select: { name: true } },
+        customer: { select: { phone: true } },
+      },
     });
     if (!invoice) throw new NotFoundException('Invoice not found');
     if (branchId && invoice.branchId && invoice.branchId !== branchId) {
       throw new NotFoundException('Invoice not found');
     }
-    return invoice;
+    return { ...invoice, customerPhone: invoice.customer?.phone ?? null };
   }
 
   async convertToInvoice(id: string, branchId?: string) {
@@ -672,7 +798,7 @@ export class BillingService {
   // ── Draft lifecycle ──────────────────────────────────────────
   // Drafts are user-initiated parked sales: created via POST /billing with
   // status=DRAFT, re-saved via PATCH :id/save-draft, finalized via
-  // PATCH :id/finalize. Stock, ledger, loyalty, notifications only run at
+  // PATCH :id/finalize. Stock, ledger, notifications only run at
   // finalize time — see create() for the corresponding guards.
 
   private async _verifyDraft(tx: Prisma.TransactionClient, id: string, branchId?: string) {
@@ -736,7 +862,7 @@ export class BillingService {
   }
 
   // Finalize a draft into a real invoice. Runs the side effects that create()
-  // skipped: prescription check, stock deduction, ledger, loyalty, notification.
+  // skipped: prescription check, stock deduction, ledger, notification.
   // The DTO's status must be a final state (PAID / UNPAID / PARTIAL) — drafts
   // can't "finalize" themselves into another draft.
   async finalizeDraft(id: string, dto: CreateInvoiceDto, branchId?: string) {
@@ -792,28 +918,48 @@ export class BillingService {
         include: { items: true },
       });
 
-      // Outstanding ledger update — same logic as create()'s non-draft path.
+      // Outstanding ledger update — same logic as create()'s non-draft path,
+      // including the customer-credit auto-apply (see create() for full
+      // commentary on why this exists).
       if (
         (dto.paymentMode === 'CREDIT' || dto.paymentMode === 'SPLIT') &&
         dto.customerId
       ) {
         const owed = dto.grandTotal - (dto.amountPaid ?? 0);
         if (owed > 0) {
+          const preCust = await tx.customer.findUnique({
+            where: { id: dto.customerId },
+            select: { currentOutstanding: true },
+          });
+          const preOutstanding = Number(preCust?.currentOutstanding ?? 0);
+
           await tx.customer.update({
             where: { id: dto.customerId },
             data: { currentOutstanding: { increment: owed } },
           });
-        }
-      }
 
-      // Loyalty — 1 point per ₹100, only for type=INVOICE rows.
-      if (existing.type === 'INVOICE' && dto.customerId) {
-        const points = Math.floor(Number(dto.grandTotal) / 100);
-        if (points > 0) {
-          await tx.customer.update({
-            where: { id: dto.customerId },
-            data: { loyaltyPoints: { increment: points } },
-          });
+          const creditAvailable = Math.max(0, -preOutstanding);
+          const applyFromCredit = Math.min(creditAvailable, owed);
+          if (applyFromCredit > 0) {
+            const newAmountPaid = Number(dto.amountPaid ?? 0) + applyFromCredit;
+            const newStatus: 'PAID' | 'PARTIAL' =
+              newAmountPaid >= Number(dto.grandTotal) - 0.01 ? 'PAID' : 'PARTIAL';
+            await tx.invoice.update({
+              where: { id },
+              data: { amountPaid: newAmountPaid, status: newStatus },
+            });
+            await tx.payment.create({
+              data: {
+                receiptNumber: `RCT-CR-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+                customerId: dto.customerId,
+                invoiceId: id,
+                amount: applyFromCredit,
+                paymentMode: 'CREDIT_APPLIED',
+                notes: `Auto-applied from customer credit balance (was ₹${creditAvailable.toFixed(2)})`,
+                branchId: existing.branchId ?? branchId ?? null,
+              },
+            });
+          }
         }
       }
 
@@ -838,8 +984,8 @@ export class BillingService {
   // ── Edit an UNPAID / PARTIAL invoice ─────────────────────────
   // Lets staff fix items/quantities/rates/customer/payment-mode on a real
   // invoice that the customer hasn't fully paid yet. Inside one transaction
-  // we reverse the original side effects (stock, customer outstanding,
-  // loyalty) and reapply them with the new figures. PAID/RETURNED/CANCELLED
+  // we reverse the original side effects (stock, customer outstanding)
+  // and reapply them with the new figures. PAID/RETURNED/CANCELLED
   // invoices are not editable here — they're financially closed. Drafts go
   // through saveDraft/finalizeDraft instead.
   async editUnpaidInvoice(
@@ -914,13 +1060,6 @@ export class BillingService {
           await tx.customer.update({
             where: { id: existing.customerId },
             data: { currentOutstanding: { decrement: oldOutstanding } },
-          });
-        }
-        const oldPoints = Math.floor(Number(existing.grandTotal) / 100);
-        if (oldPoints > 0) {
-          await tx.customer.update({
-            where: { id: existing.customerId },
-            data: { loyaltyPoints: { decrement: oldPoints } },
           });
         }
       }
@@ -1025,13 +1164,6 @@ export class BillingService {
           await tx.customer.update({
             where: { id: dto.customerId },
             data: { currentOutstanding: { increment: newOutstanding } },
-          });
-        }
-        const newPoints = Math.floor(newGrandTotal / 100);
-        if (newPoints > 0) {
-          await tx.customer.update({
-            where: { id: dto.customerId },
-            data: { loyaltyPoints: { increment: newPoints } },
           });
         }
       }
