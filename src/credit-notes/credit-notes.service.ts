@@ -140,11 +140,16 @@ export class CreditNotesService {
       // the approval-notification pattern used elsewhere in the codebase
       // (approvals.service.ts:38-44) — write directly to the Notification
       // table so we don't have to inject NotificationsService for one call.
+      const cnCustomer = invoice.customerId
+        ? await tx.customer.findUnique({ where: { id: invoice.customerId }, select: { phone: true } })
+        : null;
       await tx.notification.create({
         data: {
           type: 'APPROVAL',
           title: 'Credit Note Awaiting Review',
-          message: `${creditNoteNo} (${invoice.customerName}, ₹${Number(dto.totalAmount).toFixed(2)}) — inspect returned goods and approve or reject. [creditNoteId:${creditNote.id}]`,
+          // Lead with the customer (and phone, to disambiguate same-named
+          // customers); the credit-note number follows.
+          message: `${invoice.customerName}${cnCustomer?.phone ? ` (${cnCustomer.phone})` : ''} — Credit Note ${creditNoteNo} (₹${Number(dto.totalAmount).toFixed(2)}) awaiting review. [creditNoteId:${creditNote.id}]`,
           actionUrl: `/billing/credit-notes?id=${creditNote.id}`,
           branchId: invoice.branchId ?? branchId ?? null,
         },
@@ -223,7 +228,13 @@ export class CreditNotesService {
       // currentOutstanding is decremented by the full CN amount up front;
       // step (1) + (2) then sync each invoice's amountPaid so the sum of
       // open-invoice balances stays in lockstep with currentOutstanding.
-      const settledAt = finalSettlementMode === 'CREDIT' ? new Date() : null;
+      // CREDIT and REFUND both settle at approval: CREDIT applies to the
+      // outstanding (below), REFUND records the cash payout (Refund row, below).
+      // REPLACEMENT stays unsettled until the replacement invoice is issued.
+      const settledAt =
+        finalSettlementMode === 'CREDIT' || finalSettlementMode === 'REFUND'
+          ? new Date()
+          : null;
       if (finalSettlementMode === 'CREDIT' && cn.customerId) {
         await tx.customer.update({
           where: { id: cn.customerId },
@@ -296,6 +307,38 @@ export class CreditNotesService {
         // Anything still in `remaining` stays as customer-level credit
         // (currentOutstanding already decremented). Next credit purchase
         // will use it up.
+      }
+
+      // REFUND mode ("Refund to Customer"): record the cash/bank payout as a
+      // real Refund transaction so the money-out is visible in the Cash Book
+      // (cash mode) and the customer ledger. We do NOT touch currentOutstanding
+      // — a refund is given on an already-settled invoice, so what the customer
+      // owes is unchanged. Payout method defaults to the invoice's original mode
+      // when it's a real money mode (CASH/CARD/UPI), else CASH; only CASH
+      // refunds reach the Cash Book. The @unique on creditNoteId makes a retried
+      // approve fail loudly rather than double-pay.
+      if (finalSettlementMode === 'REFUND') {
+        const invoiceMode = cn.invoice.paymentMode;
+        const refundMode =
+          opts.refundMode ??
+          (['CASH', 'CARD', 'UPI'].includes(invoiceMode) ? invoiceMode : 'CASH');
+        const refundNumber = await this.numbering.nextNumber(
+          tx,
+          'REF',
+          cn.branchId ?? branchId ?? null,
+        );
+        await tx.refund.create({
+          data: {
+            refundNumber,
+            creditNoteId: cn.id,
+            customerId: cn.customerId,
+            invoiceId: cn.invoiceId,
+            amount: cn.totalAmount,
+            paymentMode: refundMode,
+            branchId: cn.branchId,
+            createdById: reviewerUserId,
+          },
+        });
       }
 
       const updated = await tx.creditNote.update({

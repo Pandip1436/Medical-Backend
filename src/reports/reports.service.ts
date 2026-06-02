@@ -814,8 +814,17 @@ export class ReportsService {
     const purchaseRateByBatchId = new Map(
       batches.map((b) => [b.id, Number(b.purchaseRate ?? 0)]),
     );
+    // Sales returns reduce revenue only when the return is real AND actually
+    // reverses the sale: APPROVED + settled as Refund or Credit. PENDING/REJECTED
+    // aren't financial events, and REPLACEMENT is goods-for-goods (no revenue
+    // reduction). Mirrors the credit-note filter in getCustomerLedger.
     const creditNotes = await this.prisma.creditNote.aggregate({
-      where: { date: { gte: from, lte: to }, ...bFilter },
+      where: {
+        date: { gte: from, lte: to },
+        status: 'APPROVED',
+        settlementMode: { in: ['CREDIT', 'REFUND'] },
+        ...bFilter,
+      },
       _sum: { totalAmount: true },
     });
     const purchases = await this.prisma.gRN.aggregate({
@@ -1063,6 +1072,22 @@ export class ReportsService {
     const { from, to } = this.resolvePeriod(query);
     const bFilter = this.branchFilter(query.branchId);
 
+    type CashRow = {
+      date: Date;
+      ref: string;
+      description: string;
+      amount: number;
+      type: 'RECEIPT' | 'PAYMENT';
+      receiptImage?: string | null;
+    };
+
+    // ── Cash IN ────────────────────────────────────────────────────────────
+    // At-sale cash is written straight to invoice.amountPaid (no Payment row),
+    // so the invoice IS the source for that portion — dated correctly on the
+    // sale day. Cash collected LATER comes in as Payment rows; we must date
+    // those by when the cash actually arrived (payment.createdAt), not the
+    // invoice date. So: at-sale base = amountPaid − Σ(this invoice's payments),
+    // dated by inv.date; then every CASH Payment row re-added on its own date.
     const cashInvoices = await this.prisma.invoice.findMany({
       where: {
         date: { gte: from, lte: to },
@@ -1070,16 +1095,57 @@ export class ReportsService {
         ...bFilter,
       },
       orderBy: { date: 'asc' },
-      select: {
-        id: true,
-        date: true,
-        invoiceNumber: true,
-        customerName: true,
-        amountPaid: true,
-        paymentMode: true,
+      select: { id: true, date: true, invoiceNumber: true, customerName: true, amountPaid: true },
+    });
+    const cashInvoiceIds = cashInvoices.map((i) => i.id);
+    const paidByInvoiceAgg = cashInvoiceIds.length
+      ? await this.prisma.payment.groupBy({
+          by: ['invoiceId'],
+          where: { invoiceId: { in: cashInvoiceIds } },
+          _sum: { amount: true },
+        })
+      : [];
+    const paidByInvoice = new Map(
+      paidByInvoiceAgg.map((p) => [p.invoiceId, Number(p._sum.amount ?? 0)]),
+    );
+    const atSaleReceipts: CashRow[] = cashInvoices
+      .map((inv): CashRow | null => {
+        const base = Number(inv.amountPaid) - (paidByInvoice.get(inv.id) ?? 0);
+        return base > 0.01
+          ? {
+              date: inv.date,
+              ref: inv.invoiceNumber,
+              description: `Sale to ${inv.customerName}`,
+              amount: base,
+              type: 'RECEIPT',
+            }
+          : null;
+      })
+      .filter((r): r is CashRow => r !== null);
+
+    // Every CASH payment in the window (incl. customer-level lump payments with
+    // no invoiceId), dated by when the money came in.
+    const cashPayments = await this.prisma.payment.findMany({
+      where: {
+        paymentMode: { equals: 'CASH', mode: 'insensitive' },
+        createdAt: { gte: from, lte: to },
+        ...bFilter,
+      },
+      orderBy: { createdAt: 'asc' },
+      include: {
+        invoice: { select: { invoiceNumber: true, customerName: true } },
+        customer: { select: { name: true } },
       },
     });
+    const paymentReceipts: CashRow[] = cashPayments.map((p) => ({
+      date: p.createdAt,
+      ref: p.invoice?.invoiceNumber ?? p.receiptNumber,
+      description: `Payment from ${p.invoice?.customerName ?? p.customer?.name ?? 'customer'}`,
+      amount: Number(p.amount),
+      type: 'RECEIPT',
+    }));
 
+    // ── Cash OUT ───────────────────────────────────────────────────────────
     // Case-insensitive cash match. New writes are normalised UPPERCASE in
     // ExpensesService; the `mode: 'insensitive'` covers legacy rows stored as
     // 'Cash' / 'cash' before the normalization landed.
@@ -1091,23 +1157,22 @@ export class ReportsService {
       },
       orderBy: { date: 'asc' },
     });
-
-    const receipts = cashInvoices.map((inv) => ({
-      date: inv.date,
-      ref: inv.invoiceNumber,
-      description: `Sale to ${inv.customerName}`,
-      amount: Number(inv.amountPaid),
-      type: 'RECEIPT' as const,
-    }));
-
-    const payments = cashExpenses.map((e) => ({
+    const expensePayments: CashRow[] = cashExpenses.map((e) => ({
       date: e.date,
       ref: e.id.slice(0, 8),
       description: `${e.category}: ${e.description}`,
       amount: Number(e.amount),
-      type: 'PAYMENT' as const,
+      type: 'PAYMENT',
       receiptImage: e.receiptImage,
     }));
+
+    // NOTE: customer refunds are intentionally NOT shown here. The payout method
+    // (cash vs UPI/card) isn't known at approval, so we don't assume it hit the
+    // cash drawer. If a refund was paid in cash, the user records it manually as
+    // a cash Expense. Refunds still post to the customer ledger and P&L.
+
+    const receipts = [...atSaleReceipts, ...paymentReceipts];
+    const payments = expensePayments;
 
     const totalReceipts = receipts.reduce((s, r) => s + r.amount, 0);
     const totalPayments = payments.reduce((s, p) => s + p.amount, 0);
@@ -1116,30 +1181,35 @@ export class ReportsService {
       (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime(),
     );
 
-    // Opening balance = sum of all CASH receipts and CASH expenses BEFORE the
-    // requested period. Carries the cash drawer forward day-to-day so a
-    // morning view of today's cash book starts with last night's close.
-    const [priorReceipts, priorPayments] = await Promise.all([
-      this.prisma.invoice.aggregate({
-        where: {
-          date: { lt: from },
-          paymentMode: { in: ['CASH', 'SPLIT'] },
-          ...bFilter,
-        },
-        _sum: { amountPaid: true },
-      }),
-      this.prisma.expense.aggregate({
-        where: {
-          date: { lt: from },
-          paymentMode: { equals: 'CASH', mode: 'insensitive' },
-          ...bFilter,
-        },
-        _sum: { amount: true },
-      }),
-    ]);
+    // Opening balance = all cash IN minus all cash OUT BEFORE the requested
+    // period, using the SAME sources as above so opening + period = true
+    // closing. Prior at-sale base = Σ(amountPaid) − Σ(payments) of CASH/SPLIT
+    // invoices dated before `from`; prior cash payments/expenses by date.
+    const [priorInvAmt, priorInvPayments, priorCashPay, priorCashExp] =
+      await Promise.all([
+        this.prisma.invoice.aggregate({
+          where: { date: { lt: from }, paymentMode: { in: ['CASH', 'SPLIT'] }, ...bFilter },
+          _sum: { amountPaid: true },
+        }),
+        this.prisma.payment.aggregate({
+          where: { invoice: { date: { lt: from }, paymentMode: { in: ['CASH', 'SPLIT'] } }, ...bFilter },
+          _sum: { amount: true },
+        }),
+        this.prisma.payment.aggregate({
+          where: { paymentMode: { equals: 'CASH', mode: 'insensitive' }, createdAt: { lt: from }, ...bFilter },
+          _sum: { amount: true },
+        }),
+        this.prisma.expense.aggregate({
+          where: { date: { lt: from }, paymentMode: { equals: 'CASH', mode: 'insensitive' }, ...bFilter },
+          _sum: { amount: true },
+        }),
+      ]);
+    const priorBase =
+      Number(priorInvAmt._sum.amountPaid ?? 0) - Number(priorInvPayments._sum.amount ?? 0);
     const openingBalance =
-      Number(priorReceipts._sum.amountPaid ?? 0) -
-      Number(priorPayments._sum.amount ?? 0);
+      priorBase +
+      Number(priorCashPay._sum.amount ?? 0) -
+      Number(priorCashExp._sum.amount ?? 0);
 
     let running = openingBalance;
     const ledger = entries.map((e) => {
@@ -1234,10 +1304,13 @@ export class ReportsService {
       if (!p.invoiceId) continue;
       realPaidByInvoice.set(p.invoiceId, (realPaidByInvoice.get(p.invoiceId) ?? 0) + Number(p.amount));
     }
-    // Only APPROVED + CREDIT-settlement credit notes hit the ledger. Pending /
-    // rejected CNs are not yet (or never) financial events. REFUND-settled CNs
-    // are reconciled against the original payment and don't post here.
-    // REPLACEMENT CNs are goods-for-goods, financially neutral.
+    // Only APPROVED + CREDIT-settlement credit notes hit the ledger — these are
+    // "Adjust Against Outstanding" returns that genuinely reduce what the customer
+    // owes. REFUND-settled returns are money-neutral to the customer's account
+    // (goods came back AND the cash went back), so they must NOT move the running
+    // balance or outstanding — they're excluded entirely. REPLACEMENT is goods-
+    // for-goods (neutral). Pending/rejected aren't financial events. The ledger
+    // therefore stays in lockstep with customer.currentOutstanding.
     const creditNotes = await this.prisma.creditNote.findMany({
       where: {
         customerId,

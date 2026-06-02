@@ -1231,6 +1231,13 @@ export class BillingService {
       if (amountReceived <= 0) {
         throw new BadRequestException('Payment amount must be greater than zero');
       }
+      // Reject overpayment — you can never collect more than what's due.
+      // 0.01 tolerance absorbs floating-point rounding on the outstanding.
+      if (amountReceived > outstanding + 0.01) {
+        throw new BadRequestException(
+          `Payment cannot exceed the outstanding amount of ${outstanding.toFixed(2)}`,
+        );
+      }
 
       const newAmountPaid = Number(invoice.amountPaid) + amountReceived;
       const stillDue = Number(invoice.grandTotal) - newAmountPaid;

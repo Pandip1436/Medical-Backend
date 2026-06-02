@@ -54,7 +54,16 @@ function suppressionClauses(): any[] {
 // a fresh poke. State shapes are intentionally small JSON blobs.
 type LowStockState   = { kind: 'LOW_STOCK';   totalStock: number; minStock: number };
 type ExpiryState     = { kind: 'EXPIRY';      daysLeft: number };
-type PaymentDueState = { kind: 'PAYMENT_DUE'; outstanding: number; daysOutstanding: number };
+type PaymentDueState = {
+  kind: 'PAYMENT_DUE';
+  outstanding: number;
+  daysOutstanding: number;
+  // Customer identity carried so the UI can show + disambiguate by phone
+  // (two customers can share a name) without a second lookup.
+  customerId?: string | null;
+  customerName?: string | null;
+  customerPhone?: string | null;
+};
 
 // How much worse the situation must be to override suppression
 const LOW_STOCK_DROP_PCT = 0.25;    // stock dropped 25%+ from last snapshot
@@ -373,7 +382,7 @@ export class NotificationsService {
         {
           type: NotificationType.EXPIRY,
           title: daysLeft <= 0 ? 'Expired Stock' : 'Expiry Alert',
-          message: `Batch ${b.batchNumber} of ${b.product.name} ${label}. [batchId:${b.id}]`,
+          message: `${b.product.name} · Batch ${b.batchNumber} ${label}. [batchId:${b.id}]`,
           actionUrl: `/inventory/batches/detail?id=${b.id}`,
           branchId: b.product.branchId ?? branchId ?? null,
           entityState: nextState as any,
@@ -391,16 +400,34 @@ export class NotificationsService {
     const month = today.getMonth() + 1; // 1-12
     const year = today.getFullYear();
 
-    // Find all reminders due today
+    // A reminder fires today if it hits its monthly day-of-month, OR if it
+    // carries a one-off follow-up date that lands today.
+    const startOfToday = new Date(year, today.getMonth(), todayDay);
+    const endOfToday = new Date(year, today.getMonth(), todayDay, 23, 59, 59, 999);
     const reminders = await this.prisma.customerReminder.findMany({
-      where: { dayOfMonth: todayDay },
-      include: { customer: { select: { name: true } } },
+      where: {
+        OR: [
+          { dayOfMonth: todayDay },
+          { followUpDate: { gte: startOfToday, lte: endOfToday } },
+        ],
+      },
+      include: { customer: { select: { name: true, phone: true } } },
     });
 
     let created = 0;
     for (const r of reminders) {
-      // Dedup: one notification per reminder per month+year
-      const dedupKey = `[reminderId:${r.id}][month:${month}][year:${year}]`;
+      const isFollowUpToday =
+        !!r.followUpDate &&
+        r.followUpDate >= startOfToday &&
+        r.followUpDate <= endOfToday;
+
+      // A deliberate one-off follow-up takes precedence over the generic
+      // monthly nudge for that day, so we don't double-notify the same reminder.
+      // Follow-ups dedup on the concrete date (one alert per follow-up);
+      // monthly reminders dedup per month+year.
+      const dedupKey = isFollowUpToday
+        ? `[reminderId:${r.id}][followup:${year}-${month}-${todayDay}]`
+        : `[reminderId:${r.id}][month:${month}][year:${year}]`;
       const existing = await this.prisma.notification.findFirst({
         where: {
           type: NotificationType.SYSTEM,
@@ -408,11 +435,14 @@ export class NotificationsService {
         },
       });
       if (!existing) {
+        const phone = r.customer.phone ? ` (${r.customer.phone})` : '';
         await this.createAndEmit(
           {
             type: NotificationType.SYSTEM,
-            title: '📅 Customer Reminder',
-            message: `${r.title} — Follow up with ${r.customer.name} today. ${dedupKey}`,
+            title: isFollowUpToday ? '⏰ Follow-up Due' : '📅 Customer Reminder',
+            message: isFollowUpToday
+              ? `${r.title} — Follow-up with ${r.customer.name}${phone} is due today. ${dedupKey}`
+              : `${r.title} — Follow up with ${r.customer.name}${phone} today. ${dedupKey}`,
             actionUrl: `/reminders/detail?id=${r.id}`,
             branchId: r.branchId ?? null,
           },
@@ -434,6 +464,8 @@ export class NotificationsService {
         id: true,
         invoiceNumber: true,
         customerName: true,
+        customerId: true,
+        customer: { select: { phone: true } },
         grandTotal: true,
         amountPaid: true,
         branchId: true,
@@ -459,6 +491,9 @@ export class NotificationsService {
         kind: 'PAYMENT_DUE',
         outstanding,
         daysOutstanding,
+        customerId: inv.customerId ?? null,
+        customerName: inv.customerName,
+        customerPhone: inv.customer?.phone ?? null,
       };
       // Suppressed AND outstanding hasn't grown / invoice hasn't aged enough — skip.
       if (existing && !shouldEscalatePaymentDue(existing.entityState as PaymentDueState | null, nextState)) {
@@ -468,7 +503,7 @@ export class NotificationsService {
         {
           type: NotificationType.PAYMENT_DUE,
           title: 'Payment Due',
-          message: `Invoice ${inv.invoiceNumber} for ${inv.customerName} has ₹${outstanding.toFixed(2)} outstanding. [invoiceId:${inv.id}]`,
+          message: `${inv.customerName} has ₹${outstanding.toFixed(2)} outstanding · Invoice ${inv.invoiceNumber}. [invoiceId:${inv.id}]`,
           actionUrl: `/customers/invoices/detail?id=${inv.id}`,
           branchId: inv.branchId ?? branchId ?? null,
           entityState: nextState as any,

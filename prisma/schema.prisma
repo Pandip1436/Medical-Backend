@@ -42,6 +42,7 @@ model Branch {
   notifications   Notification[]
   payments        Payment[]
   supplierPayments SupplierPayment[]
+  refunds         Refund[]
   reminders       CustomerReminder[]
   categories      Category[]
   supplierActivities SupplierActivity[]
@@ -122,6 +123,7 @@ model Customer {
   creditNotes        CreditNote[]
   quotations         Quotation[]
   payments           Payment[]
+  refunds            Refund[]
   reminders          CustomerReminder[]
   activities         CustomerActivity[]
   promotedFromContact Contact?           @relation("ContactPromotion")
@@ -459,6 +461,7 @@ model Invoice {
   createdAt       DateTime      @default(now())
   creditNotes     CreditNote[]
   payments        Payment[]
+  refunds         Refund[]
   paymentLinks    PaymentLink[]
   leadId          String?
   lead            Lead?         @relation(fields: [leadId], references: [id])
@@ -698,6 +701,7 @@ model CreditNote {
   notes           String?
   createdById     String
   createdAt       DateTime         @default(now())
+  refund          Refund?
 }
 
 model CreditNoteItem {
@@ -719,6 +723,31 @@ enum SettlementMode {
   REFUND
   CREDIT
   REPLACEMENT
+}
+
+// ── Customer Refunds ──────────────────────────────────────────
+// A real cash/bank payout to a customer, created when a REFUND-settled credit
+// note is approved. Makes the money-out movement visible & reconcilable in the
+// Cash Book (cash mode), the customer ledger (a debit that offsets the credit
+// note), and is the audit trail for "we paid the customer back". One per CN.
+model Refund {
+  id           String     @id @default(cuid())
+  refundNumber String     @unique
+  creditNoteId String     @unique
+  creditNote   CreditNote @relation(fields: [creditNoteId], references: [id])
+  customerId   String?
+  customer     Customer?  @relation(fields: [customerId], references: [id])
+  invoiceId    String?
+  invoice      Invoice?   @relation(fields: [invoiceId], references: [id])
+  amount       Decimal
+  paymentMode  String     // CASH | CARD | UPI — how the money left (drives Cash Book inclusion)
+  notes        String?
+  branchId     String?
+  branch       Branch?    @relation(fields: [branchId], references: [id])
+  createdById  String
+  createdAt    DateTime   @default(now())
+  @@index([customerId])
+  @@index([createdAt])
 }
 
 enum CreditNoteStatus {
@@ -982,6 +1011,10 @@ model CustomerReminder {
   dayOfMonth   Int              // 1-31: repeat on this day each month
   title        String
   notes        String?
+  // One-off follow-up requested by the customer ("call me back on X"). When set,
+  // it overrides the monthly dayOfMonth schedule until the next contact is logged.
+  // null = plain monthly cycle.
+  followUpDate DateTime?
   branchId     String?
   branch       Branch?          @relation(fields: [branchId], references: [id])
   createdAt    DateTime         @default(now())
@@ -996,6 +1029,9 @@ model ReminderContact {
   contactedAt  DateTime            @default(now())
   status       ReminderContactStatus
   notes        String?
+  // The follow-up date the customer requested at this specific contact (audit
+  // trail). The active follow-up lives on CustomerReminder.followUpDate.
+  followUpDate DateTime?
 }
 
 enum ReminderContactStatus {

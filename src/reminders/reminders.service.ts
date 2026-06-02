@@ -127,9 +127,16 @@ export class RemindersService {
     if (dto.dayOfMonth !== undefined) {
       this.validateDayOfMonth(dto.dayOfMonth)
     }
+    // followUpDate arrives as an ISO string (set) or explicit null (clear);
+    // Prisma needs a Date | null, so coerce it before the write.
+    const { followUpDate, ...rest } = dto
+    const data: any = { ...rest }
+    if (followUpDate !== undefined) {
+      data.followUpDate = followUpDate ? new Date(followUpDate) : null
+    }
     return this.prisma.customerReminder.update({
       where: { id },
-      data: dto,
+      data,
       include: {
         customer: { select: { id: true, name: true, phone: true, type: true, email: true } },
         contacts: { orderBy: { contactedAt: 'desc' }, take: 1 },
@@ -144,13 +151,27 @@ export class RemindersService {
 
   async addContactLog(reminderId: string, dto: CreateContactLogDto, branchId?: string) {
     await this.assertOwnedByBranch(reminderId, branchId)
-    return this.prisma.reminderContact.create({
-      data: {
-        reminderId,
-        status: dto.status as any,
-        notes: dto.notes,
-      },
-    })
+    // The follow-up date the customer requested at this contact (if any).
+    const followUpDate = dto.followUpDate ? new Date(dto.followUpDate) : null
+    // The latest contact decides the reminder's active follow-up: logging a
+    // contact with a date schedules it; logging one without a date clears any
+    // prior follow-up so the reminder reverts to its monthly cycle. Both writes
+    // happen together so the log and the reminder never disagree.
+    const [contact] = await this.prisma.$transaction([
+      this.prisma.reminderContact.create({
+        data: {
+          reminderId,
+          status: dto.status as any,
+          notes: dto.notes,
+          followUpDate,
+        },
+      }),
+      this.prisma.customerReminder.update({
+        where: { id: reminderId },
+        data: { followUpDate },
+      }),
+    ])
+    return contact
   }
 
   async getContactLogs(reminderId: string, branchId?: string) {

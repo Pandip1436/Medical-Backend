@@ -32,4 +32,16 @@ export class ApproveCreditNoteDto {
   @IsString()
   @MaxLength(2000)
   reviewNote?: string;
+
+  @ApiPropertyOptional({
+    enum: ['CASH', 'CARD', 'UPI'],
+    description:
+      'Payout method for a REFUND-settled credit note. If omitted, defaults to ' +
+      "the original invoice's payment method when it is CASH/CARD/UPI, else CASH. " +
+      'Only CASH refunds post to the Cash Book.',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(20)
+  refundMode?: string;
 }
