@@ -8,6 +8,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { ApprovalsService } from '../approvals/approvals.service';
 import { CreateCustomerDto } from './dto/create-customer.dto';
 import { UpdateCustomerDto } from './dto/update-customer.dto';
+import { syncPaymentDueForInvoice } from '../notifications/payment-due-sync';
 
 @Injectable()
 export class CustomersService {
@@ -162,12 +163,14 @@ export class CustomersService {
     const where: any = {};
     if (branchId) where.branchId = branchId;
     if (query) {
-      // Match against name (case-insensitive), phone digits, or GSTIN. Typing a
-      // GSTIN into the search box should surface the right customer.
+      // Match against name (case-insensitive), phone digits, GSTIN, or address.
+      // Typing a GSTIN or a locality/street into the search box should surface
+      // the right customer.
       where.OR = [
         { name: { contains: query, mode: 'insensitive' } },
         { phone: { contains: query } },
         { gstin: { contains: query, mode: 'insensitive' } },
+        { address: { contains: query, mode: 'insensitive' } },
       ];
     }
 
@@ -255,6 +258,7 @@ export class CustomersService {
         { name: { contains: filters.q, mode: 'insensitive' } },
         { phone: { contains: filters.q } },
         { gstin: { contains: filters.q, mode: 'insensitive' } },
+        { address: { contains: filters.q, mode: 'insensitive' } },
       ];
     }
     if (filters?.customerType) where.type = filters.customerType;
@@ -691,6 +695,18 @@ export class CustomersService {
           data: { amountPaid: newAmountPaid, status: newStatus },
         });
 
+        // Resolve the reminder if this invoice is now cleared, else refresh its amount.
+        await syncPaymentDueForInvoice(tx, {
+          id: inv.id,
+          status: newStatus,
+          grandTotal: inv.grandTotal,
+          amountPaid: newAmountPaid,
+          date: inv.date,
+          customerName: inv.customerName,
+          invoiceNumber: inv.invoiceNumber,
+          customerId: inv.customerId,
+        });
+
         allocations.push({ invoiceId: inv.id, applied, newStatus });
         remaining -= applied;
       }
@@ -726,12 +742,43 @@ export class CustomersService {
     });
   }
 
-  async getPaymentHistory(id: string, branchId?: string) {
+  async getPaymentHistory(
+    id: string,
+    branchId?: string,
+    opts?: { from?: string; to?: string; skip?: number; take?: number },
+  ) {
     await this.findOne(id, branchId);
-    return this.prisma.payment.findMany({
-      where: { customerId: id },
-      orderBy: { createdAt: 'desc' },
-      take: 50,
-    });
+    const where: any = { customerId: id };
+    if (opts?.from || opts?.to) {
+      where.createdAt = {};
+      if (opts.from) where.createdAt.gte = new Date(opts.from);
+      if (opts.to) {
+        const toEnd = new Date(opts.to);
+        toEnd.setHours(23, 59, 59, 999);
+        where.createdAt.lte = toEnd;
+      }
+    }
+
+    const paginated = typeof opts?.skip === 'number' && typeof opts?.take === 'number';
+    if (!paginated) {
+      return this.prisma.payment.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        take: 50,
+      });
+    }
+
+    const safeTake = Math.min(Math.max(opts!.take!, 1), 100);
+    const safeSkip = Math.max(opts!.skip!, 0);
+    const [data, total] = await Promise.all([
+      this.prisma.payment.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        skip: safeSkip,
+        take: safeTake,
+      }),
+      this.prisma.payment.count({ where }),
+    ]);
+    return { data, total, hasMore: safeSkip + data.length < total };
   }
 }

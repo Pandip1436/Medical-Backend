@@ -1,5 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { BadRequestException, NotFoundException } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { BillingService } from './billing.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { ApprovalsService } from '../approvals/approvals.service';
@@ -22,8 +23,9 @@ interface MockTx {
   batch: { update: Mock; findUnique: Mock };
   product: { update: Mock; findMany: Mock };
   customer: { update: Mock };
+  payment: { create: Mock };
   prescription: { findFirst: Mock };
-  notification: { findFirst: Mock; create: Mock };
+  notification: { findFirst: Mock; create: Mock; updateMany: Mock };
   invoiceEditAudit: { create: Mock };
 }
 
@@ -43,8 +45,13 @@ function makeTx(overrides: Partial<MockTx> = {}): MockTx {
       findMany: jest.fn().mockResolvedValue([]),
     },
     customer: { update: jest.fn().mockResolvedValue({}) },
+    payment: { create: jest.fn().mockResolvedValue({}) },
     prescription: { findFirst: jest.fn().mockResolvedValue({ id: 'rx1' }) },
-    notification: { findFirst: jest.fn().mockResolvedValue(null), create: jest.fn().mockResolvedValue({}) },
+    notification: {
+      findFirst: jest.fn().mockResolvedValue(null),
+      create: jest.fn().mockResolvedValue({}),
+      updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+    },
     invoiceEditAudit: { create: jest.fn().mockResolvedValue({}) },
     ...overrides,
   };
@@ -150,6 +157,7 @@ describe('BillingService.editUnpaidInvoice', () => {
         { provide: PrismaService, useValue: prisma },
         { provide: ApprovalsService, useValue: { createRequest: jest.fn() } },
         { provide: DocumentNumberingService, useValue: { nextNumber: jest.fn().mockResolvedValue('INV-2026-0002') } },
+        { provide: EventEmitter2, useValue: { emit: jest.fn() } },
       ],
     }).compile();
 
@@ -383,5 +391,67 @@ describe('BillingService.editUnpaidInvoice', () => {
 
   it('is wired into the DI container', () => {
     expect(service).toBeDefined();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────
+// collectPayment keeps the invoice's PAYMENT_DUE reminder in sync:
+//   full payment → resolve it; partial payment → refresh the amount.
+// ─────────────────────────────────────────────────────────────
+describe('BillingService.collectPayment — Payment Due sync', () => {
+  let service: BillingService;
+  let prisma: { $transaction: jest.Mock };
+  let tx: MockTx;
+
+  beforeEach(async () => {
+    tx = makeTx();
+    prisma = {
+      $transaction: jest.fn((cb: (t: MockTx) => unknown) => Promise.resolve(cb(tx))),
+    };
+    const moduleRef: TestingModule = await Test.createTestingModule({
+      providers: [
+        BillingService,
+        { provide: PrismaService, useValue: prisma },
+        { provide: ApprovalsService, useValue: { createRequest: jest.fn() } },
+        { provide: DocumentNumberingService, useValue: { nextNumber: jest.fn().mockResolvedValue('RCPT-0001') } },
+        { provide: EventEmitter2, useValue: { emit: jest.fn() } },
+      ],
+    }).compile();
+    service = moduleRef.get<BillingService>(BillingService);
+  });
+
+  it('resolves the reminder when the payment clears the invoice (→ PAID)', async () => {
+    // grandTotal 1120, nothing paid → a full 1120 payment settles it.
+    tx.invoice.findUnique.mockResolvedValue(buildInvoice({ amountPaid: 0 }));
+    tx.invoice.update.mockResolvedValue({ ...buildInvoice(), status: 'PAID', items: [] });
+
+    await service.collectPayment('inv-1', 1120, 'CASH');
+
+    expect(tx.notification.updateMany).toHaveBeenCalledTimes(1);
+    const call = tx.notification.updateMany.mock.calls[0][0];
+    expect(call.where.type).toBe('PAYMENT_DUE');
+    expect(call.where.message.contains).toBe('[invoiceId:inv-1]');
+    expect(call.where.resolvedAt).toBeNull();
+    // Resolve semantics: marks it resolved + read so it leaves the Unread list.
+    expect(call.data.resolvedAt).toBeInstanceOf(Date);
+    expect(call.data.isRead).toBe(true);
+    expect(call.data.message).toBeUndefined();
+  });
+
+  it('refreshes the reminder amount on a partial payment (→ PARTIAL)', async () => {
+    // grandTotal 1120, nothing paid → a 500 payment leaves 620 outstanding.
+    tx.invoice.findUnique.mockResolvedValue(buildInvoice({ amountPaid: 0 }));
+    tx.invoice.update.mockResolvedValue({ ...buildInvoice(), status: 'PARTIAL', items: [] });
+
+    await service.collectPayment('inv-1', 500, 'CASH');
+
+    expect(tx.notification.updateMany).toHaveBeenCalledTimes(1);
+    const call = tx.notification.updateMany.mock.calls[0][0];
+    expect(call.where.message.contains).toBe('[invoiceId:inv-1]');
+    // Refresh semantics: rewrites the message with the new balance, stays active.
+    expect(call.data.message).toContain('₹620.00 outstanding');
+    expect(call.data.message).toContain('[invoiceId:inv-1]');
+    expect(call.data.resolvedAt).toBeUndefined();
+    expect(call.data.isRead).toBeUndefined();
   });
 });

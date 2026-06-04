@@ -7,6 +7,7 @@ import { CreateInvoiceDto } from './dto/create-invoice.dto';
 import { CreateInvoiceItemDto } from './dto/create-invoice-item.dto';
 import { PaymentMode, Prisma } from '@prisma/client';
 import { INVOICE_CREATED, InvoiceCreatedPayload } from '../events/invoice-events';
+import { syncPaymentDueForInvoice } from '../notifications/payment-due-sync';
 
 // Round to 2 decimal places before persisting any rupee/percent column. The
 // frontend often hands us raw IEEE-754 products like 5.399999999999999 which,
@@ -331,7 +332,22 @@ export class BillingService {
 
             await this.approvalsService.createRequest({
               type: 'CREDIT_BILL',
-              payload: { invoiceId: draftInvoice.id, invoiceNumber, pendingCount, customerId: createInvoiceDto.customerId, customerName: createInvoiceDto.customerName, grandTotal: createInvoiceDto.grandTotal },
+              payload: {
+                invoiceId: draftInvoice.id,
+                invoiceNumber,
+                pendingCount,
+                customerId: createInvoiceDto.customerId,
+                customerName: createInvoiceDto.customerName,
+                grandTotal: createInvoiceDto.grandTotal,
+                // Carry the full bill so the reviewer sees exactly what's being
+                // sold on credit (products / qty / rate / tax) without having to
+                // open the draft invoice separately.
+                items: createInvoiceDto.items,
+                subtotal: createInvoiceDto.subtotal,
+                cgst: createInvoiceDto.cgst,
+                sgst: createInvoiceDto.sgst,
+                igst: createInvoiceDto.igst,
+              },
               requestedById: userId,
               branchId,
               refId: draftInvoice.id,
@@ -394,6 +410,7 @@ export class BillingService {
           grandTotal: r2(createInvoiceDto.grandTotal),
           paymentMode: createInvoiceDto.paymentMode,
           paymentDetails: createInvoiceDto.paymentDetails,
+          dueDate: createInvoiceDto.dueDate ? new Date(createInvoiceDto.dueDate) : null,
           status: createInvoiceDto.status,
           amountPaid: r2(createInvoiceDto.amountPaid),
           changeReturned: r2(createInvoiceDto.changeReturned),
@@ -549,7 +566,14 @@ export class BillingService {
         { customerName: { contains: query, mode: 'insensitive' } },
       ];
     }
-    if (filters?.status) where.status = filters.status;
+    if (filters?.status) {
+      // "PENDING" is a UI bucket (Outstanding card) covering both unpaid and
+      // partially-paid invoices — expand it to the underlying statuses.
+      where.status =
+        filters.status === 'PENDING'
+          ? { in: ['UNPAID', 'PARTIAL'] }
+          : filters.status;
+    }
     if (filters?.paymentMode) where.paymentMode = filters.paymentMode;
     if (filters?.salespersonId) where.salespersonId = filters.salespersonId;
     if (filters?.from || filters?.to) {
@@ -614,25 +638,44 @@ export class BillingService {
     };
   }
 
-  // Global summary across all invoices (optionally scoped to a branch). Kept
-  // unfiltered so the top stat cards stay stable as the user types in the
-  // search box below.
-  async summary(branchId?: string) {
+  // Invoice summary for the stat cards. Unscoped by default (the Sales List
+  // page keeps it unfiltered so the cards stay stable as the user searches),
+  // but callers can scope it to a single salesperson and/or a date range — the
+  // Salesperson Detail page uses that so its period cards reflect exactly the
+  // invoices in the chosen period, independent of the paginated list below.
+  async summary(
+    branchId?: string,
+    filters?: { salespersonId?: string; from?: string; to?: string },
+  ) {
     const base: any = { type: 'INVOICE' };
     if (branchId) base.branchId = branchId;
+    if (filters?.salespersonId) base.salespersonId = filters.salespersonId;
+    if (filters?.from || filters?.to) {
+      base.date = {};
+      if (filters.from) base.date.gte = new Date(filters.from);
+      if (filters.to) {
+        // Make the `to` boundary inclusive of the entire day.
+        const toEnd = new Date(filters.to);
+        toEnd.setHours(23, 59, 59, 999);
+        base.date.lte = toEnd;
+      }
+    }
 
-    const [totalInvoices, totalAmountAgg, paidCount, outstandingAgg] = await Promise.all([
-      this.prisma.invoice.count({ where: base }),
-      this.prisma.invoice.aggregate({
-        where: base,
-        _sum: { grandTotal: true },
-      }),
-      this.prisma.invoice.count({ where: { ...base, status: 'PAID' } }),
-      this.prisma.invoice.findMany({
-        where: { ...base, status: { in: ['UNPAID', 'PARTIAL'] } },
-        select: { grandTotal: true, amountPaid: true },
-      }),
-    ]);
+    const [totalInvoices, totalAmountAgg, paidCount, paidAgg, outstandingAgg, returnsCount] =
+      await Promise.all([
+        this.prisma.invoice.count({ where: base }),
+        this.prisma.invoice.aggregate({ where: base, _sum: { grandTotal: true } }),
+        this.prisma.invoice.count({ where: { ...base, status: 'PAID' } }),
+        this.prisma.invoice.aggregate({
+          where: { ...base, status: 'PAID' },
+          _sum: { grandTotal: true },
+        }),
+        this.prisma.invoice.findMany({
+          where: { ...base, status: { in: ['UNPAID', 'PARTIAL'] } },
+          select: { grandTotal: true, amountPaid: true },
+        }),
+        this.prisma.invoice.count({ where: { ...base, status: 'RETURNED' } }),
+      ]);
 
     const outstandingAmount = outstandingAgg.reduce(
       (sum, inv) => sum + (Number(inv.grandTotal) - Number(inv.amountPaid)),
@@ -643,8 +686,10 @@ export class BillingService {
       totalInvoices,
       totalAmount: Number(totalAmountAgg._sum.grandTotal ?? 0),
       paidCount,
+      paidTotal: Number(paidAgg._sum.grandTotal ?? 0),
       outstandingAmount,
       outstandingCount: outstandingAgg.length,
+      returnsCount,
     };
   }
 
@@ -733,14 +778,106 @@ export class BillingService {
       include: {
         items: true,
         createdBy: { select: { name: true } },
-        customer: { select: { phone: true } },
+        customer: {
+          select: {
+            id: true, name: true, phone: true, alternatePhone: true,
+            email: true, address: true, gstin: true, type: true,
+          },
+        },
       },
     });
     if (!invoice) throw new NotFoundException('Invoice not found');
     if (branchId && invoice.branchId && invoice.branchId !== branchId) {
       throw new NotFoundException('Invoice not found');
     }
-    return { ...invoice, customerPhone: invoice.customer?.phone ?? null };
+    // Surface the customer's contact block (the Invoice row only snapshots the
+    // name) so the detail page / preview / PDF can show phone, address, GSTIN.
+    return {
+      ...invoice,
+      customerPhone: invoice.customer?.phone ?? null,
+      customerAddress: invoice.customer?.address ?? null,
+      customerGstin: invoice.customer?.gstin ?? null,
+    };
+  }
+
+  // Full payment history for a single invoice — every Payment row tied to it,
+  // plus a synthesized "at-counter" entry for the upfront amount collected at
+  // billing (which lands in invoice.amountPaid but is never written as a
+  // Payment row). The synthesized entry makes the history total reconcile with
+  // the invoice's "Paid" figure without backfilling old data.
+  async getInvoicePayments(id: string, branchId?: string) {
+    const invoice = await this.prisma.invoice.findUnique({
+      where: { id },
+      include: {
+        customer: {
+          select: { name: true, phone: true, address: true, gstin: true },
+        },
+      },
+    });
+    if (!invoice) throw new NotFoundException('Invoice not found');
+    if (branchId && invoice.branchId && invoice.branchId !== branchId) {
+      throw new NotFoundException('Invoice not found');
+    }
+
+    const rows = await this.prisma.payment.findMany({
+      where: { invoiceId: id },
+      orderBy: { createdAt: 'asc' },
+    });
+
+    const recorded = rows.reduce((sum, p) => sum + Number(p.amount), 0);
+    const amountPaid = Number(invoice.amountPaid);
+    const initial = amountPaid - recorded;
+
+    const payments: Array<{
+      id: string | null;
+      receiptNumber: string | null;
+      amount: number;
+      paymentMode: string;
+      referenceNumber: string | null;
+      notes: string | null;
+      createdAt: Date;
+      source: 'INITIAL' | 'RECORDED';
+    }> = [];
+
+    if (initial > 0.01) {
+      payments.push({
+        id: null,
+        receiptNumber: null,
+        amount: initial,
+        paymentMode: invoice.paymentMode,
+        referenceNumber: null,
+        notes: 'Collected at billing',
+        createdAt: invoice.date,
+        source: 'INITIAL',
+      });
+    }
+
+    for (const p of rows) {
+      payments.push({
+        id: p.id,
+        receiptNumber: p.receiptNumber,
+        amount: Number(p.amount),
+        paymentMode: p.paymentMode,
+        referenceNumber: p.referenceNumber,
+        notes: p.notes,
+        createdAt: p.createdAt,
+        source: 'RECORDED',
+      });
+    }
+
+    return {
+      invoiceNumber: invoice.invoiceNumber,
+      customerName: invoice.customer?.name ?? invoice.customerName ?? '—',
+      // Party contact details come from the linked customer record (the
+      // invoice itself only snapshots the name), so the receipt can show the
+      // payer's address / phone / GSTIN.
+      customerPhone: invoice.customer?.phone ?? null,
+      customerAddress: invoice.customer?.address ?? null,
+      customerGstin: invoice.customer?.gstin ?? null,
+      grandTotal: Number(invoice.grandTotal),
+      amountPaid,
+      payments,
+    };
   }
 
   async convertToInvoice(id: string, branchId?: string) {
@@ -846,6 +983,7 @@ export class BillingService {
           grandTotal: r2(dto.grandTotal),
           paymentMode: dto.paymentMode,
           paymentDetails: dto.paymentDetails,
+          dueDate: dto.dueDate ? new Date(dto.dueDate) : null,
           amountPaid: r2(dto.amountPaid),
           changeReturned: r2(dto.changeReturned),
           // Status pinned to DRAFT — finalization goes through finalizeDraft().
@@ -906,6 +1044,7 @@ export class BillingService {
           grandTotal: r2(dto.grandTotal),
           paymentMode: dto.paymentMode,
           paymentDetails: dto.paymentDetails,
+          dueDate: dto.dueDate ? new Date(dto.dueDate) : null,
           amountPaid: r2(dto.amountPaid),
           changeReturned: r2(dto.changeReturned),
           status: dto.status,
@@ -1144,6 +1283,7 @@ export class BillingService {
           grandTotal: r2(dto.grandTotal),
           paymentMode: dto.paymentMode,
           paymentDetails: dto.paymentDetails,
+          dueDate: dto.dueDate ? new Date(dto.dueDate) : null,
           status: newStatus,
           // amountPaid intentionally NOT overwritten — it's the running tally
           // of what the customer actually handed over and lives independently
@@ -1216,7 +1356,13 @@ export class BillingService {
     });
   }
 
-  async collectPayment(id: string, amountReceived: number, paymentMode: string, branchId?: string) {
+  async collectPayment(id: string, amountReceived: number, paymentMode: string, branchId?: string, referenceNumber?: string) {
+    // Non-cash modes (UPI / Card / Cheque / NEFT) are traceable — require a
+    // reference (UTR / txn id / cheque no.) so the receipt can be reconciled.
+    const ref = referenceNumber?.trim() || undefined;
+    if (paymentMode && paymentMode.toUpperCase() !== 'CASH' && !ref) {
+      throw new BadRequestException(`A reference number is required for ${paymentMode} payments`);
+    }
     return this.prisma.$transaction(async (tx) => {
       const invoice = await tx.invoice.findUnique({ where: { id } });
       if (!invoice) throw new NotFoundException('Invoice not found');
@@ -1272,10 +1418,24 @@ export class BillingService {
             invoiceId: id,
             amount: amountReceived,
             paymentMode,
+            referenceNumber: ref ?? null,
             branchId: invoice.branchId ?? null,
           },
         });
       }
+
+      // Keep the Payment Due reminder in sync: resolve it if the invoice is now
+      // fully paid, or refresh its amount if a balance remains.
+      await syncPaymentDueForInvoice(tx, {
+        id,
+        status: newStatus,
+        grandTotal: invoice.grandTotal,
+        amountPaid: newAmountPaid,
+        date: invoice.date,
+        customerName: invoice.customerName,
+        invoiceNumber: invoice.invoiceNumber,
+        customerId: invoice.customerId,
+      });
 
       return updated;
     });

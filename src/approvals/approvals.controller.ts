@@ -52,7 +52,7 @@ export class ApprovalsController {
     @Body() body: { reviewNote?: string },
     @Request() req: any,
   ) {
-    return this.approvalsService.approve(id, req.user.userId, body.reviewNote, req.user.branchId);
+    return this.approvalsService.approve(id, req.user.userId, body.reviewNote, req.user.branchId, req.user.isSuperAdmin === true);
   }
 
   @Post(':id/reject')
@@ -63,6 +63,6 @@ export class ApprovalsController {
     @Body() body: { reviewNote: string },
     @Request() req: any,
   ) {
-    return this.approvalsService.reject(id, req.user.userId, body.reviewNote, req.user.branchId);
+    return this.approvalsService.reject(id, req.user.userId, body.reviewNote, req.user.branchId, req.user.isSuperAdmin === true);
   }
 }

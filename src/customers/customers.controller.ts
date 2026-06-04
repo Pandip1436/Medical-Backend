@@ -284,10 +284,22 @@ export class CustomersController {
   getPaymentHistory(
     @Param('id') id: string,
     @Request() req: AuthenticatedRequest,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+    @Query('skip') skip?: string,
+    @Query('take') take?: string,
   ) {
+    const skipNum = skip !== undefined ? Number(skip) : undefined;
+    const takeNum = take !== undefined ? Number(take) : undefined;
     return this.customersService.getPaymentHistory(
       id,
       req.user.branchId ?? undefined,
+      {
+        from: from || undefined,
+        to: to || undefined,
+        skip: Number.isFinite(skipNum) ? skipNum : undefined,
+        take: Number.isFinite(takeNum) ? takeNum : undefined,
+      },
     );
   }
 

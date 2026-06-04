@@ -851,4 +851,116 @@ export class GrnService {
     }
     return grn;
   }
+
+  // "View Bill" — for each line of this PE, trace the batches it created
+  // (Batch.grnItemId) and report how many units were SOLD (InvoiceItem.batchId)
+  // and RETURNED (CreditNoteItem.batchId, APPROVED credit notes only), with the
+  // underlying sale invoices + returns so the UI can list and link them.
+  async findBillDetail(id: string, branchId?: string) {
+    const grn = await this.prisma.gRN.findUnique({
+      where: { id },
+      include: {
+        items: {
+          include: {
+            batches: { select: { id: true, batchNumber: true, quantity: true } },
+          },
+        },
+      },
+    });
+    if (!grn) throw new NotFoundException('Purchase Received record not found');
+    if (branchId && grn.branchId && grn.branchId !== branchId) {
+      throw new NotFoundException('Purchase Received record not found');
+    }
+
+    const batchIds = grn.items.flatMap((it) => it.batches.map((b) => b.id));
+
+    const [saleItems, returnItems] = await Promise.all([
+      batchIds.length
+        ? this.prisma.invoiceItem.findMany({
+            where: { batchId: { in: batchIds } },
+            include: {
+              invoice: {
+                select: {
+                  id: true,
+                  invoiceNumber: true,
+                  date: true,
+                  customerName: true,
+                  customerId: true,
+                },
+              },
+            },
+          })
+        : Promise.resolve([]),
+      batchIds.length
+        ? this.prisma.creditNoteItem.findMany({
+            where: { batchId: { in: batchIds }, creditNote: { status: 'APPROVED' } },
+            include: {
+              creditNote: {
+                select: {
+                  id: true,
+                  creditNoteNo: true,
+                  invoiceId: true,
+                  date: true,
+                  customerName: true,
+                  customerId: true,
+                },
+              },
+            },
+          })
+        : Promise.resolve([]),
+    ]);
+
+    // Index sale/return rows by the batch they came from.
+    const salesByBatch = new Map<string, any[]>();
+    for (const si of saleItems) {
+      const arr = salesByBatch.get(si.batchId) ?? [];
+      arr.push({
+        invoiceId: si.invoice.id,
+        invoiceNumber: si.invoice.invoiceNumber,
+        date: si.invoice.date,
+        customerName: si.invoice.customerName,
+        customerId: si.invoice.customerId,
+        quantity: si.quantity,
+        amount: si.amount,
+      });
+      salesByBatch.set(si.batchId, arr);
+    }
+    const returnsByBatch = new Map<string, any[]>();
+    for (const ri of returnItems) {
+      const arr = returnsByBatch.get(ri.batchId) ?? [];
+      arr.push({
+        creditNoteId: ri.creditNote.id,
+        creditNoteNo: ri.creditNote.creditNoteNo,
+        invoiceId: ri.creditNote.invoiceId,
+        date: ri.creditNote.date,
+        customerName: ri.creditNote.customerName,
+        customerId: ri.creditNote.customerId,
+        returnedQty: ri.returnedQty,
+        amount: ri.amount,
+      });
+      returnsByBatch.set(ri.batchId, arr);
+    }
+
+    // One row per PE line item (its batchNumber lives on the item); aggregate
+    // sold/returned across the item's batch(es) — usually exactly one.
+    const items = grn.items.map((it) => {
+      const itemBatchIds = it.batches.map((b) => b.id);
+      const sales = itemBatchIds.flatMap((bid) => salesByBatch.get(bid) ?? []);
+      const returns = itemBatchIds.flatMap((bid) => returnsByBatch.get(bid) ?? []);
+      return {
+        productId: it.productId,
+        productName: it.productName,
+        batchNumber: it.batchNumber,
+        expiryDate: it.expiryDate,
+        receivedQty: it.receivedQty + (it.freeQty ?? 0),
+        currentStock: it.batches.reduce((s, b) => s + b.quantity, 0),
+        unitsSold: sales.reduce((s, x) => s + x.quantity, 0),
+        unitsReturned: returns.reduce((s, x) => s + x.returnedQty, 0),
+        sales,
+        returns,
+      };
+    });
+
+    return { grnId: grn.id, grnNumber: grn.grnNumber, items };
+  }
 }

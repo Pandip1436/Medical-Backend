@@ -111,7 +111,8 @@ async function main() {
       email: 'admin@pbims.com',
       phone: '9000000001',
       password: await hash('admin123'),
-      role: Role.ADMIN,
+      role: Role.SUPER_ADMIN,
+      roles: [Role.SUPER_ADMIN],
       isActive: true,
     },
   });
@@ -124,8 +125,10 @@ async function main() {
       phone: '9000000002',
       password: await hash('pharma123'),
       role: Role.PHARMACIST,
+      roles: [Role.PHARMACIST],
       isActive: true,
       branchId: hq.id,
+      branchAccess: { create: [{ branchId: hq.id }] },
     },
   });
 
@@ -136,8 +139,10 @@ async function main() {
       phone: '9000000003',
       password: await hash('stock123'),
       role: Role.INVENTORY_MANAGER,
+      roles: [Role.INVENTORY_MANAGER],
       isActive: true,
       branchId: hq.id,
+      branchAccess: { create: [{ branchId: hq.id }] },
     },
   });
 
@@ -148,8 +153,10 @@ async function main() {
       phone: '9000000004',
       password: await hash('account123'),
       role: Role.ACCOUNTANT,
+      roles: [Role.ACCOUNTANT],
       isActive: true,
       branchId: hq.id,
+      branchAccess: { create: [{ branchId: hq.id }] },
     },
   });
 
@@ -161,8 +168,10 @@ async function main() {
       phone: '9000000005',
       password: await hash('pharma123'),
       role: Role.PHARMACIST,
+      roles: [Role.PHARMACIST],
       isActive: true,
       branchId: br1.id,
+      branchAccess: { create: [{ branchId: br1.id }] },
     },
   });
 
@@ -173,8 +182,10 @@ async function main() {
       phone: '9000000006',
       password: await hash('stock123'),
       role: Role.INVENTORY_MANAGER,
+      roles: [Role.INVENTORY_MANAGER],
       isActive: true,
       branchId: br1.id,
+      branchAccess: { create: [{ branchId: br1.id }] },
     },
   });
 
@@ -185,8 +196,10 @@ async function main() {
       phone: '9000000007',
       password: await hash('account123'),
       role: Role.ACCOUNTANT,
+      roles: [Role.ACCOUNTANT],
       isActive: true,
       branchId: br1.id,
+      branchAccess: { create: [{ branchId: br1.id }] },
     },
   });
 

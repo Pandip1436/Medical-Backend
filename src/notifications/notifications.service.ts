@@ -7,6 +7,7 @@ import {
   type NotificationCreatedPayload,
   type NotificationKind,
 } from '../events/notification-events';
+import { buildPaymentDueMessage, buildPaymentDueState } from './payment-due-sync';
 
 // Window-based dedup: don't fire the same alert again within this many hours
 // when there's no stronger signal (user hasn't read/resolved/snoozed).
@@ -487,14 +488,13 @@ export class NotificationsService {
         },
         orderBy: { createdAt: 'desc' },
       });
-      const nextState: PaymentDueState = {
-        kind: 'PAYMENT_DUE',
+      const nextState: PaymentDueState = buildPaymentDueState({
         outstanding,
         daysOutstanding,
         customerId: inv.customerId ?? null,
         customerName: inv.customerName,
         customerPhone: inv.customer?.phone ?? null,
-      };
+      });
       // Suppressed AND outstanding hasn't grown / invoice hasn't aged enough — skip.
       if (existing && !shouldEscalatePaymentDue(existing.entityState as PaymentDueState | null, nextState)) {
         continue;
@@ -503,7 +503,7 @@ export class NotificationsService {
         {
           type: NotificationType.PAYMENT_DUE,
           title: 'Payment Due',
-          message: `${inv.customerName} has ₹${outstanding.toFixed(2)} outstanding · Invoice ${inv.invoiceNumber}. [invoiceId:${inv.id}]`,
+          message: buildPaymentDueMessage(inv.customerName, outstanding, inv.invoiceNumber, inv.id),
           actionUrl: `/customers/invoices/detail?id=${inv.id}`,
           branchId: inv.branchId ?? branchId ?? null,
           entityState: nextState as any,

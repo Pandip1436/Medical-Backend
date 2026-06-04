@@ -31,7 +31,12 @@ export class CreditNotesController {
       'File a credit note (sales return) — lands in PENDING_REVIEW until an admin approves on the detail page',
   })
   create(@Body() dto: CreateCreditNoteDto, @Request() req: any) {
-    return this.creditNotesService.create(dto, req.user.userId, req.user.branchId);
+    return this.creditNotesService.create(
+      dto,
+      req.user.userId,
+      req.user.branchId,
+      req.user.isSuperAdmin === true,
+    );
   }
 
   @Post(':id/approve')
@@ -88,9 +93,20 @@ export class CreditNotesController {
     @Query('customerId') customerId?: string,
     @Query('branchId') branchId?: string,
     @Query('status') status?: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+    @Query('skip') skip?: string,
+    @Query('take') take?: string,
   ) {
     const effectiveBranchId = req.user.branchId ?? branchId;
-    return this.creditNotesService.findAll(q, customerId, effectiveBranchId, status);
+    const skipNum = skip !== undefined ? Number(skip) : undefined;
+    const takeNum = take !== undefined ? Number(take) : undefined;
+    return this.creditNotesService.findAll(q, customerId, effectiveBranchId, status, {
+      from: from || undefined,
+      to: to || undefined,
+      skip: Number.isFinite(skipNum) ? skipNum : undefined,
+      take: Number.isFinite(takeNum) ? takeNum : undefined,
+    });
   }
 
   @Get('invoice/:invoiceId/returned-qty')

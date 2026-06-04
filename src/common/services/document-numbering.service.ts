@@ -6,6 +6,25 @@ export type DocType = 'PO' | 'GRN' | 'DN' | 'INV' | 'CN' | 'QTN' | 'RCPT' | 'ADJ
 
 export type FyFormat = 'YY-YY' | 'YYYY-YY' | 'YY' | 'YYYY';
 
+// Display prefix per document type for the default (no NumberingConfig) format.
+// Usually the docType code itself — except GRN, which renders as "PE" (Purchase
+// Entry) to match the product naming. The internal docType key stays 'GRN' so
+// the sequence counters, NumberingConfig rows, and the DocType union are
+// unaffected; only the printed number string changes. Admin-defined templates
+// (Settings → Numbering) carry their own prefix and override this.
+const DOC_PREFIX: Record<DocType, string> = {
+  PO: 'PO',
+  GRN: 'PE',
+  DN: 'DN',
+  INV: 'INV',
+  CN: 'CN',
+  QTN: 'QTN',
+  RCPT: 'RCPT',
+  ADJ: 'ADJ',
+  SPAY: 'SPAY',
+  REF: 'REF',
+};
+
 @Injectable()
 export class DocumentNumberingService {
   constructor(private readonly prisma: PrismaService) {}
@@ -86,7 +105,7 @@ export class DocumentNumberingService {
     });
 
     if (!config) {
-      return `${docType}/${fy}/${String(seq.counter).padStart(5, '0')}`;
+      return `${DOC_PREFIX[docType]}/${fy}/${String(seq.counter).padStart(5, '0')}`;
     }
 
     const { fyStart, fyEnd } = DocumentNumberingService.getFyParts();

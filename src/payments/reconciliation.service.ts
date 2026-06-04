@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { DocumentNumberingService } from '../common/services/document-numbering.service';
 import { Prisma, PaymentLinkStatus } from '@prisma/client';
+import { syncPaymentDueForInvoice } from '../notifications/payment-due-sync';
 
 export interface QrCreditedInput {
   providerQrId: string;
@@ -88,6 +89,19 @@ export class ReconciliationService {
             data: { currentOutstanding: { decrement: applied } },
           });
         }
+
+        // Resolve the reminder once this UPI payment clears the invoice, or
+        // refresh its amount if a balance remains.
+        await syncPaymentDueForInvoice(tx, {
+          id: invoiceId,
+          status: newStatus,
+          grandTotal: invoice.grandTotal,
+          amountPaid: newAmountPaid,
+          date: invoice.date,
+          customerName: invoice.customerName,
+          invoiceNumber: invoice.invoiceNumber,
+          customerId: invoice.customerId,
+        });
       }
 
       // Always write a Payment row even for full-overpayment cases — the

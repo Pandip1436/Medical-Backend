@@ -70,6 +70,8 @@ export class QuotationsService {
     branchId?: string;
     customerId?: string;
     customerPhone?: string;
+    skip?: number;
+    take?: number;
   }) {
     const where: Prisma.QuotationWhereInput = {};
 
@@ -112,16 +114,32 @@ export class QuotationsService {
       where.total = totalFilter;
     }
 
-    // Safety cap — same approach as billing.findAll. Quotations can grow
-    // unbounded over time (every sales lead generates one), so callers that
-    // don't paginate should never get more than 200 rows in a single response.
-    // List pages that need full pagination can extend this to accept skip/take.
-    return this.prisma.quotation.findMany({
-      where,
-      orderBy: { date: 'desc' },
-      include: { items: true },
-      take: 200,
-    });
+    const paginated = typeof filters.skip === 'number' && typeof filters.take === 'number';
+    if (!paginated) {
+      // Safety cap — same approach as billing.findAll. Quotations can grow
+      // unbounded over time (every sales lead generates one), so callers that
+      // don't paginate should never get more than 200 rows in a single response.
+      return this.prisma.quotation.findMany({
+        where,
+        orderBy: { date: 'desc' },
+        include: { items: true },
+        take: 200,
+      });
+    }
+
+    const safeTake = Math.min(Math.max(filters.take!, 1), 100);
+    const safeSkip = Math.max(filters.skip!, 0);
+    const [data, total] = await Promise.all([
+      this.prisma.quotation.findMany({
+        where,
+        orderBy: { date: 'desc' },
+        include: { items: true },
+        skip: safeSkip,
+        take: safeTake,
+      }),
+      this.prisma.quotation.count({ where }),
+    ]);
+    return { data, total, hasMore: safeSkip + data.length < total };
   }
 
   async findOne(id: string, branchId?: string) {

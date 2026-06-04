@@ -35,13 +35,34 @@ export class PrescriptionsService {
     })
   }
 
-  async findByCustomer(customerId: string, branchId?: string) {
+  async findByCustomer(
+    customerId: string,
+    branchId?: string,
+    opts?: { skip?: number; take?: number },
+  ) {
     const where: any = { customerId }
     if (branchId) where.branchId = branchId
-    return this.prisma.prescription.findMany({
-      where,
-      orderBy: { createdAt: 'desc' },
-    })
+
+    const paginated = typeof opts?.skip === 'number' && typeof opts?.take === 'number'
+    if (!paginated) {
+      return this.prisma.prescription.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+      })
+    }
+
+    const safeTake = Math.min(Math.max(opts!.take!, 1), 100)
+    const safeSkip = Math.max(opts!.skip!, 0)
+    const [data, total] = await Promise.all([
+      this.prisma.prescription.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        skip: safeSkip,
+        take: safeTake,
+      }),
+      this.prisma.prescription.count({ where }),
+    ])
+    return { data, total, hasMore: safeSkip + data.length < total }
   }
 
   async findOne(id: string, branchId?: string) {

@@ -16,6 +16,10 @@ export class RolesGuard implements CanActivate {
       return true;
     }
     const { user } = context.switchToHttp().getRequest();
-    return requiredRoles.some((role) => user.role === role);
+    // SUPER_ADMIN satisfies every gate. Otherwise check the user's full role
+    // set (falling back to the singular `role` for legacy tokens).
+    const userRoles: string[] = user?.roles?.length ? user.roles : [user?.role];
+    if (userRoles.includes('SUPER_ADMIN')) return true;
+    return requiredRoles.some((role) => userRoles.includes(role));
   }
 }

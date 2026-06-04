@@ -46,8 +46,12 @@ export class QuotationsController {
     @Query('branchId') branchId?: string,
     @Query('customerId') customerId?: string,
     @Query('customerPhone') customerPhone?: string,
+    @Query('skip') skip?: string,
+    @Query('take') take?: string,
   ) {
     const effectiveBranchId = req.user.branchId ?? branchId ?? undefined;
+    const skipNum = skip !== undefined ? Number(skip) : undefined;
+    const takeNum = take !== undefined ? Number(take) : undefined;
     return this.quotationsService.findAll({
       q,
       fromDate,
@@ -58,6 +62,8 @@ export class QuotationsController {
       branchId: effectiveBranchId,
       customerId,
       customerPhone,
+      skip: Number.isFinite(skipNum) ? skipNum : undefined,
+      take: Number.isFinite(takeNum) ? takeNum : undefined,
     });
   }
 

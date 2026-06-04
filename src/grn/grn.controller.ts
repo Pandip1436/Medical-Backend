@@ -142,6 +142,16 @@ export class GrnController {
     return this.grnService.findOne(id, req.user.branchId ?? undefined);
   }
 
+  @Get(':id/bill')
+  @Roles('ADMIN', 'INVENTORY_MANAGER', 'PHARMACIST', 'ACCOUNTANT')
+  @ApiOperation({
+    summary:
+      "View Bill — per line item, the units sold and returned for this PE's received batches, with the underlying sales + returns",
+  })
+  findBill(@Param('id') id: string, @Request() req: AuthenticatedRequest) {
+    return this.grnService.findBillDetail(id, req.user.branchId ?? undefined);
+  }
+
   @Patch(':id')
   @Roles('ADMIN', 'INVENTORY_MANAGER')
   @ApiOperation({

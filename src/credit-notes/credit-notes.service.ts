@@ -3,19 +3,77 @@ import {
   NotFoundException,
   BadRequestException,
   ForbiddenException,
+  Inject,
+  forwardRef,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { DocumentNumberingService } from '../common/services/document-numbering.service';
+import { ApprovalsService } from '../approvals/approvals.service';
 import { CreateCreditNoteDto } from './dto/create-credit-note.dto';
 import { ApproveCreditNoteDto } from './dto/approve-credit-note.dto';
 import { RejectCreditNoteDto } from './dto/reject-credit-note.dto';
+import { syncPaymentDueForInvoice } from '../notifications/payment-due-sync';
 
 @Injectable()
 export class CreditNotesService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly numbering: DocumentNumberingService,
+    // Circular: ApprovalsService also injects CreditNotesService (its
+    // SALES_RETURN executor calls createPendingReview). Resolved via forwardRef.
+    @Inject(forwardRef(() => ApprovalsService))
+    private readonly approvals: ApprovalsService,
   ) {}
+
+  /**
+   * Gate 1 — Super-Admin authorization. A non-super-admin's credit note is
+   * filed as a SALES_RETURN ApprovalRequest and only becomes a real
+   * PENDING_REVIEW credit note once a Super Admin approves it (the approvals
+   * executor calls `createPendingReview`). A Super Admin filing one skips the
+   * gate and creates the PENDING_REVIEW CN directly, as before.
+   */
+  async create(
+    dto: CreateCreditNoteDto,
+    userId: string,
+    branchId?: string,
+    isSuperAdmin = false,
+  ) {
+    if (isSuperAdmin) {
+      return this.createPendingReview(dto, userId, branchId);
+    }
+    // Enrich the stored payload with display fields so the Approvals page can
+    // render the request (Customer / Invoice # / Amount / Settlement / Reason).
+    const invoice = await this.prisma.invoice.findUnique({
+      where: { id: dto.invoiceId },
+      select: {
+        invoiceNumber: true,
+        customerName: true,
+        customerId: true,
+        branchId: true,
+        customer: { select: { id: true, phone: true } },
+      },
+    });
+    if (!invoice) throw new NotFoundException('Invoice not found');
+    if (branchId && invoice.branchId && invoice.branchId !== branchId) {
+      throw new NotFoundException('Invoice not found');
+    }
+    const req = await this.approvals.createRequest({
+      type: 'SALES_RETURN',
+      payload: {
+        ...dto,
+        invoiceNumber: invoice.invoiceNumber,
+        customerName: invoice.customerName,
+        // Carry the customer id + phone so the Approvals detail can link to the
+        // customer and show their number for the reviewer.
+        customerId: invoice.customerId ?? invoice.customer?.id ?? null,
+        customerPhone: invoice.customer?.phone ?? null,
+        createdById: userId,
+      },
+      requestedById: userId,
+      branchId: invoice.branchId ?? branchId,
+    });
+    return { approvalRequested: true, approvalRequestId: req.id };
+  }
 
   /**
    * Files a credit note for a sales return. The CN is created in
@@ -34,12 +92,13 @@ export class CreditNotesService {
    * All of those execute in `approve()` instead. Reviewer can override the
    * chosen `settlementMode` at approve-time via the detail page.
    *
-   * This unifies the pharmacist and admin paths — the old behavior of
-   * pharmacist→ApprovalRequest, admin→synchronous-execute is retired. Both
-   * roles file CNs the same way; reviewers (ADMIN) approve from the CN
-   * detail page.
+   * Reached directly when a Super Admin files the CN, or from the SALES_RETURN
+   * approval executor once a Super Admin approves a non-super-admin's request.
+   * This is the single source of truth for turning a return into a real
+   * PENDING_REVIEW credit note (Gate 2 — product review/settlement — happens
+   * later via `approve()`).
    */
-  async create(dto: CreateCreditNoteDto, userId: string, branchId?: string) {
+  async createPendingReview(dto: CreateCreditNoteDto, userId: string, branchId?: string) {
     return this.prisma.$transaction(async (tx) => {
       const invoice = await tx.invoice.findUnique({
         where: { id: dto.invoiceId },
@@ -252,6 +311,10 @@ export class CreditNotesService {
           grandTotal: any;
           amountPaid: any;
           status: string;
+          customerName?: string | null;
+          invoiceNumber?: string | null;
+          date?: Date | null;
+          customerId?: string | null;
         }) => {
           if (remaining <= 0.01) return;
           if (invoice.status === 'CANCELLED') return;
@@ -271,6 +334,18 @@ export class CreditNotesService {
               amountPaid: newPaid,
               ...(invoice.status !== 'RETURNED' ? { status: newStatus } : {}),
             },
+          });
+          // Sync the Payment Due reminder: credit absorbed into this invoice
+          // may have cleared it (resolve) or just lowered the balance (refresh).
+          await syncPaymentDueForInvoice(tx, {
+            id: invoice.id,
+            status: invoice.status === 'RETURNED' ? 'RETURNED' : newStatus,
+            grandTotal: invoice.grandTotal,
+            amountPaid: newPaid,
+            date: invoice.date,
+            customerName: invoice.customerName,
+            invoiceNumber: invoice.invoiceNumber,
+            customerId: invoice.customerId,
           });
           remaining -= apply;
         };
@@ -297,6 +372,12 @@ export class CreditNotesService {
               grandTotal: true,
               amountPaid: true,
               status: true,
+              // Carried so syncPaymentDueForInvoice can refresh a still-due
+              // reminder's amount when credit only partially clears the invoice.
+              customerName: true,
+              invoiceNumber: true,
+              date: true,
+              customerId: true,
             },
           });
           for (const inv of openInvoices) {
@@ -367,6 +448,15 @@ export class CreditNotesService {
           where: { id: cn.invoiceId },
           data: { status: 'RETURNED' },
         });
+        // Invoice fully returned — there's nothing left to owe, so clear its
+        // Payment Due reminder.
+        await syncPaymentDueForInvoice(tx, {
+          id: cn.invoiceId,
+          status: 'RETURNED',
+          grandTotal: cn.invoice.grandTotal,
+          amountPaid: cn.invoice.amountPaid,
+          customerId: cn.customerId,
+        }, reviewerUserId);
       }
 
       return updated;
@@ -407,7 +497,13 @@ export class CreditNotesService {
     });
   }
 
-  async findAll(query?: string, customerId?: string, branchId?: string, status?: string) {
+  async findAll(
+    query?: string,
+    customerId?: string,
+    branchId?: string,
+    status?: string,
+    opts?: { from?: string; to?: string; skip?: number; take?: number },
+  ) {
     const where: any = {};
     if (customerId) where.customerId = customerId;
     if (branchId) where.branchId = branchId;
@@ -419,18 +515,50 @@ export class CreditNotesService {
         { customerName: { contains: query, mode: 'insensitive' } },
       ];
     }
+    if (opts?.from || opts?.to) {
+      where.date = {};
+      if (opts.from) where.date.gte = new Date(opts.from);
+      if (opts.to) {
+        const toEnd = new Date(opts.to);
+        toEnd.setHours(23, 59, 59, 999);
+        where.date.lte = toEnd;
+      }
+    }
+
+    const include = {
+      reviewedBy: { select: { id: true, name: true } },
+      customer: { select: { phone: true } },
+    } as const;
     // Phone joined live from the Customer relation so the list can render
     // "name + phone" rows for disambiguation. Same pattern as billing's findAll.
-    const rows = await this.prisma.creditNote.findMany({
-      where,
-      include: {
-        reviewedBy: { select: { id: true, name: true } },
-        customer: { select: { phone: true } },
-      },
-      orderBy: { date: 'desc' },
-      take: 100,
-    });
-    return rows.map((r) => ({ ...r, customerPhone: r.customer?.phone ?? null }));
+    const mapPhone = (r: any) => ({ ...r, customerPhone: r.customer?.phone ?? null });
+
+    const paginated = typeof opts?.skip === 'number' && typeof opts?.take === 'number';
+    if (!paginated) {
+      // Legacy callers — lightweight array, capped at 100.
+      const rows = await this.prisma.creditNote.findMany({
+        where,
+        include,
+        orderBy: { date: 'desc' },
+        take: 100,
+      });
+      return rows.map(mapPhone);
+    }
+
+    const safeTake = Math.min(Math.max(opts!.take!, 1), 100);
+    const safeSkip = Math.max(opts!.skip!, 0);
+    const [rows, total] = await Promise.all([
+      this.prisma.creditNote.findMany({
+        where,
+        include,
+        orderBy: { date: 'desc' },
+        skip: safeSkip,
+        take: safeTake,
+      }),
+      this.prisma.creditNote.count({ where }),
+    ]);
+    const data = rows.map(mapPhone);
+    return { data, total, hasMore: safeSkip + data.length < total };
   }
 
   async findOne(id: string, branchId?: string) {
@@ -440,7 +568,12 @@ export class CreditNotesService {
         items: true,
         invoice: true,
         reviewedBy: { select: { id: true, name: true } },
-        customer: { select: { phone: true } },
+        customer: {
+          select: {
+            id: true, name: true, phone: true, alternatePhone: true,
+            email: true, address: true, gstin: true, type: true,
+          },
+        },
       },
     });
     if (!cn) throw new NotFoundException('Credit note not found');

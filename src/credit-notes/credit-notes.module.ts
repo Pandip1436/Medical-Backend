@@ -1,13 +1,15 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { CreditNotesService } from './credit-notes.service';
 import { CreditNotesController } from './credit-notes.controller';
+import { ApprovalsModule } from '../approvals/approvals.module';
 
-// ApprovalsModule import retired: pharmacist-created CNs no longer file an
-// ApprovalRequest; both roles now create a CreditNote directly with
-// status=PENDING_REVIEW, and admin approves via the credit-notes detail page.
+// Gate 1: a non-super-admin's CN is filed as a SALES_RETURN ApprovalRequest;
+// once a Super Admin approves, the approvals executor calls back into
+// CreditNotesService.createPendingReview — hence the mutual forwardRef.
 @Module({
-  imports: [],
+  imports: [forwardRef(() => ApprovalsModule)],
   providers: [CreditNotesService],
   controllers: [CreditNotesController],
+  exports: [CreditNotesService],
 })
 export class CreditNotesModule {}

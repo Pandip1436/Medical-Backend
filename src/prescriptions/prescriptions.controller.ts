@@ -69,9 +69,20 @@ export class PrescriptionsController {
 
   @Get()
   @Roles('ADMIN', 'PHARMACIST', 'ACCOUNTANT')
-  findByCustomer(@Query('customerId') customerId: string, @Request() req: any, @Query('branchId') branchId?: string) {
+  findByCustomer(
+    @Query('customerId') customerId: string,
+    @Request() req: any,
+    @Query('branchId') branchId?: string,
+    @Query('skip') skip?: string,
+    @Query('take') take?: string,
+  ) {
     const effectiveBranchId = req.user.branchId ?? branchId
-    return this.svc.findByCustomer(customerId, effectiveBranchId)
+    const skipNum = skip !== undefined ? Number(skip) : undefined
+    const takeNum = take !== undefined ? Number(take) : undefined
+    return this.svc.findByCustomer(customerId, effectiveBranchId, {
+      skip: Number.isFinite(skipNum) ? skipNum : undefined,
+      take: Number.isFinite(takeNum) ? takeNum : undefined,
+    })
   }
 
   @Get(':id')

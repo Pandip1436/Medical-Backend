@@ -203,6 +203,8 @@ export class SuppliersService {
           { name: { contains: query, mode: 'insensitive' } },
           { gstin: { contains: query, mode: 'insensitive' } },
           { phone: { contains: query } },
+          { address: { contains: query, mode: 'insensitive' } },
+          { contactPerson: { contains: query, mode: 'insensitive' } },
         ],
       });
     }
@@ -604,6 +606,8 @@ export class SuppliersService {
           { name: { contains: filters.q, mode: 'insensitive' } },
           { gstin: { contains: filters.q, mode: 'insensitive' } },
           { phone: { contains: filters.q } },
+          { address: { contains: filters.q, mode: 'insensitive' } },
+          { contactPerson: { contains: filters.q, mode: 'insensitive' } },
         ],
       });
     }

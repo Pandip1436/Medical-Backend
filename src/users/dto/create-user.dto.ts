@@ -1,4 +1,4 @@
-import { IsString, IsNotEmpty, IsEmail, IsEnum, MinLength, IsOptional, IsBoolean, IsNumber, Min, Max } from 'class-validator';
+import { IsString, IsNotEmpty, IsEmail, IsEnum, MinLength, IsOptional, IsBoolean, IsNumber, Min, Max, IsArray, ArrayNotEmpty } from 'class-validator';
 import { Role } from '@prisma/client';
 
 export class CreateUserDto {
@@ -19,8 +19,23 @@ export class CreateUserDto {
   @MinLength(6)
   password: string;
 
+  // Full role set. `role` (singular) is derived from this by precedence in the
+  // service. Kept optional/legacy for back-compat; prefer `roles`.
+  @IsArray()
+  @ArrayNotEmpty()
+  @IsEnum(Role, { each: true })
+  @IsOptional()
+  roles?: Role[];
+
   @IsEnum(Role)
-  role: Role;
+  @IsOptional()
+  role?: Role;
+
+  // Allowed branch set. Ignored for SUPER_ADMIN (all branches).
+  @IsArray()
+  @IsString({ each: true })
+  @IsOptional()
+  branchIds?: string[];
 
   @IsString()
   @IsOptional()

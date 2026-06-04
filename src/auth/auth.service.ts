@@ -5,6 +5,7 @@ import * as bcrypt from 'bcrypt';
 import { LoginDto } from './dto/login.dto';
 import { RegisterDto } from './dto/register.dto';
 import { Role } from '@prisma/client';
+import { isSuperAdmin } from '../common/roles.util';
 
 @Injectable()
 export class AuthService {
@@ -16,7 +17,10 @@ export class AuthService {
   async login(loginDto: LoginDto) {
     const user = await this.prisma.user.findUnique({
       where: { email: loginDto.email },
-      include: { branch: { select: { id: true, name: true, code: true } } },
+      include: {
+        branch: { select: { id: true, name: true, code: true } },
+        branchAccess: { select: { branchId: true } },
+      },
     });
 
     if (!user || !user.isActive) {
@@ -33,7 +37,20 @@ export class AuthService {
       data: { lastLogin: new Date() },
     });
 
-    const payload = { sub: user.id, email: user.email, role: user.role, branchId: user.branchId ?? null };
+    // Full role set drives permissions; `role` stays as the primary (display).
+    const roles = user.roles?.length ? user.roles : [user.role];
+    const branchIds = user.branchAccess.map((b) => b.branchId);
+    const superAdmin = isSuperAdmin(roles);
+
+    const payload = {
+      sub: user.id,
+      email: user.email,
+      role: user.role,
+      roles,
+      branchId: user.branchId ?? null,
+      branchIds,
+      isSuperAdmin: superAdmin,
+    };
     const token = this.jwtService.sign(payload);
 
     return {
@@ -44,7 +61,10 @@ export class AuthService {
           name: user.name,
           email: user.email,
           role: user.role,
+          roles,
           branchId: user.branchId ?? null,
+          branchIds,
+          isSuperAdmin: superAdmin,
           branch: user.branch ?? null,
         },
         accessToken: {
@@ -66,13 +86,15 @@ export class AuthService {
 
     const hashedPassword = await bcrypt.hash(registerDto.password, 10);
 
+    const role = registerDto.role || Role.PHARMACIST;
     const user = await this.prisma.user.create({
       data: {
         name: registerDto.name,
         email: registerDto.email,
         phone: registerDto.phone,
         password: hashedPassword,
-        role: registerDto.role || Role.PHARMACIST,
+        role,
+        roles: [role],
       },
     });
 

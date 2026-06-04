@@ -3,6 +3,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { ApprovalsService } from '../approvals/approvals.service';
 import { DocumentNumberingService } from '../common/services/document-numbering.service';
 import { Prisma } from '@prisma/client';
+import { isAdminRole } from '../common/roles.util';
 import { CreateProductDto } from './dto/create-product.dto';
 import { UpdateProductDto } from './dto/update-product.dto';
 
@@ -386,7 +387,7 @@ export class ProductsService {
 
     const include = {
       product: { select: { id: true, name: true, genericName: true, packSize: true, minStock: true, totalStock: true } },
-      supplier: { select: { id: true, name: true } },
+      supplier: { select: { id: true, name: true, phone: true } },
     };
 
     const orderBy = { expiryDate: 'asc' as const };
@@ -409,7 +410,7 @@ export class ProductsService {
       where: { id },
       include: {
         product: { select: { id: true, name: true, genericName: true, packSize: true, manufacturer: true, minStock: true, totalStock: true, branchId: true } },
-        supplier: { select: { id: true, name: true } },
+        supplier: { select: { id: true, name: true, phone: true } },
       },
     });
     if (!batch) throw new NotFoundException('Batch not found');
@@ -439,6 +440,7 @@ export class ProductsService {
       purchaseRate: b.purchaseRate,
       supplierId: b.supplierId,
       supplierName: b.supplier?.name ?? null,
+      supplierPhone: b.supplier?.phone ?? null,
       createdAt: b.createdAt,
     };
   }
@@ -636,7 +638,11 @@ export class ProductsService {
     const [totalSalesCount, totalPurchaseCount, totalSalesReturnCount, totalPurchaseReturnCount] = await Promise.all([
       this.prisma.invoiceItem.count({ where: { productId } }),
       this.prisma.gRNItem.count({ where: { productId } }),
-      (this.prisma as any).creditNoteItem.count({ where: { productId } }),
+      // Only APPROVED credit notes actually restock inventory — PENDING_REVIEW
+      // holds goods without restoring stock and REJECTED touches nothing. Match
+      // the stock reality (and the reports/ledger queries) so the history never
+      // shows phantom "stock back in" rows for un-approved returns.
+      (this.prisma as any).creditNoteItem.count({ where: { productId, creditNote: { status: 'APPROVED' } } }),
       (this.prisma as any).purchaseReturnItem.count({ where: { productId } }),
     ]);
 
@@ -644,7 +650,7 @@ export class ProductsService {
       this.prisma.invoiceItem.findMany({
         where: { productId },
         include: {
-          invoice: { select: { invoiceNumber: true, date: true, customerName: true, status: true } },
+          invoice: { select: { id: true, invoiceNumber: true, date: true, customerName: true, customerId: true, status: true, customer: { select: { phone: true } } } },
         },
         orderBy: { invoice: { date: 'desc' } },
         skip,
@@ -653,17 +659,19 @@ export class ProductsService {
       this.prisma.gRNItem.findMany({
         where: { productId },
         include: {
-          grn: { select: { grnNumber: true, date: true, supplierName: true, status: true } },
+          grn: { select: { id: true, grnNumber: true, date: true, supplierName: true, supplierId: true, status: true, supplier: { select: { phone: true } } } },
         },
         orderBy: { grn: { date: 'desc' } },
         skip,
         take,
       }),
-      // Sales returns — stock came BACK IN from customer
+      // Sales returns — stock came BACK IN from customer. Only APPROVED credit
+      // notes restock (see note on the count query above), so exclude
+      // PENDING_REVIEW / REJECTED to avoid phantom stock-in rows.
       (this.prisma as any).creditNoteItem.findMany({
-        where: { productId },
+        where: { productId, creditNote: { status: 'APPROVED' } },
         include: {
-          creditNote: { select: { creditNoteNo: true, date: true, customerName: true, settlementMode: true, reason: true } },
+          creditNote: { select: { id: true, creditNoteNo: true, date: true, customerName: true, customerId: true, settlementMode: true, reason: true, customer: { select: { phone: true } } } },
         },
         orderBy: { creditNote: { date: 'desc' } },
         skip,
@@ -673,7 +681,7 @@ export class ProductsService {
       (this.prisma as any).purchaseReturnItem.findMany({
         where: { productId },
         include: {
-          purchaseReturn: { select: { debitNoteNo: true, date: true, supplierName: true, status: true, reason: true } },
+          purchaseReturn: { select: { id: true, debitNoteNo: true, date: true, supplierName: true, supplierId: true, status: true, reason: true, supplier: { select: { phone: true } } } },
         },
         orderBy: { purchaseReturn: { date: 'desc' } },
         skip,
@@ -732,9 +740,12 @@ export class ProductsService {
       },
       sales: salesItems.map((i: any) => ({
         id: i.id,
+        invoiceId: i.invoice.id,
         invoiceNumber: i.invoice.invoiceNumber,
         date: i.invoice.date,
         customerName: i.invoice.customerName,
+        customerId: i.invoice.customerId,
+        customerPhone: i.invoice.customer?.phone ?? null,
         status: i.invoice.status,
         batchNumber: i.batchNumber,
         quantity: i.quantity,
@@ -745,9 +756,12 @@ export class ProductsService {
       })),
       purchases: purchaseItems.map((i: any) => ({
         id: i.id,
+        grnId: i.grn.id,
         grnNumber: i.grn.grnNumber,
         date: i.grn.date,
         supplierName: i.grn.supplierName,
+        supplierId: i.grn.supplierId,
+        supplierPhone: i.grn.supplier?.phone ?? null,
         status: i.grn.status,
         batchNumber: i.batchNumber,
         receivedQty: i.receivedQty,
@@ -759,9 +773,12 @@ export class ProductsService {
       // Stock came back IN — customer returned goods
       salesReturns: salesReturnItems.map((i: any) => ({
         id: i.id,
+        creditNoteId: i.creditNote.id,
         creditNoteNo: i.creditNote.creditNoteNo,
         date: i.creditNote.date,
         customerName: i.creditNote.customerName,
+        customerId: i.creditNote.customerId,
+        customerPhone: i.creditNote.customer?.phone ?? null,
         settlementMode: i.creditNote.settlementMode,
         reason: i.creditNote.reason,
         batchNumber: i.batchNumber,
@@ -773,9 +790,12 @@ export class ProductsService {
       // Stock went back OUT — returned to supplier
       purchaseReturns: purchaseReturnItems.map((i: any) => ({
         id: i.id,
+        purchaseReturnId: i.purchaseReturn.id,
         debitNoteNo: i.purchaseReturn.debitNoteNo,
         date: i.purchaseReturn.date,
         supplierName: i.purchaseReturn.supplierName,
+        supplierId: i.purchaseReturn.supplierId,
+        supplierPhone: i.purchaseReturn.supplier?.phone ?? null,
         status: i.purchaseReturn.status,
         reason: i.purchaseReturn.reason,
         batchNumber: i.batchNumber,
@@ -1042,10 +1062,32 @@ export class ProductsService {
       process.env.MAX_ADJUSTMENT_VALUE_NO_APPROVAL ?? DEFAULT_ADJUSTMENT_APPROVAL_THRESHOLD,
     );
 
-    if (user.role !== 'ADMIN' && totalValue > threshold) {
+    if (!isAdminRole(user.role) && totalValue > threshold) {
+      // Enrich each line with product name, batch number and the current qty so
+      // the approver sees full human-readable detail (Product · Batch · Current
+      // → New · Δ) instead of bare ids.
+      const adjBatches = await this.prisma.batch.findMany({
+        where: { id: { in: items.map((i) => i.batchId) } },
+        select: {
+          id: true,
+          batchNumber: true,
+          quantity: true,
+          product: { select: { name: true } },
+        },
+      });
+      const adjBatchById = new Map(adjBatches.map((b) => [b.id, b]));
+      const enrichedItems = items.map((it) => {
+        const b = adjBatchById.get(it.batchId);
+        return {
+          ...it,
+          productName: b?.product?.name ?? null,
+          batchNumber: b?.batchNumber ?? null,
+          previousQty: b?.quantity ?? null,
+        };
+      });
       const req = await this.approvalsService.createRequest({
         type: 'INVENTORY_ADJUSTMENT' as any,
-        payload: { items, requestedByName: user.name },
+        payload: { items: enrichedItems, requestedByName: user.name },
         requestedById: user.userId,
         branchId,
       });

@@ -79,11 +79,24 @@ export class BillingController {
   // NOTE: keep this above `@Get(':id')` so 'summary' doesn't get captured as an id.
   @Get('summary')
   @Roles('ADMIN', 'PHARMACIST', 'ACCOUNTANT', 'SALESPERSON')
-  @ApiOperation({ summary: 'Global invoice counts + totals (for stat cards)' })
+  @ApiOperation({ summary: 'Invoice counts + totals (for stat cards)' })
   @ApiQuery({ name: 'branchId', required: false })
-  summary(@Request() req: any, @Query('branchId') branchId?: string) {
+  @ApiQuery({ name: 'salespersonId', required: false })
+  @ApiQuery({ name: 'from', required: false, description: 'ISO date (inclusive)' })
+  @ApiQuery({ name: 'to', required: false, description: 'ISO date (inclusive)' })
+  summary(
+    @Request() req: any,
+    @Query('branchId') branchId?: string,
+    @Query('salespersonId') salespersonId?: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+  ) {
     const effectiveBranchId = req.user.branchId ?? branchId;
-    return this.billingService.summary(effectiveBranchId);
+    return this.billingService.summary(effectiveBranchId, {
+      salespersonId: salespersonId || undefined,
+      from: from || undefined,
+      to: to || undefined,
+    });
   }
 
   // Past purchases of specific products by a customer. Queries InvoiceItem
@@ -123,6 +136,13 @@ export class BillingController {
     return this.billingService.findOne(id, req.user.branchId);
   }
 
+  @Get(':id/payments')
+  @Roles('ADMIN', 'PHARMACIST', 'ACCOUNTANT', 'SALESPERSON')
+  @ApiOperation({ summary: 'Payment history for a single invoice' })
+  invoicePayments(@Param('id') id: string, @Request() req: any) {
+    return this.billingService.getInvoicePayments(id, req.user.branchId);
+  }
+
   @Patch(':id/convert')
   @Roles('ADMIN', 'PHARMACIST')
   @ApiOperation({ summary: 'Convert a quotation to an invoice' })
@@ -158,9 +178,10 @@ export class BillingController {
     @Param('id') id: string,
     @Body('amountReceived') amountReceived: number,
     @Body('paymentMode') paymentMode: string,
+    @Body('referenceNumber') referenceNumber: string | undefined,
     @Request() req: any,
   ) {
-    return this.billingService.collectPayment(id, Number(amountReceived), paymentMode, req.user.branchId);
+    return this.billingService.collectPayment(id, Number(amountReceived), paymentMode, req.user.branchId, referenceNumber);
   }
 
   @Post(':id/send-whatsapp')

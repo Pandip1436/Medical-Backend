@@ -83,6 +83,7 @@ export class InvoiceCreatedListener {
       const buf = await this.pdf.render({
         invoiceNumber: invoice.invoiceNumber,
         date: invoice.date,
+        dueDate: invoice.dueDate,
         customerName: invoice.customerName,
         customerPhone: customer.phone,
         customerAddress: customer.address,
@@ -148,10 +149,14 @@ export class InvoiceCreatedListener {
       const amountStr = outstanding > 0.01
         ? outstanding.toFixed(2)
         : Number(invoice.grandTotal).toFixed(2);
-      // Due date: default to today + 7 for new credit invoices. We could
-      // pull this from a branch setting later.
-      const due = new Date();
-      due.setDate(due.getDate() + 7);
+      // Due date: use the date entered at billing time (required for credit
+      // sales on the UI). Fall back to today + 7 for legacy invoices saved
+      // before the dueDate column existed.
+      const due = invoice.dueDate ? new Date(invoice.dueDate) : (() => {
+        const d = new Date();
+        d.setDate(d.getDate() + 7);
+        return d;
+      })();
       const dueDate = due.toLocaleDateString('en-IN', {
         day: '2-digit',
         month: 'short',

@@ -65,12 +65,23 @@ export class ReportsService {
     const low = await this.computeLowStock(branchId);
     const overdue = await this.computeOverdueCustomers(branchId);
 
-    const recentInvoices = await this.prisma.invoice.findMany({
+    const recentInvoicesRaw = await this.prisma.invoice.findMany({
       take,
       orderBy: { date: 'desc' },
       where: { ...bFilter },
-      include: { items: { select: { productName: true, quantity: true } } },
+      include: {
+        items: { select: { productName: true, quantity: true } },
+        // Live phone via the customer relation so the activity timeline can
+        // render "name + phone" on the first page too (mirrors getDashboardActivity).
+        customer: { select: { phone: true } },
+      },
     });
+    // Surface the joined phone as a top-level `customerPhone`, matching the
+    // shape the paginated /dashboard/activity endpoint returns.
+    const recentInvoices = recentInvoicesRaw.map((r) => ({
+      ...r,
+      customerPhone: r.customer?.phone ?? null,
+    }));
     const recentInvoicesCount = await this.prisma.invoice.count({ where: { ...bFilter } });
 
     return {
@@ -1234,7 +1245,10 @@ export class ReportsService {
   }
 
   // ── Customer Ledger ────────────────────────────────────────────
-  async getCustomerLedger(customerId: string, query: PeriodQuery & { branchId?: string }) {
+  async getCustomerLedger(
+    customerId: string,
+    query: PeriodQuery & { branchId?: string; skip?: number; take?: number },
+  ) {
     // Custom period handling — `resolvePeriod()` defaults `from` to
     // start-of-current-month when none is supplied, which silently truncates
     // "All Time" requests. The detail-page Ledger tab needs true full-history,
@@ -1304,18 +1318,18 @@ export class ReportsService {
       if (!p.invoiceId) continue;
       realPaidByInvoice.set(p.invoiceId, (realPaidByInvoice.get(p.invoiceId) ?? 0) + Number(p.amount));
     }
-    // Only APPROVED + CREDIT-settlement credit notes hit the ledger — these are
-    // "Adjust Against Outstanding" returns that genuinely reduce what the customer
-    // owes. REFUND-settled returns are money-neutral to the customer's account
-    // (goods came back AND the cash went back), so they must NOT move the running
-    // balance or outstanding — they're excluded entirely. REPLACEMENT is goods-
-    // for-goods (neutral). Pending/rejected aren't financial events. The ledger
-    // therefore stays in lockstep with customer.currentOutstanding.
+    // All APPROVED credit notes appear in the ledger, but only CREDIT-settlement
+    // ("Adjust Against Outstanding") returns MOVE the running balance — they
+    // genuinely reduce what the customer owes. REFUND-settled returns (goods came
+    // back AND cash went back) and REPLACEMENT returns (goods-for-goods) are
+    // money-neutral to the customer's account: they're shown for visibility but
+    // flagged `neutral` so they do NOT move the balance/outstanding. The ledger
+    // therefore still stays in lockstep with customer.currentOutstanding.
+    // Pending/rejected aren't financial events, so they stay out.
     const creditNotes = await this.prisma.creditNote.findMany({
       where: {
         customerId,
         status: 'APPROVED',
-        settlementMode: 'CREDIT',
         ...(dateFilter ? { date: dateFilter } : {}),
         ...bFilter,
       },
@@ -1335,7 +1349,7 @@ export class ReportsService {
       select: { totalAmount: true },
     });
 
-    const entries: Array<{ date: Date; ref: string; description: string; debit: number; credit: number; sourceType: 'INVOICE' | 'PAYMENT' | 'CREDIT_NOTE'; sourceId: string }> = [];
+    const entries: Array<{ date: Date; ref: string; description: string; debit: number; credit: number; neutral?: boolean; sourceType: 'INVOICE' | 'PAYMENT' | 'CREDIT_NOTE'; sourceId: string }> = [];
 
     invoices.forEach((inv) => {
       entries.push({
@@ -1377,12 +1391,20 @@ export class ReportsService {
     });
 
     creditNotes.forEach((cn) => {
+      // Only CREDIT-settlement returns move the balance. REFUND / REPLACEMENT
+      // are shown but neutral (cash/goods went back — no change to outstanding).
+      const neutral = cn.settlementMode !== 'CREDIT';
+      const tag =
+        cn.settlementMode === 'REFUND' ? ' (Refund)'
+        : cn.settlementMode === 'REPLACEMENT' ? ' (Replacement)'
+        : '';
       entries.push({
         date: cn.date,
         ref: cn.creditNoteNo,
-        description: `Credit Note: ${cn.reason}`,
+        description: `Credit Note${tag}: ${cn.reason}`,
         debit: 0,
         credit: Number(cn.totalAmount),
+        neutral,
         sourceType: 'CREDIT_NOTE',
         sourceId: cn.id,
       });
@@ -1391,12 +1413,16 @@ export class ReportsService {
     entries.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
     let balance = 0;
     const ledger = entries.map((e) => {
-      balance += e.debit - e.credit;
+      // Neutral rows (refund/replacement returns) display their amount but do
+      // not move the running balance.
+      if (!e.neutral) balance += e.debit - e.credit;
       return { ...e, balance };
     });
 
-    const totalDebit = entries.reduce((s, e) => s + e.debit, 0);
-    const totalCredit = entries.reduce((s, e) => s + e.credit, 0);
+    // KPI totals exclude neutral rows so Closing Balance reconciles with
+    // Opening + Debit − Credit.
+    const totalDebit = entries.reduce((s, e) => s + (e.neutral ? 0 : e.debit), 0);
+    const totalCredit = entries.reduce((s, e) => s + (e.neutral ? 0 : e.credit), 0);
     const totalReturns = approvedReturnsForStats.reduce((s, cn) => s + Number(cn.totalAmount), 0);
 
     // Active Quotations is a current snapshot, not a period stat — must not be
@@ -1409,9 +1435,23 @@ export class ReportsService {
       },
     });
 
+    // Pagination: the running balance + KPIs are computed over the FULL period
+    // above, then we return only the requested page of rows. Each page row
+    // already carries its correct cumulative balance, so page 2 continues
+    // contiguously from page 1. KPIs stay whole-period regardless of page.
+    const total = ledger.length;
+    const paginated = typeof query.skip === 'number' && typeof query.take === 'number';
+    const tableData = paginated
+      ? ledger.slice(
+          Math.max(query.skip!, 0),
+          Math.max(query.skip!, 0) + Math.min(Math.max(query.take!, 1), 100),
+        )
+      : ledger;
+
     return {
       customer,
-      tableData: ledger,
+      tableData,
+      total,
       kpis: [
         { label: 'Total Debit', value: this.inr(totalDebit) },
         { label: 'Total Credit', value: this.inr(totalCredit) },
@@ -1465,7 +1505,7 @@ export class ReportsService {
     const purchaseReturns = await this.prisma.purchaseReturn.findMany({
       where: { supplierId, ...(dateFilter ? { createdAt: dateFilter } : {}), ...bFilter },
       orderBy: { createdAt: 'asc' },
-      select: { id: true, createdAt: true, totalAmount: true, debitNoteNo: true },
+      select: { id: true, createdAt: true, totalAmount: true, debitNoteNo: true, settlementMode: true },
     });
 
     const payments = await this.prisma.supplierPayment.findMany({
@@ -1474,7 +1514,7 @@ export class ReportsService {
       select: { id: true, createdAt: true, amount: true, paymentNumber: true },
     });
 
-    type LedgerEntry = { date: Date | string; ref: string; description: string; debit: number; credit: number; balance?: number; sourceType: 'GRN' | 'PURCHASE_RETURN' | 'SUPPLIER_PAYMENT'; sourceId: string };
+    type LedgerEntry = { date: Date | string; ref: string; description: string; debit: number; credit: number; neutral?: boolean; balance?: number; sourceType: 'GRN' | 'PURCHASE_RETURN' | 'SUPPLIER_PAYMENT'; sourceId: string };
     const entries: LedgerEntry[] = [];
 
     // GRN debit = supplierInvoiceAmount (the figure that drives currentOutstanding;
@@ -1489,15 +1529,26 @@ export class ReportsService {
       sourceId: g.id,
     }));
 
-    purchaseReturns.forEach((r) => entries.push({
-      date: r.createdAt,
-      ref: r.debitNoteNo,
-      description: 'Purchase Return',
-      debit: 0,
-      credit: Number(r.totalAmount),
-      sourceType: 'PURCHASE_RETURN',
-      sourceId: r.id,
-    }));
+    purchaseReturns.forEach((r) => {
+      // Only ADJUST-settlement returns move the balance (they reduce the
+      // payable). REFUND (supplier paid cash back) and REPLACEMENT (goods-for-
+      // goods) are money-neutral — shown for visibility but flagged `neutral`.
+      const neutral = r.settlementMode !== 'ADJUST';
+      const tag =
+        r.settlementMode === 'REFUND' ? ' (Refund)'
+        : r.settlementMode === 'REPLACEMENT' ? ' (Replacement)'
+        : '';
+      entries.push({
+        date: r.createdAt,
+        ref: r.debitNoteNo,
+        description: `Purchase Return${tag}`,
+        debit: 0,
+        credit: Number(r.totalAmount),
+        neutral,
+        sourceType: 'PURCHASE_RETURN',
+        sourceId: r.id,
+      });
+    });
 
     payments.forEach((p) => entries.push({
       date: p.createdAt,
@@ -1513,11 +1564,15 @@ export class ReportsService {
 
     let balance = 0;
     const ledger = entries.map((e) => {
-      balance += e.debit - e.credit;
+      // Neutral rows (refund/replacement returns) display their amount but do
+      // not move the running balance.
+      if (!e.neutral) balance += e.debit - e.credit;
       return { ...e, date: new Date(e.date).toISOString(), balance };
     });
 
-    const totalPurchases = entries.reduce((s, e) => s + e.debit, 0);
+    const totalPurchases = entries.reduce((s, e) => s + (e.neutral ? 0 : e.debit), 0);
+    // Total Returns is a "how much was returned" stat — counts all returns
+    // regardless of settlement (the goods went back either way).
     const totalReturns = purchaseReturns.reduce((s, r) => s + Number(r.totalAmount), 0);
     const totalPaid = payments.reduce((s, p) => s + Number(p.amount), 0);
 

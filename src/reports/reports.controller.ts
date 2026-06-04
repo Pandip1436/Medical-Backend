@@ -288,8 +288,17 @@ export class ReportsController {
     @Param('customerId') customerId: string,
     @Query('from') from?: string,
     @Query('to') to?: string,
+    @Query('skip') skip?: string,
+    @Query('take') take?: string,
   ) {
-    return this.reportsService.getCustomerLedger(customerId, { from, to });
+    const skipNum = skip !== undefined ? Number(skip) : undefined;
+    const takeNum = take !== undefined ? Number(take) : undefined;
+    return this.reportsService.getCustomerLedger(customerId, {
+      from,
+      to,
+      skip: Number.isFinite(skipNum) ? skipNum : undefined,
+      take: Number.isFinite(takeNum) ? takeNum : undefined,
+    });
   }
 
   @Get('financial/supplier-ledger/:supplierId')

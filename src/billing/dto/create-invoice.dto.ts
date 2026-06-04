@@ -74,6 +74,12 @@ export class CreateInvoiceDto {
   @IsOptional()
   paymentDetails?: any;
 
+  // Payment due date for credit sales (ISO string). Required on the UI for
+  // CREDIT mode; optional here so CASH/UPI/card invoices omit it.
+  @IsOptional()
+  @IsDateString()
+  dueDate?: string;
+
   @IsEnum(InvoiceStatus)
   status: InvoiceStatus;
 

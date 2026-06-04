@@ -28,6 +28,7 @@ model Branch {
   isDefault   Boolean   @default(false)
   createdAt   DateTime  @default(now())
   users           User[]
+  userAccess      UserBranch[]
   invoices        Invoice[]
   expenses        Expense[]
   purchaseOrders  PurchaseOrder[]
@@ -65,12 +66,15 @@ model User {
   email          String    @unique
   phone          String
   password       String    // bcrypt hashed
-  role           Role      @default(PHARMACIST)
+  role           Role      @default(PHARMACIST) // primary role (highest-precedence of `roles`) — kept for display/behaviour consumers
+  roles          Role[]    @default([])         // full set of roles; drives all permission checks
   isActive       Boolean   @default(true)
   lastLogin      DateTime?
-  branchId       String?
+  branchId       String?   // home/default branch (auto-selected on login)
   branch         Branch?   @relation(fields: [branchId], references: [id])
+  branchAccess   UserBranch[]                    // allowed branch set (empty for SUPER_ADMIN = all)
   commissionRate Decimal   @default(0) // % commission for SALESPERSON role
+  preferences    Json      @default("{}") // per-user UI prefs (e.g. table column visibility) — client-managed blob
   createdAt      DateTime  @default(now())
   invoices             Invoice[]          @relation("UserInvoices")
   salespersonInvoices  Invoice[]          @relation("SalespersonInvoices")
@@ -88,7 +92,22 @@ model User {
   creditNoteReviews    CreditNote[]       @relation("CreditNoteReviews")
 }
 
+// Join table: which branches a user may access (the "allowed set").
+// A user picks one active branch in the header; the backend validates it
+// against this set. SUPER_ADMIN has no rows here and may access every branch.
+model UserBranch {
+  id       String @id @default(cuid())
+  userId   String
+  branchId String
+  user     User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  branch   Branch @relation(fields: [branchId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, branchId])
+  @@index([branchId])
+}
+
 enum Role {
+  SUPER_ADMIN
   ADMIN
   PHARMACIST
   INVENTORY_MANAGER
@@ -453,6 +472,7 @@ model Invoice {
   grandTotal      Decimal
   paymentMode     PaymentMode
   paymentDetails  Json?
+  dueDate         DateTime?     // credit-sale payment due date (required for CREDIT at the UI)
   status          InvoiceStatus
   amountPaid      Decimal
   changeReturned  Decimal       @default(0)

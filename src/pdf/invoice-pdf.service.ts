@@ -5,6 +5,7 @@ import * as QRCode from 'qrcode';
 export interface InvoicePdfData {
   invoiceNumber: string;
   date: Date;
+  dueDate?: Date | string | null;   // credit-sale payment due date
   customerName: string;
   customerPhone?: string | null;
   customerAddress?: string | null;
@@ -89,6 +90,7 @@ export class InvoicePdfService {
     doc.fontSize(10).font('Helvetica');
     doc.text(`Invoice #: ${d.invoiceNumber}`);
     doc.text(`Date: ${new Date(d.date).toLocaleDateString('en-IN')}`);
+    if (d.dueDate) doc.text(`Due Date: ${new Date(d.dueDate).toLocaleDateString('en-IN')}`);
     doc.moveDown(0.5);
 
     // Customer block

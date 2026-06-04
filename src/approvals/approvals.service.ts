@@ -3,16 +3,38 @@ import {
   NotFoundException,
   BadRequestException,
   ForbiddenException,
+  Inject,
+  forwardRef,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { ApprovalType } from '@prisma/client';
 import { DocumentNumberingService } from '../common/services/document-numbering.service';
+import { isAdminRole } from '../common/roles.util';
+import { syncPaymentDueForInvoice } from '../notifications/payment-due-sync';
+import { CreditNotesService } from '../credit-notes/credit-notes.service';
+
+// Builds the "<customer> (<phone>) — " prefix for approval notifications when
+// the request payload carries customer fields (e.g. SALES_RETURN stamps both
+// customerName and customerPhone). The Notifications list parses this prefix to
+// populate the Customer column; returns '' when no name is present so other
+// approval types degrade gracefully to a plain message.
+function approvalCustomerLead(payload: unknown): string {
+  const p = (payload ?? {}) as Record<string, any>;
+  const name = typeof p.customerName === 'string' ? p.customerName.trim() : '';
+  if (!name) return '';
+  const phone = typeof p.customerPhone === 'string' ? p.customerPhone.trim() : '';
+  return `${name}${phone ? ` (${phone})` : ''} — `;
+}
 
 @Injectable()
 export class ApprovalsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly numbering: DocumentNumberingService,
+    // Circular: CreditNotesService injects ApprovalsService (CN create files a
+    // SALES_RETURN request). Resolved via forwardRef.
+    @Inject(forwardRef(() => CreditNotesService))
+    private readonly creditNotes: CreditNotesService,
   ) {}
 
   // ── Create a pending request ───────────────────────────────
@@ -55,7 +77,7 @@ export class ApprovalsService {
     if (opts.status) where.status = opts.status;
     if (opts.type) where.type = opts.type;
     // Non-admins only see their own requests
-    if (opts.role !== 'ADMIN') where.requestedById = opts.userId;
+    if (!isAdminRole(opts.role)) where.requestedById = opts.userId;
 
     return this.prisma.approvalRequest.findMany({
       where,
@@ -78,10 +100,20 @@ export class ApprovalsService {
   }
 
   // ── Admin approves ─────────────────────────────────────────
-  async approve(id: string, reviewedById: string, reviewNote?: string, reviewerBranchId?: string) {
+  async approve(
+    id: string,
+    reviewedById: string,
+    reviewNote?: string,
+    reviewerBranchId?: string,
+    reviewerIsSuperAdmin = false,
+  ) {
     const req = await this.prisma.approvalRequest.findUnique({ where: { id } });
     if (!req) throw new NotFoundException('Approval request not found');
     if (req.status !== 'PENDING') throw new BadRequestException('Request is no longer pending');
+    // Credit-note (sales return) authorization is reserved for Super Admins.
+    if (req.type === 'SALES_RETURN' && !reviewerIsSuperAdmin) {
+      throw new ForbiddenException('Only a Super Admin can approve credit-note returns');
+    }
     // Branch isolation: an admin tied to a branch can only review requests
     // from the same branch. Admins without a branchId (super-admin / multi-
     // branch) can review anything.
@@ -99,12 +131,14 @@ export class ApprovalsService {
     // Execute the approved action
     await this.executeApprovedAction(req.type, req.payload as Record<string, any>, req.refId, req.branchId);
 
-    // Notify requestor
+    // Notify requestor. Lead with the customer (+ phone) when the payload
+    // carries them — the Notifications list parses "<name> (<phone>) — <rest>"
+    // to fill the Customer column (mirrors the awaiting-review notification).
     await this.prisma.notification.create({
       data: {
         type: 'APPROVAL',
         title: 'Request Approved',
-        message: `Your ${req.type.replace(/_/g, ' ').toLowerCase()} request has been approved.${reviewNote ? ` Note: ${reviewNote}` : ''}`,
+        message: `${approvalCustomerLead(req.payload)}Your ${req.type.replace(/_/g, ' ').toLowerCase()} request has been approved.${reviewNote ? ` Note: ${reviewNote}` : ''}`,
         actionUrl: `/admin/approvals/detail?id=${id}`,
         branchId: req.branchId ?? null,
       },
@@ -114,10 +148,19 @@ export class ApprovalsService {
   }
 
   // ── Admin rejects ──────────────────────────────────────────
-  async reject(id: string, reviewedById: string, reviewNote: string, reviewerBranchId?: string) {
+  async reject(
+    id: string,
+    reviewedById: string,
+    reviewNote: string,
+    reviewerBranchId?: string,
+    reviewerIsSuperAdmin = false,
+  ) {
     const req = await this.prisma.approvalRequest.findUnique({ where: { id } });
     if (!req) throw new NotFoundException('Approval request not found');
     if (req.status !== 'PENDING') throw new BadRequestException('Request is no longer pending');
+    if (req.type === 'SALES_RETURN' && !reviewerIsSuperAdmin) {
+      throw new ForbiddenException('Only a Super Admin can reject credit-note returns');
+    }
     if (reviewerBranchId && req.branchId && reviewerBranchId !== req.branchId) {
       throw new ForbiddenException(
         'You cannot reject a request from a different branch',
@@ -135,14 +178,22 @@ export class ApprovalsService {
         where: { id: req.refId },
         data: { status: 'CANCELLED' },
       }).catch(() => {});
+      // Clear any Payment Due reminder for the cancelled invoice (defensive —
+      // a draft credit bill usually has none yet, so this is normally a no-op).
+      await syncPaymentDueForInvoice(this.prisma, {
+        id: req.refId,
+        status: 'CANCELLED',
+        grandTotal: 0,
+        amountPaid: 0,
+      }, reviewedById).catch(() => {});
     }
 
-    // Notify requestor
+    // Notify requestor (lead with customer + phone when available — see approve()).
     await this.prisma.notification.create({
       data: {
         type: 'APPROVAL',
         title: 'Request Rejected',
-        message: `Your ${req.type.replace(/_/g, ' ').toLowerCase()} request was rejected.${reviewNote ? ` Reason: ${reviewNote}` : ''}`,
+        message: `${approvalCustomerLead(req.payload)}Your ${req.type.replace(/_/g, ' ').toLowerCase()} request was rejected.${reviewNote ? ` Reason: ${reviewNote}` : ''}`,
         actionUrl: `/admin/approvals/detail?id=${id}`,
         branchId: req.branchId ?? null,
       },
@@ -264,23 +315,17 @@ export class ApprovalsService {
       }
 
       case 'SALES_RETURN': {
-        // Retired. SALES_RETURN is no longer filed as an ApprovalRequest —
-        // both pharmacist and admin paths now create a CreditNote directly
-        // with status=PENDING_REVIEW, and approval happens at
-        // POST /credit-notes/:id/approve. This branch only exists to surface
-        // a clear error if an operator tries to action a legacy in-flight
-        // approval row that pre-dates the migration. Convert manually:
-        //
-        //   1. Read the stored payload from the ApprovalRequest row.
-        //   2. POST that payload to /credit-notes (creates a new
-        //      PENDING_REVIEW CN).
-        //   3. POST /credit-notes/:id/approve on the resulting row.
-        //   4. Mark the original ApprovalRequest REJECTED with a note
-        //      explaining the conversion.
-        throw new BadRequestException(
-          'SALES_RETURN approvals are retired. Use POST /credit-notes/:id/approve on the corresponding credit note instead. ' +
-            'Any pre-existing PENDING SALES_RETURN approval rows must be converted manually — see approvals.service.ts comments.',
-        );
+        // Gate 1 cleared by a Super Admin → turn the stored return payload into
+        // a real PENDING_REVIEW credit note. `createPendingReview` re-runs the
+        // return-cap validation (so two pending requests on the same line can't
+        // both overshoot) and emits the "Credit Note Awaiting Review"
+        // notification, entering Gate 2 (product review / settlement).
+        // The payload carries the full CN dto plus enrichment fields
+        // (invoiceNumber/customerName/createdById); createPendingReview only
+        // reads the dto fields, so the extras are harmlessly ignored.
+        const p = payload as any;
+        await this.creditNotes.createPendingReview(p, p.createdById ?? '', branchId ?? undefined);
+        break;
       }
 
       case 'INVENTORY_ADJUSTMENT' as any: {
