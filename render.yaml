@@ -1,0 +1,73 @@
+# Render Blueprint for the medical-backend service.
+# Docs: https://render.com/docs/blueprint-spec
+#
+# How auto-deploy works:
+#   Render connects directly to this GitLab repo. Every push to `branch`
+#   (below) triggers: build the Docker image -> run preDeployCommand
+#   (prisma migrate deploy) -> if migrations succeed, switch traffic to the
+#   new instance. A failed migration aborts the deploy and the old instance
+#   keeps serving — same safety property as the old Cloud Build pipeline.
+#
+# First-time setup (one time, in the Render dashboard):
+#   1. New + -> Blueprint -> connect this GitLab repo -> pick this render.yaml.
+#   2. Render prompts for every `sync: false` var below — paste the secrets.
+#   3. Create. Subsequent pushes to `master` auto-deploy with no further action.
+
+services:
+  - type: web
+    name: medical-backend
+    runtime: docker
+    region: singapore          # match the region your Neon DB lives in
+    plan: standard             # 1 CPU / 2 GB, no cold start. (preDeployCommand
+                               # requires a paid plan — Standard qualifies.)
+    branch: master
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /         # GET / -> "Hello World", no DB hit; safe during Neon cold-start
+    autoDeploy: true
+    numInstances: 1            # keep at 1 until prescription uploads move to R2 (see notes)
+
+    # Runs in the built image (WORKDIR /app, schema + migrations present)
+    # BEFORE traffic switches. Uses DIRECT_URL (non-pooler) automatically
+    # because schema.prisma declares `directUrl = env("DIRECT_URL")`.
+    preDeployCommand: npx prisma migrate deploy
+
+    envVars:
+      # ── Non-secret config (safe to commit) ───────────────────────
+      - key: NODE_ENV
+        value: production
+      - key: JWT_EXPIRES_IN
+        value: 8h
+      - key: JWT_REFRESH_EXPIRES_IN
+        value: 7d
+      - key: MAX_PENDING_CREDIT
+        value: "3"
+      - key: R2_BUCKET_NAME
+        value: pbims-shared-files
+      # PORT is intentionally omitted — Render injects it and the app binds
+      # `process.env.PORT` (src/main.ts).
+
+      # ── Secrets — set these in the Render dashboard, never commit ─
+      # DATABASE_URL must be the Neon -pooler host (runtime queries).
+      - key: DATABASE_URL
+        sync: false
+      # DIRECT_URL must be the Neon NON-pooler host (migrations only).
+      - key: DIRECT_URL
+        sync: false
+      - key: JWT_SECRET
+        sync: false
+      - key: JWT_REFRESH_SECRET
+        sync: false
+      - key: R2_ACCOUNT_ID
+        sync: false
+      - key: R2_ACCESS_KEY_ID
+        sync: false
+      - key: R2_SECRET_ACCESS_KEY
+        sync: false
+      - key: R2_PUBLIC_URL
+        sync: false
+      # Public origins — set after the service URL is known.
+      - key: FRONTEND_URL
+        sync: false
+      - key: APP_PUBLIC_URL          # this service's own https URL (IndiaMART webhook)
+        sync: false
