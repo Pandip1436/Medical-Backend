@@ -44,9 +44,11 @@ export class NotificationsController {
     @Query('read') read?: string,
     @Query('type') type?: string,
     @Query('reminders') reminders?: string,
+    @Query('resolved') resolved?: string,
     @Query('q') q?: string,
     @Query('skip') skip?: string,
     @Query('take') take?: string,
+    @Query('sort') sort?: string,
   ) {
     const branchId = req.user.branchId ?? queryBranchId ?? undefined;
     const typedType =
@@ -55,6 +57,12 @@ export class NotificationsController {
         : undefined;
     const remindersFilter =
       reminders === 'only' || reminders === 'exclude' ? reminders : undefined;
+    const resolvedFilter =
+      resolved === 'only' || resolved === 'exclude' ? resolved : undefined;
+    const sortFilter =
+      sort === 'oldest' || sort === 'unread' || sort === 'newest'
+        ? sort
+        : undefined;
     const skipN = skip !== undefined ? Number(skip) : undefined;
     const takeN = take !== undefined ? Number(take) : undefined;
     return this.service.findAll({
@@ -63,7 +71,9 @@ export class NotificationsController {
       onlyRead: read === 'true',
       type: typedType,
       reminders: remindersFilter,
+      resolved: resolvedFilter,
       q: q && q.trim() ? q.trim() : undefined,
+      sort: sortFilter,
       skip: Number.isFinite(skipN) ? skipN : undefined,
       take: Number.isFinite(takeN) ? takeN : undefined,
     });

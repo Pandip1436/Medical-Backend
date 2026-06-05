@@ -410,7 +410,12 @@ export class ProductsService {
       where: { id },
       include: {
         product: { select: { id: true, name: true, genericName: true, packSize: true, manufacturer: true, minStock: true, totalStock: true, branchId: true } },
-        supplier: { select: { id: true, name: true, phone: true } },
+        supplier: { select: { id: true, name: true, phone: true, address: true } },
+        // The GRN line that received this batch — its parent GRN carries the
+        // actual purchase/receipt date + supplier-invoice reference shown on the
+        // detail page. Only joined on the single-batch fetch (the list query
+        // stays lean → these are null there).
+        grnItem: { include: { grn: { select: { date: true, grnNumber: true, supplierInvoiceNo: true, supplierInvoiceDate: true } } } },
       },
     });
     if (!batch) throw new NotFoundException('Batch not found');
@@ -441,7 +446,14 @@ export class ProductsService {
       supplierId: b.supplierId,
       supplierName: b.supplier?.name ?? null,
       supplierPhone: b.supplier?.phone ?? null,
+      supplierAddress: b.supplier?.address ?? null,
       createdAt: b.createdAt,
+      // Purchase/receipt date from the originating GRN. Null for batches with no
+      // GRN link (legacy/manual) — the frontend falls back to createdAt.
+      grnDate: b.grnItem?.grn?.date ?? null,
+      grnNumber: b.grnItem?.grn?.grnNumber ?? null,
+      supplierInvoiceNo: b.grnItem?.grn?.supplierInvoiceNo ?? null,
+      supplierInvoiceDate: b.grnItem?.grn?.supplierInvoiceDate ?? null,
     };
   }
 

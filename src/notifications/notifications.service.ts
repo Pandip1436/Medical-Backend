@@ -152,8 +152,12 @@ export class NotificationsService {
     onlyRead?: boolean;
     type?: NotificationType;
     reminders?: 'only' | 'exclude';
+    /** Filter by resolution state. 'only' = resolved rows; 'exclude' = unresolved. */
+    resolved?: 'only' | 'exclude';
     /** Free-text search across title + message (case-insensitive contains). */
     q?: string;
+    /** Row ordering. Defaults to newest-first. */
+    sort?: 'newest' | 'oldest' | 'unread';
     skip?: number;
     take?: number;
   } = {}) {
@@ -178,6 +182,13 @@ export class NotificationsService {
     } else if (opts.reminders === 'exclude') {
       and.push({ NOT: { message: { contains: '[reminderId:' } } });
     }
+    // Resolution state — the "Resolved" folder toggle shows alerts the system or
+    // a user has closed out (resolvedAt set); 'exclude' keeps only still-open ones.
+    if (opts.resolved === 'only') {
+      and.push({ resolvedAt: { not: null } });
+    } else if (opts.resolved === 'exclude') {
+      and.push({ resolvedAt: null });
+    }
     if (opts.q && opts.q.trim()) {
       const q = opts.q.trim();
       and.push({
@@ -188,6 +199,15 @@ export class NotificationsService {
       });
     }
 
+    // Newest-first by default. "oldest" reverses; "unread" floats unread rows
+    // to the top, then newest-first within each read-state group.
+    const orderBy =
+      opts.sort === 'oldest'
+        ? { createdAt: 'asc' as const }
+        : opts.sort === 'unread'
+          ? [{ isRead: 'asc' as const }, { createdAt: 'desc' as const }]
+          : { createdAt: 'desc' as const };
+
     const paginated =
       typeof opts.skip === 'number' && typeof opts.take === 'number';
     if (paginated) {
@@ -196,7 +216,7 @@ export class NotificationsService {
       const [data, total] = await Promise.all([
         this.prisma.notification.findMany({
           where: { AND: and },
-          orderBy: { createdAt: 'desc' },
+          orderBy,
           skip,
           take,
         }),
@@ -207,7 +227,7 @@ export class NotificationsService {
 
     return this.prisma.notification.findMany({
       where: { AND: and },
-      orderBy: { createdAt: 'desc' },
+      orderBy,
       take: 1000,
     });
   }

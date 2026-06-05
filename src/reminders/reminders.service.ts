@@ -40,7 +40,7 @@ export class RemindersService {
     return this.prisma.customerReminder.findMany({
       where: Object.keys(where).length ? where : undefined,
       include: {
-        customer: { select: { id: true, name: true, phone: true, type: true, email: true } },
+        customer: { select: { id: true, name: true, phone: true, type: true, email: true, address: true } },
         contacts: { orderBy: { contactedAt: 'desc' }, take: 1 },
       },
       orderBy: { dayOfMonth: 'asc' },
@@ -52,7 +52,7 @@ export class RemindersService {
     return this.prisma.customerReminder.findMany({
       where: { dayOfMonth: today, ...(branchId ? { branchId } : {}) },
       include: {
-        customer: { select: { id: true, name: true, phone: true, type: true, email: true } },
+        customer: { select: { id: true, name: true, phone: true, type: true, email: true, address: true } },
         contacts: { orderBy: { contactedAt: 'desc' }, take: 1 },
       },
     })
@@ -69,7 +69,7 @@ export class RemindersService {
         branchId: dto.branchId,
       },
       include: {
-        customer: { select: { id: true, name: true, phone: true, type: true, email: true } },
+        customer: { select: { id: true, name: true, phone: true, type: true, email: true, address: true } },
         contacts: true,
       },
     })
@@ -138,7 +138,7 @@ export class RemindersService {
       where: { id },
       data,
       include: {
-        customer: { select: { id: true, name: true, phone: true, type: true, email: true } },
+        customer: { select: { id: true, name: true, phone: true, type: true, email: true, address: true } },
         contacts: { orderBy: { contactedAt: 'desc' }, take: 1 },
       },
     })
