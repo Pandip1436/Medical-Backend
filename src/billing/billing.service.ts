@@ -30,9 +30,12 @@ function normalizeItem(item: CreateInvoiceItemDto, mrpFallback: number) {
   return {
     productId: item.productId,
     productName: item.productName,
-    batchId: item.batchId,
-    batchNumber: item.batchNumber,
-    expiryDate: new Date(item.expiryDate),
+    // batchId/batchNumber/expiryDate are filled by deductStockForItem (including
+    // FEFO auto-selection) before this runs on the stock-deducting paths; the
+    // fallbacks only apply to quotation/draft lines that never reserve stock.
+    batchId: item.batchId ?? '',
+    batchNumber: item.batchNumber ?? '',
+    expiryDate: item.expiryDate ? new Date(item.expiryDate) : new Date(),
     quantity: item.quantity,
     mrp: mrp > 0 ? mrp : r2(mrpFallback),
     rate: r2(item.rate),
@@ -107,35 +110,112 @@ export class BillingService {
     item: {
       productId: string;
       productName: string;
-      batchId: string;
-      batchNumber: string;
+      batchId?: string;
+      batchNumber?: string;
       quantity: number;
+      // Unit sale rate — when present, validated against the chosen batch's
+      // mrp / purchaseRate guardrails below.
+      rate?: number;
+      mrp?: number;
+      expiryDate?: string | Date;
     },
     branchId?: string,
   ) {
-    const batch = await tx.batch.findUnique({ where: { id: item.batchId } });
-    if (!batch) {
+    // 1. Resolve the batch. An explicit batchId wins; otherwise auto-pick via
+    //    FEFO (First-Expiry-First-Out): the oldest UNEXPIRED batch of this
+    //    product that still holds enough stock to cover the line, scoped to the
+    //    caller's branch so a sale can't pull another branch's stock.
+    let batch = item.batchId
+      ? await tx.batch.findUnique({ where: { id: item.batchId } })
+      : null;
+
+    if (item.batchId && !batch) {
       throw new NotFoundException(
-        `Batch ${item.batchNumber} for product ${item.productName} not found`,
+        `Batch ${item.batchNumber ?? item.batchId} for product ${item.productName} not found`,
       );
     }
-    // Refuse expired stock — pharmacies cannot legally dispense it.
+
+    if (!batch) {
+      const startToday = new Date();
+      startToday.setHours(0, 0, 0, 0);
+      batch = await tx.batch.findFirst({
+        where: {
+          productId: item.productId,
+          quantity: { gte: item.quantity },
+          expiryDate: { gte: startToday },
+          ...(branchId ? { product: { branchId } } : {}),
+        },
+        // FEFO: earliest expiry first, then oldest received.
+        orderBy: [{ expiryDate: 'asc' }, { createdAt: 'asc' }],
+      });
+      if (!batch) {
+        throw new BadRequestException(
+          `No unexpired batch of ${item.productName} has enough stock to cover ${item.quantity} unit(s).`,
+        );
+      }
+    }
+
+    // 2. Refuse expired stock — pharmacies cannot legally dispense it. (FEFO
+    //    already filters on expiry; this guards the explicit-batchId path.)
     const expiry = new Date(batch.expiryDate);
     expiry.setHours(23, 59, 59, 999);
     if (expiry < new Date()) {
       throw new BadRequestException(
-        `Cannot sell ${item.productName} from batch ${item.batchNumber}: expired on ${new Date(batch.expiryDate).toLocaleDateString('en-IN')}`,
+        `Cannot sell ${item.productName} from batch ${batch.batchNumber}: expired on ${new Date(batch.expiryDate).toLocaleDateString('en-IN')}`,
       );
     }
-    if (batch.quantity < item.quantity) {
-      throw new BadRequestException(
-        `Insufficient stock for ${item.productName} in batch ${item.batchNumber}. Available: ${batch.quantity}`,
-      );
+
+    // 3. Price guardrails against THIS batch: the unit sale rate may not exceed
+    //    the batch MRP (legal ceiling) nor fall below its purchase cost (no
+    //    selling at a loss). The cost floor is skipped when purchaseRate is
+    //    unset (0) on legacy batches.
+    if (item.rate !== undefined && item.rate !== null) {
+      const rate = Number(item.rate);
+      const batchMrp = Number(batch.mrp);
+      const batchCost = Number(batch.purchaseRate);
+      if (Number.isFinite(rate) && Number.isFinite(batchMrp) && rate > batchMrp + 0.01) {
+        throw new BadRequestException(
+          `Sale price (₹${rate.toFixed(2)}) for ${item.productName} exceeds batch ${batch.batchNumber} MRP (₹${batchMrp.toFixed(2)}).`,
+        );
+      }
+      if (
+        Number.isFinite(rate) &&
+        Number.isFinite(batchCost) &&
+        batchCost > 0 &&
+        rate < batchCost - 0.01
+      ) {
+        throw new BadRequestException(
+          `Sale price (₹${rate.toFixed(2)}) for ${item.productName} is below batch ${batch.batchNumber} purchase cost (₹${batchCost.toFixed(2)}).`,
+        );
+      }
     }
-    await tx.batch.update({
-      where: { id: batch.id },
-      data: { quantity: batch.quantity - item.quantity },
+
+    // 4. Atomic, race-safe decrement. The `quantity >= qty` guard in the WHERE
+    //    turns read-then-write into one conditional UPDATE, so two concurrent
+    //    sales of the same batch can't both pass a stale availability check and
+    //    oversell. count === 0 means another sale drained it first.
+    const dec = await tx.batch.updateMany({
+      where: { id: batch.id, quantity: { gte: item.quantity } },
+      data: { quantity: { decrement: item.quantity } },
     });
+    if (dec.count === 0) {
+      const fresh = await tx.batch.findUnique({
+        where: { id: batch.id },
+        select: { quantity: true },
+      });
+      throw new BadRequestException(
+        `Insufficient stock for ${item.productName} in batch ${batch.batchNumber}. Available: ${fresh?.quantity ?? 0}`,
+      );
+    }
+
+    // 5. Snapshot the resolved batch back onto the line so the InvoiceItem
+    //    records the batch actually shipped (critical when FEFO auto-selected
+    //    it for a line that arrived without a batchId).
+    item.batchId = batch.id;
+    item.batchNumber = batch.batchNumber;
+    item.expiryDate = batch.expiryDate;
+    if (!(Number(item.mrp) > 0)) item.mrp = Number(batch.mrp);
+
     const updatedProduct = await tx.product.update({
       where: { id: item.productId },
       data: { totalStock: { decrement: item.quantity } },
@@ -914,6 +994,8 @@ export class BillingService {
             batchId: item.batchId,
             batchNumber: item.batchNumber,
             quantity: item.quantity,
+            rate: Number(item.rate),
+            mrp: Number(item.mrp),
           },
           branchId,
         );

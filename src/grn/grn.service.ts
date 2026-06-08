@@ -15,6 +15,11 @@ import { CreateGrnDto } from './dto/create-grn.dto';
 // headroom; maxWait covers waiting for a free pool connection.
 const GRN_TX_OPTIONS = { maxWait: 15000, timeout: 60000 } as const;
 
+// One-time admin migrations sweep every PO / supplier / GRN, so they need an
+// even larger ceiling than a normal GRN write. Still bounded so a runaway can't
+// hold a pooled connection forever.
+const MIGRATION_TX_OPTIONS = { maxWait: 15000, timeout: 120000 } as const;
+
 @Injectable()
 export class GrnService {
   constructor(
@@ -77,6 +82,7 @@ export class GrnService {
         grn.id,
         createGrnDto.items,
         createGrnDto.supplierId,
+        grn.date,
       );
 
       // 3.5 Record the payable + any payment captured at receive time.
@@ -158,11 +164,12 @@ export class GrnService {
     grnId: string,
     items: CreateGrnDto['items'],
     supplierId: string,
+    grnDate: Date,
   ) {
     for (const item of items) {
-      // mfgDate is no longer captured at the form level — fall back to today
-      // when missing so the non-nullable DB column stays populated.
-      const mfgDate = item.mfgDate ? new Date(item.mfgDate) : new Date();
+      // mfgDate is optional — the GRN form no longer captures it. Persist null
+      // when absent rather than fabricating "today" (the column is nullable).
+      const mfgDate = item.mfgDate ? new Date(item.mfgDate) : null;
       const expiryDate = new Date(item.expiryDate);
 
       const grnItem = await tx.gRNItem.create({
@@ -196,12 +203,27 @@ export class GrnService {
             grnItemId: grnItem.id,
           },
         });
+        // Stale-pricing guard: only refresh the product master mrp/purchaseRate
+        // when THIS GRN's delivery date is newer than the last price update, so
+        // back-dating an old GRN can't clobber current prices. Stock always
+        // increments regardless of date.
+        const product = await tx.product.findUnique({
+          where: { id: item.productId },
+          select: { lastPriceUpdate: true },
+        });
+        const isNewerPrice =
+          !product?.lastPriceUpdate || grnDate > product.lastPriceUpdate;
         await tx.product.update({
           where: { id: item.productId },
           data: {
             totalStock: { increment: addedStock },
-            purchaseRate: item.purchaseRate, // Update to latest purchase rate
-            mrp: item.mrp, // Update to latest MRP
+            ...(isNewerPrice
+              ? {
+                  purchaseRate: item.purchaseRate,
+                  mrp: item.mrp,
+                  lastPriceUpdate: grnDate,
+                }
+              : {}),
           },
         });
       }
@@ -399,8 +421,10 @@ export class GrnService {
         });
       }
 
-      // 6. Reapply new items + header (supplier / PO linkage stay fixed).
-      await this.applyGrnItems(tx, id, dto.items, existing.supplierId);
+      // 6. Reapply new items + header (supplier / PO linkage stay fixed). Use
+      // the GRN's own delivery date so the stale-pricing guard is evaluated
+      // against when the goods were received, not when the edit happens.
+      await this.applyGrnItems(tx, id, dto.items, existing.supplierId, existing.date);
       await tx.gRN.update({
         where: { id },
         data: {
@@ -470,7 +494,7 @@ export class GrnService {
       receivedQty: number;
       freeQty: number;
       batchNumber: string;
-      mfgDate: Date;
+      mfgDate: Date | null;
       expiryDate: Date;
       purchaseRate: Prisma.Decimal;
       mrp: Prisma.Decimal;
@@ -494,7 +518,7 @@ export class GrnService {
         receivedQty: it.receivedQty,
         freeQty: it.freeQty,
         batchNumber: it.batchNumber,
-        mfgDate: it.mfgDate.toISOString(),
+        mfgDate: it.mfgDate ? it.mfgDate.toISOString() : null,
         expiryDate: it.expiryDate.toISOString(),
         purchaseRate: Number(it.purchaseRate),
         mrp: Number(it.mrp),
@@ -545,299 +569,311 @@ export class GrnService {
   }
 
   async reverseShortDeliveryStockDeduction() {
-    // Find PurchaseReturns whose reason indicates short delivery (no physical
-    // goods) AND that haven't already been reversed. The stockReversedAt flag
-    // makes this idempotent — re-running won't double-add stock.
-    const allReturns = await this.prisma.purchaseReturn.findMany({
-      include: { items: true },
-    });
-    const shortReturns = allReturns.filter(
-      (pr) =>
-        /short.*delivery|short.*supply/i.test(pr.reason ?? '') &&
-        !pr.stockReversedAt,
-    );
+    return this.prisma.$transaction(async (tx) => {
+      // Find PurchaseReturns whose reason indicates short delivery (no physical
+      // goods) AND that haven't already been reversed. The stockReversedAt flag
+      // makes this idempotent — re-running won't double-add stock.
+      const allReturns = await tx.purchaseReturn.findMany({
+        include: { items: true },
+      });
+      const shortReturns = allReturns.filter(
+        (pr) =>
+          /short.*delivery|short.*supply/i.test(pr.reason ?? '') &&
+          !pr.stockReversedAt,
+      );
 
-    let batchesFixed = 0;
-    let productsFixed = 0;
-    const fixed: Array<{ debitNoteNo: string; reason: string; items: number }> =
-      [];
-    const skipped = allReturns.filter(
-      (pr) =>
-        /short.*delivery|short.*supply/i.test(pr.reason ?? '') &&
-        pr.stockReversedAt,
-    ).length;
+      let batchesFixed = 0;
+      let productsFixed = 0;
+      const fixed: Array<{
+        debitNoteNo: string;
+        reason: string;
+        items: number;
+      }> = [];
+      const skipped = allReturns.filter(
+        (pr) =>
+          /short.*delivery|short.*supply/i.test(pr.reason ?? '') &&
+          pr.stockReversedAt,
+      ).length;
 
-    for (const pr of shortReturns) {
-      for (const item of pr.items) {
-        // Re-add to batch
-        const batch = await this.prisma.batch.findUnique({
-          where: { id: item.batchId },
-        });
-        if (batch) {
-          await this.prisma.batch.update({
+      for (const pr of shortReturns) {
+        for (const item of pr.items) {
+          // Re-add to batch (updateMany so a missing batch is a no-op rather
+          // than throwing and aborting the surrounding transaction).
+          const reAdded = await tx.batch.updateMany({
             where: { id: item.batchId },
             data: { quantity: { increment: item.returnedQty } },
           });
-          batchesFixed++;
-        }
-        // Re-add to product totalStock
-        await this.prisma.product
-          .update({
+          if (reAdded.count > 0) batchesFixed++;
+          // Re-add to product totalStock.
+          await tx.product.updateMany({
             where: { id: item.productId },
             data: { totalStock: { increment: item.returnedQty } },
-          })
-          .catch(() => {});
-        productsFixed++;
+          });
+          productsFixed++;
+        }
+        // Mark this DN as reversed so a re-run won't add the qty again.
+        await tx.purchaseReturn.update({
+          where: { id: pr.id },
+          data: { stockReversedAt: new Date() },
+        });
+        fixed.push({
+          debitNoteNo: pr.debitNoteNo,
+          reason: pr.reason,
+          items: pr.items.length,
+        });
       }
-      // Mark this DN as reversed so a re-run won't add the qty again.
-      await this.prisma.purchaseReturn.update({
-        where: { id: pr.id },
-        data: { stockReversedAt: new Date() },
-      });
-      fixed.push({
-        debitNoteNo: pr.debitNoteNo,
-        reason: pr.reason,
-        items: pr.items.length,
-      });
-    }
 
-    const skipNote =
-      skipped > 0 ? ` Skipped ${skipped} already-reversed debit note(s).` : '';
-    return {
-      message:
-        `Reversed stock deduction for ${shortReturns.length} short-delivery debit note(s). ` +
-        `${batchesFixed} batch updates, ${productsFixed} product stock updates.${skipNote}`,
-      fixed,
-      skipped,
-    };
+      const skipNote =
+        skipped > 0 ? ` Skipped ${skipped} already-reversed debit note(s).` : '';
+      return {
+        message:
+          `Reversed stock deduction for ${shortReturns.length} short-delivery debit note(s). ` +
+          `${batchesFixed} batch updates, ${productsFixed} product stock updates.${skipNote}`,
+        fixed,
+        skipped,
+      };
+    }, MIGRATION_TX_OPTIONS);
   }
 
   async backfillPoStatusWithDebitNotes() {
-    // Recompute every PO's status considering both GRN deliveries AND short-delivery debit notes
-    const pos = await this.prisma.purchaseOrder.findMany({
-      include: { items: true },
-    });
-    let updated = 0;
-    for (const po of pos) {
-      const allGrns = await this.prisma.gRN.findMany({
-        where: { poId: po.id },
-        include: { items: true, purchaseReturns: { include: { items: true } } },
+    return this.prisma.$transaction(async (tx) => {
+      // Recompute every PO's status considering both GRN deliveries AND short-delivery debit notes
+      const pos = await tx.purchaseOrder.findMany({
+        include: { items: true },
       });
-      if (allGrns.length === 0) continue;
+      let updated = 0;
+      for (const po of pos) {
+        const allGrns = await tx.gRN.findMany({
+          where: { poId: po.id },
+          include: {
+            items: true,
+            purchaseReturns: { include: { items: true } },
+          },
+        });
+        if (allGrns.length === 0) continue;
 
-      const receivedByProduct: Record<string, number> = {};
-      const debitedByProduct: Record<string, number> = {};
-      for (const g of allGrns) {
-        for (const gi of g.items) {
-          receivedByProduct[gi.productId] =
-            (receivedByProduct[gi.productId] ?? 0) +
-            gi.receivedQty +
-            gi.freeQty;
-        }
-        for (const pr of g.purchaseReturns ?? []) {
-          if (/short|excess/i.test(pr.reason ?? '')) {
-            for (const pi of pr.items) {
-              debitedByProduct[pi.productId] =
-                (debitedByProduct[pi.productId] ?? 0) + pi.returnedQty;
+        const receivedByProduct: Record<string, number> = {};
+        const debitedByProduct: Record<string, number> = {};
+        for (const g of allGrns) {
+          for (const gi of g.items) {
+            receivedByProduct[gi.productId] =
+              (receivedByProduct[gi.productId] ?? 0) +
+              gi.receivedQty +
+              gi.freeQty;
+          }
+          for (const pr of g.purchaseReturns ?? []) {
+            if (/short|excess/i.test(pr.reason ?? '')) {
+              for (const pi of pr.items) {
+                debitedByProduct[pi.productId] =
+                  (debitedByProduct[pi.productId] ?? 0) + pi.returnedQty;
+              }
             }
           }
         }
-      }
-      const allFulfilled = po.items.every(
-        (pi) =>
-          (receivedByProduct[pi.productId] ?? 0) +
-            (debitedByProduct[pi.productId] ?? 0) >=
-          pi.requiredQty,
-      );
-      const expected = allFulfilled ? 'FULLY_RECEIVED' : 'PARTIALLY_RECEIVED';
-      if (
-        po.status !== expected &&
-        po.status !== 'CLOSED' &&
-        po.status !== 'DRAFT'
-      ) {
-        await this.prisma.purchaseOrder.update({
-          where: { id: po.id },
-          data: { status: expected },
-        });
-        updated++;
-      }
-    }
-    return {
-      message: `PO status backfill (with debit notes) complete. ${updated} POs updated.`,
-    };
-  }
-
-  async backfillSupplierOutstanding() {
-    // Recompute each supplier's outstanding from scratch:
-    // outstanding = sum(GRN.supplierInvoiceAmount where !isReplacement)
-    //             - sum(PurchaseReturn.totalAmount where settlementMode = 'ADJUST')
-    //             - sum(SupplierPayment.amount)
-    const suppliers = await this.prisma.supplier.findMany();
-    let updated = 0;
-    for (const s of suppliers) {
-      const grns = await this.prisma.gRN.findMany({
-        where: { supplierId: s.id },
-      });
-      const grnSum = grns.reduce(
-        (acc, g) =>
-          acc + (g.isReplacement ? 0 : Number(g.supplierInvoiceAmount)),
-        0,
-      );
-      const adjustReturns = await this.prisma.purchaseReturn.findMany({
-        where: { supplierId: s.id, settlementMode: 'ADJUST' },
-      });
-      const adjustSum = adjustReturns.reduce(
-        (acc, r) => acc + Number(r.totalAmount),
-        0,
-      );
-      const payments = await this.prisma.supplierPayment.findMany({
-        where: { supplierId: s.id },
-      });
-      const paidSum = payments.reduce((acc, p) => acc + Number(p.amount), 0);
-      const expected = Math.max(0, grnSum - adjustSum - paidSum);
-      if (Number(s.currentOutstanding) !== expected) {
-        await this.prisma.supplier.update({
-          where: { id: s.id },
-          data: { currentOutstanding: expected },
-        });
-        updated++;
-      }
-    }
-    return {
-      message: `Supplier outstanding backfill complete. ${updated} suppliers updated.`,
-    };
-  }
-
-  async backfillGrnOrderedQty() {
-    // For each PO, walk through GRNs in chronological order and set
-    // each GRN item's orderedQty = remaining qty at the time of that delivery
-    const pos = await this.prisma.purchaseOrder.findMany({
-      include: { items: true },
-    });
-    let updated = 0;
-    for (const po of pos) {
-      const grns = await this.prisma.gRN.findMany({
-        where: { poId: po.id },
-        include: { items: true },
-        orderBy: { date: 'asc' },
-      });
-      if (grns.length === 0) continue;
-
-      // Track running received qty per product
-      const cumulativeReceived: Record<string, number> = {};
-      const requiredByProduct: Record<string, number> = {};
-      for (const pi of po.items) {
-        requiredByProduct[pi.productId] = pi.requiredQty;
-      }
-
-      for (const grn of grns) {
-        for (const gi of grn.items) {
-          const required = requiredByProduct[gi.productId] ?? gi.orderedQty;
-          const alreadyReceived = cumulativeReceived[gi.productId] ?? 0;
-          const expectedThisDelivery = Math.max(0, required - alreadyReceived);
-          if (expectedThisDelivery !== gi.orderedQty) {
-            await this.prisma.gRNItem.update({
-              where: { id: gi.id },
-              data: { orderedQty: expectedThisDelivery },
-            });
-            updated++;
-          }
-          cumulativeReceived[gi.productId] =
-            alreadyReceived + gi.receivedQty + gi.freeQty;
-        }
-      }
-    }
-    return { message: `Backfill complete. ${updated} GRN items updated.` };
-  }
-
-  async backfillPoReceivedQty() {
-    // Find all POs that have linked GRNs
-    const pos = await this.prisma.purchaseOrder.findMany({
-      include: { items: true },
-    });
-    let updated = 0;
-    for (const po of pos) {
-      const allGrns = await this.prisma.gRN.findMany({
-        where: { poId: po.id },
-        include: { items: true },
-      });
-      if (allGrns.length === 0) continue;
-      const receivedByProduct: Record<string, number> = {};
-      for (const g of allGrns) {
-        for (const gi of g.items) {
-          receivedByProduct[gi.productId] =
-            (receivedByProduct[gi.productId] ?? 0) +
-            gi.receivedQty +
-            gi.freeQty;
-        }
-      }
-      for (const pi of po.items) {
-        const totalReceived = receivedByProduct[pi.productId] ?? 0;
-        if (totalReceived !== pi.receivedQty) {
-          await this.prisma.purchaseOrderItem.update({
-            where: { id: pi.id },
-            data: { receivedQty: totalReceived },
+        const allFulfilled = po.items.every(
+          (pi) =>
+            (receivedByProduct[pi.productId] ?? 0) +
+              (debitedByProduct[pi.productId] ?? 0) >=
+            pi.requiredQty,
+        );
+        const expected = allFulfilled ? 'FULLY_RECEIVED' : 'PARTIALLY_RECEIVED';
+        if (
+          po.status !== expected &&
+          po.status !== 'CLOSED' &&
+          po.status !== 'DRAFT'
+        ) {
+          await tx.purchaseOrder.update({
+            where: { id: po.id },
+            data: { status: expected },
           });
           updated++;
         }
       }
-      const allFulfilled = po.items.every(
-        (pi) => (receivedByProduct[pi.productId] ?? 0) >= pi.requiredQty,
-      );
-      const expectedStatus = allFulfilled
-        ? 'FULLY_RECEIVED'
-        : 'PARTIALLY_RECEIVED';
-      if (
-        po.status !== expectedStatus &&
-        po.status !== 'CLOSED' &&
-        po.status !== 'DRAFT'
-      ) {
-        await this.prisma.purchaseOrder.update({
-          where: { id: po.id },
-          data: { status: expectedStatus },
+      return {
+        message: `PO status backfill (with debit notes) complete. ${updated} POs updated.`,
+      };
+    }, MIGRATION_TX_OPTIONS);
+  }
+
+  async backfillSupplierOutstanding() {
+    return this.prisma.$transaction(async (tx) => {
+      // Recompute each supplier's outstanding from scratch:
+      // outstanding = sum(GRN.supplierInvoiceAmount where !isReplacement)
+      //             - sum(PurchaseReturn.totalAmount where settlementMode = 'ADJUST')
+      //             - sum(SupplierPayment.amount)
+      const suppliers = await tx.supplier.findMany();
+      let updated = 0;
+      for (const s of suppliers) {
+        const grns = await tx.gRN.findMany({
+          where: { supplierId: s.id },
         });
+        const grnSum = grns.reduce(
+          (acc, g) =>
+            acc + (g.isReplacement ? 0 : Number(g.supplierInvoiceAmount)),
+          0,
+        );
+        const adjustReturns = await tx.purchaseReturn.findMany({
+          where: { supplierId: s.id, settlementMode: 'ADJUST' },
+        });
+        const adjustSum = adjustReturns.reduce(
+          (acc, r) => acc + Number(r.totalAmount),
+          0,
+        );
+        const payments = await tx.supplierPayment.findMany({
+          where: { supplierId: s.id },
+        });
+        const paidSum = payments.reduce((acc, p) => acc + Number(p.amount), 0);
+        const expected = Math.max(0, grnSum - adjustSum - paidSum);
+        if (Number(s.currentOutstanding) !== expected) {
+          await tx.supplier.update({
+            where: { id: s.id },
+            data: { currentOutstanding: expected },
+          });
+          updated++;
+        }
       }
-    }
-    return { message: `Backfill complete. ${updated} PO items updated.` };
+      return {
+        message: `Supplier outstanding backfill complete. ${updated} suppliers updated.`,
+      };
+    }, MIGRATION_TX_OPTIONS);
+  }
+
+  async backfillGrnOrderedQty() {
+    return this.prisma.$transaction(async (tx) => {
+      // For each PO, walk through GRNs in chronological order and set
+      // each GRN item's orderedQty = remaining qty at the time of that delivery
+      const pos = await tx.purchaseOrder.findMany({
+        include: { items: true },
+      });
+      let updated = 0;
+      for (const po of pos) {
+        const grns = await tx.gRN.findMany({
+          where: { poId: po.id },
+          include: { items: true },
+          orderBy: { date: 'asc' },
+        });
+        if (grns.length === 0) continue;
+
+        // Track running received qty per product
+        const cumulativeReceived: Record<string, number> = {};
+        const requiredByProduct: Record<string, number> = {};
+        for (const pi of po.items) {
+          requiredByProduct[pi.productId] = pi.requiredQty;
+        }
+
+        for (const grn of grns) {
+          for (const gi of grn.items) {
+            const required = requiredByProduct[gi.productId] ?? gi.orderedQty;
+            const alreadyReceived = cumulativeReceived[gi.productId] ?? 0;
+            const expectedThisDelivery = Math.max(0, required - alreadyReceived);
+            if (expectedThisDelivery !== gi.orderedQty) {
+              await tx.gRNItem.update({
+                where: { id: gi.id },
+                data: { orderedQty: expectedThisDelivery },
+              });
+              updated++;
+            }
+            cumulativeReceived[gi.productId] =
+              alreadyReceived + gi.receivedQty + gi.freeQty;
+          }
+        }
+      }
+      return { message: `Backfill complete. ${updated} GRN items updated.` };
+    }, MIGRATION_TX_OPTIONS);
+  }
+
+  async backfillPoReceivedQty() {
+    return this.prisma.$transaction(async (tx) => {
+      // Find all POs that have linked GRNs
+      const pos = await tx.purchaseOrder.findMany({
+        include: { items: true },
+      });
+      let updated = 0;
+      for (const po of pos) {
+        const allGrns = await tx.gRN.findMany({
+          where: { poId: po.id },
+          include: { items: true },
+        });
+        if (allGrns.length === 0) continue;
+        const receivedByProduct: Record<string, number> = {};
+        for (const g of allGrns) {
+          for (const gi of g.items) {
+            receivedByProduct[gi.productId] =
+              (receivedByProduct[gi.productId] ?? 0) +
+              gi.receivedQty +
+              gi.freeQty;
+          }
+        }
+        for (const pi of po.items) {
+          const totalReceived = receivedByProduct[pi.productId] ?? 0;
+          if (totalReceived !== pi.receivedQty) {
+            await tx.purchaseOrderItem.update({
+              where: { id: pi.id },
+              data: { receivedQty: totalReceived },
+            });
+            updated++;
+          }
+        }
+        const allFulfilled = po.items.every(
+          (pi) => (receivedByProduct[pi.productId] ?? 0) >= pi.requiredQty,
+        );
+        const expectedStatus = allFulfilled
+          ? 'FULLY_RECEIVED'
+          : 'PARTIALLY_RECEIVED';
+        if (
+          po.status !== expectedStatus &&
+          po.status !== 'CLOSED' &&
+          po.status !== 'DRAFT'
+        ) {
+          await tx.purchaseOrder.update({
+            where: { id: po.id },
+            data: { status: expectedStatus },
+          });
+        }
+      }
+      return { message: `Backfill complete. ${updated} PO items updated.` };
+    }, MIGRATION_TX_OPTIONS);
   }
 
   async backfillBatchGrnItemId() {
-    // Link existing batches to the GRN line that created them, matching by
-    // (productId, batchNumber, expiryDate, supplierId). One-time pass for
-    // batches created before the grnItemId column existed.
-    const grns = await this.prisma.gRN.findMany({ include: { items: true } });
-    let linked = 0;
-    let unmatched = 0;
-    for (const grn of grns) {
-      for (const item of grn.items) {
-        const already = await this.prisma.batch.findFirst({
-          where: { grnItemId: item.id },
-        });
-        if (already) continue;
-        const candidate = await this.prisma.batch.findFirst({
-          where: {
-            grnItemId: null,
-            productId: item.productId,
-            batchNumber: item.batchNumber,
-            expiryDate: item.expiryDate,
-            supplierId: grn.supplierId,
-          },
-          orderBy: { createdAt: 'asc' },
-        });
-        if (candidate) {
-          await this.prisma.batch.update({
-            where: { id: candidate.id },
-            data: { grnItemId: item.id },
+    return this.prisma.$transaction(async (tx) => {
+      // Link existing batches to the GRN line that created them, matching by
+      // (productId, batchNumber, expiryDate, supplierId). One-time pass for
+      // batches created before the grnItemId column existed.
+      const grns = await tx.gRN.findMany({ include: { items: true } });
+      let linked = 0;
+      let unmatched = 0;
+      for (const grn of grns) {
+        for (const item of grn.items) {
+          const already = await tx.batch.findFirst({
+            where: { grnItemId: item.id },
           });
-          linked++;
-        } else {
-          unmatched++;
+          if (already) continue;
+          const candidate = await tx.batch.findFirst({
+            where: {
+              grnItemId: null,
+              productId: item.productId,
+              batchNumber: item.batchNumber,
+              expiryDate: item.expiryDate,
+              supplierId: grn.supplierId,
+            },
+            orderBy: { createdAt: 'asc' },
+          });
+          if (candidate) {
+            await tx.batch.update({
+              where: { id: candidate.id },
+              data: { grnItemId: item.id },
+            });
+            linked++;
+          } else {
+            unmatched++;
+          }
         }
       }
-    }
-    return {
-      message: `Batch→GRN backfill complete. ${linked} batches linked, ${unmatched} GRN items had no matching unlinked batch.`,
-    };
+      return {
+        message: `Batch→GRN backfill complete. ${linked} batches linked, ${unmatched} GRN items had no matching unlinked batch.`,
+      };
+    }, MIGRATION_TX_OPTIONS);
   }
 
   async findOne(id: string, branchId?: string) {

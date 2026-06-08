@@ -3,6 +3,7 @@ import { ApiBearerAuth, ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger'
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
 import { Roles } from '../common/decorators/roles.decorator';
+import { resolveBranchScope } from '../common/branch-scope.util';
 import { ProductsService } from './products.service';
 
 @ApiTags('batches')
@@ -38,7 +39,7 @@ export class BatchesController {
     @Query('take') take?: string,
     @Query('branchId') branchId?: string,
   ) {
-    const effectiveBranchId = req.user.branchId ?? branchId;
+    const effectiveBranchId = resolveBranchScope(req.user);
     return this.productsService.findBatches({
       query: q,
       productId,

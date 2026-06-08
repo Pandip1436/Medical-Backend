@@ -22,6 +22,7 @@ import {
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
 import { Roles } from '../common/decorators/roles.decorator';
+import { resolveBranchScope } from '../common/branch-scope.util';
 import type { AuthenticatedRequest } from '../common/types/authenticated-request';
 
 @ApiTags('purchase-orders')
@@ -75,7 +76,7 @@ export class PurchaseOrdersController {
     @Query('page') page?: string,
     @Query('pageSize') pageSize?: string,
   ) {
-    const effectiveBranchId = req.user.branchId ?? branchId ?? undefined;
+    const effectiveBranchId = resolveBranchScope(req.user);
     const pageNum = page ? Number(page) : undefined;
     const pageSizeNum = pageSize ? Number(pageSize) : undefined;
     return this.poService.findAll(q, effectiveBranchId, pageNum, pageSizeNum);

@@ -57,6 +57,7 @@ model Branch {
   paymentLinks       PaymentLink[]
   whatsappMessages   WhatsAppMessage[]
   numberingConfigs   NumberingConfig[]
+  deliveries         DeliveryTracking[]
 }
 
 // ── Users & Auth ──────────────────────────────────────────────
@@ -90,6 +91,7 @@ model User {
   invoiceEdits         InvoiceEditAudit[] @relation("InvoiceEdits")
   backups              Backup[]
   creditNoteReviews    CreditNote[]       @relation("CreditNoteReviews")
+  deliveries           DeliveryTracking[] @relation("UserDeliveries")
 }
 
 // Join table: which branches a user may access (the "allowed set").
@@ -242,6 +244,10 @@ model Product {
   alternatives     Product[]        @relation("Alternatives")
   alternativesOf   Product[]        @relation("Alternatives")
   adjustmentLogs   StockAdjustmentLog[]
+  // Delivery date of the GRN that last set this product's master mrp/purchaseRate.
+  // Guards against a back-dated GRN overwriting newer pricing (see GrnService).
+  // Null = master price has never been set from a dated GRN.
+  lastPriceUpdate  DateTime?
   createdAt        DateTime         @default(now())
 
   @@unique([barcode, branchId])
@@ -284,7 +290,7 @@ model Batch {
   productId    String
   product      Product  @relation(fields: [productId], references: [id])
   batchNumber  String
-  mfgDate      DateTime
+  mfgDate      DateTime?
   expiryDate   DateTime
   quantity     Int
   mrp          Decimal
@@ -486,6 +492,7 @@ model Invoice {
   leadId          String?
   lead            Lead?         @relation(fields: [leadId], references: [id])
   editAudits      InvoiceEditAudit[]
+  delivery        DeliveryTracking?
 
   @@index([leadId])  // declared to match the index created in 20260518100000_add_lead_module
 }
@@ -547,6 +554,75 @@ enum InvoiceStatus {
   PARTIAL
   RETURNED
   CANCELLED
+}
+
+// ── Delivery Tracking ─────────────────────────────────────────
+// Created when the "Courier" toggle is enabled on an invoice. Snapshots the
+// invoice's customer + order details so the delivery desk has everything it
+// needs without re-joining billing. The `events` relation is the ordered
+// status timeline (Booked → … → Delivered/Returned) shown on the tracking page.
+model DeliveryTracking {
+  id              String          @id @default(cuid())
+  invoiceId       String          @unique
+  invoice         Invoice         @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  // Snapshot fields — carried from the invoice at toggle time so the delivery
+  // record is self-contained even if the invoice is later edited.
+  invoiceNumber   String
+  customerName    String
+  mobileNumber    String?
+  deliveryAddress String?
+  orderSummary    String?         // human-readable item summary (e.g. "Paracetamol ×2, …")
+  // Courier fields — filled manually or auto-populated from OCR of the receipt.
+  courierName     String?
+  trackingId      String?
+  dispatchDate    DateTime?
+  receiptName     String?         // original filename of the uploaded receipt
+  ocrText         String?         // raw OCR text captured from the receipt (for audit)
+  status          DeliveryStatus  @default(BOOKED)
+  deliveredAt     DateTime?
+  // Carrier (AfterShip) sync metadata. `carrierSlug` is the resolved AfterShip
+  // courier slug (e.g. "dtdc"); `lastSyncedAt` is the last successful live poll.
+  carrierSlug     String?
+  lastSyncedAt    DateTime?
+  branchId        String?
+  branch          Branch?         @relation(fields: [branchId], references: [id])
+  createdById     String
+  createdBy       User            @relation("UserDeliveries", fields: [createdById], references: [id])
+  events          DeliveryEvent[]
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  @@index([status])
+  @@index([branchId])
+  @@index([trackingId])
+}
+
+model DeliveryEvent {
+  id          String           @id @default(cuid())
+  deliveryId  String
+  delivery    DeliveryTracking @relation(fields: [deliveryId], references: [id], onDelete: Cascade)
+  status      DeliveryStatus
+  location    String?
+  note        String?
+  occurredAt  DateTime         @default(now())
+  createdAt   DateTime         @default(now())
+  // Stable hash of a carrier (AfterShip) checkpoint — lets repeated syncs skip
+  // checkpoints already imported. NULL for manually-added events (Postgres
+  // allows many NULLs under a unique index, so manual events never collide).
+  externalId  String?
+
+  @@unique([deliveryId, externalId])
+  @@index([deliveryId])
+}
+
+enum DeliveryStatus {
+  BOOKED
+  DISPATCHED
+  IN_TRANSIT
+  ARRIVED_AT_HUB
+  OUT_FOR_DELIVERY
+  DELIVERED
+  RETURNED
 }
 
 // ── Purchase Orders ───────────────────────────────────────────
@@ -653,7 +729,7 @@ model GRNItem {
   receivedQty  Int
   freeQty      Int      @default(0)
   batchNumber  String
-  mfgDate      DateTime
+  mfgDate      DateTime?
   expiryDate   DateTime
   purchaseRate Decimal
   mrp          Decimal

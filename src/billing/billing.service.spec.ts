@@ -20,8 +20,8 @@ type Mock<T = any> = jest.Mock<Promise<T>, any[]>;
 interface MockTx {
   invoice: { findUnique: Mock; update: Mock };
   invoiceItem: { deleteMany: Mock };
-  batch: { update: Mock; findUnique: Mock };
-  product: { update: Mock; findMany: Mock };
+  batch: { update: Mock; findUnique: Mock; findFirst: Mock; updateMany: Mock };
+  product: { update: Mock; findMany: Mock; findUnique: Mock };
   customer: { update: Mock };
   payment: { create: Mock };
   prescription: { findFirst: Mock };
@@ -39,10 +39,15 @@ function makeTx(overrides: Partial<MockTx> = {}): MockTx {
     batch: {
       update: jest.fn().mockResolvedValue({}),
       findUnique: jest.fn().mockResolvedValue(null),
+      // FEFO fallback — only consulted when a line arrives without a batchId.
+      findFirst: jest.fn().mockResolvedValue(null),
+      // Atomic, race-safe decrement (count: 1 = the conditional update applied).
+      updateMany: jest.fn().mockResolvedValue({ count: 1 }),
     },
     product: {
       update: jest.fn().mockResolvedValue({ totalStock: 100, minStock: 0, branchId: null }),
       findMany: jest.fn().mockResolvedValue([]),
+      findUnique: jest.fn().mockResolvedValue(null),
     },
     customer: { update: jest.fn().mockResolvedValue({}) },
     payment: { create: jest.fn().mockResolvedValue({}) },
@@ -229,9 +234,10 @@ describe('BillingService.editUnpaidInvoice', () => {
     );
     expect(productRestores.length).toBeGreaterThanOrEqual(1);
 
-    // Then the new quantity (12) deducted via deductStockForItem
-    const newDeductCalls = tx.batch.update.mock.calls.filter((c: any[]) =>
-      typeof c[0]?.data?.quantity === 'number' && c[0].data.quantity === 50 - 12,
+    // Then the new quantity (12) deducted via deductStockForItem using the
+    // atomic, race-safe conditional decrement (updateMany with a `gte` guard).
+    const newDeductCalls = tx.batch.updateMany.mock.calls.filter((c: any[]) =>
+      c[0]?.data?.quantity?.decrement === 12 && c[0]?.where?.quantity?.gte === 12,
     );
     expect(newDeductCalls.length).toBe(1);
   });

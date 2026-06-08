@@ -1,17 +1,33 @@
-import { Injectable } from '@nestjs/common';
-import PDFDocument from 'pdfkit';
+import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
+import { promises as fs, existsSync } from 'fs';
+import { join } from 'path';
+import Handlebars from 'handlebars';
+import puppeteer, { Browser } from 'puppeteer';
 import * as QRCode from 'qrcode';
+import dayjs from 'dayjs';
 
 export interface InvoicePdfData {
   invoiceNumber: string;
   date: Date;
   dueDate?: Date | string | null;   // credit-sale payment due date
+
+  // ---- Customer (hospital) ----
   customerName: string;
   customerPhone?: string | null;
   customerAddress?: string | null;
+  customerBranch?: string | null;    // hospital branch / department (optional)
+  customerGstin?: string | null;     // optional
+  customerDlNumber?: string | null;  // hospital drug-license no (optional)
+
+  // ---- Supplier (the billing branch) ----
+  // `branch*` names kept for backward-compat with the existing listener.
   branchName?: string | null;
   branchGstin?: string | null;
   branchAddress?: string | null;
+  branchPhone?: string | null;       // optional
+  branchEmail?: string | null;       // optional
+  branchDlNumber?: string | null;    // supplier drug-license no (optional)
+
   items: Array<{
     productName: string;
     batchNumber: string;
@@ -32,150 +48,132 @@ export interface InvoicePdfData {
   roundOff: number;
   grandTotal: number;
   amountPaid: number;
-  paymentQrShortUrl?: string;   // if provided, embed a QR pointing to this URL (top-right)
+  paymentQrShortUrl?: string;   // if provided, embed a QR pointing to this URL
   paymentQrAmount?: number;     // outstanding amount the QR is for
 }
 
 @Injectable()
-export class InvoicePdfService {
+export class InvoicePdfService implements OnModuleDestroy {
+  private readonly logger = new Logger(InvoicePdfService.name);
+  private browser?: Browser;
+  private compiled?: Handlebars.TemplateDelegate;
+
+  constructor() {
+    this.registerHelpers();
+  }
+
+  // ── Public API — unchanged signature. Returns a PDF Buffer that the
+  //    invoice-created listener uploads to R2 and attaches to WhatsApp. ──
   async render(data: InvoicePdfData): Promise<Buffer> {
-    const doc = new PDFDocument({ size: 'A4', margin: 36 });
-    const chunks: Buffer[] = [];
-    doc.on('data', (c: Buffer) => chunks.push(c));
-    const done = new Promise<Buffer>((resolve, reject) => {
-      doc.on('end', () => resolve(Buffer.concat(chunks)));
-      doc.on('error', reject);
-    });
-
-    await this.layout(doc, data);
-    doc.end();
-    return done;
+    const html = await this.renderHtml(data);
+    const browser = await this.getBrowser();
+    const page = await browser.newPage();
+    try {
+      // Everything (CSS + QR) is inlined, so `load` fires immediately — no
+      // network round-trips, so the render is fast and deterministic.
+      await page.setContent(html, { waitUntil: 'load' });
+      const pdf = await page.pdf({
+        format: 'A4',
+        printBackground: true,
+        margin: { top: '12mm', right: '12mm', bottom: '14mm', left: '12mm' },
+      });
+      // page.pdf() returns Uint8Array on newer Puppeteer; normalise to Buffer
+      // so the existing R2 upload pipeline keeps working byte-for-byte.
+      return Buffer.from(pdf);
+    } finally {
+      await page.close().catch(() => undefined);
+    }
   }
 
-  private async layout(doc: PDFKit.PDFDocument, d: InvoicePdfData) {
-    const pageRight = doc.page.width - doc.page.margins.right;
-    const inr = (n: number) => `Rs. ${n.toFixed(2)}`;
+  async onModuleDestroy() {
+    await this.browser?.close().catch(() => undefined);
+  }
 
-    // Header — pharmacy name + GSTIN, QR top-right if there's outstanding
-    doc.fontSize(16).font('Helvetica-Bold').text(d.branchName ?? 'Pharmacy', { continued: false });
-    doc.fontSize(9).font('Helvetica');
-    if (d.branchAddress) doc.text(d.branchAddress, { width: 320 });
-    if (d.branchGstin) doc.text(`GSTIN: ${d.branchGstin}`);
+  // ── Build the HTML from the compiled Handlebars template + a view model ──
+  private async renderHtml(d: InvoicePdfData): Promise<string> {
+    const template = await this.getTemplate();
 
-    // QR (top-right) — only if there's an outstanding payment URL
+    const outstanding = round2(Number(d.grandTotal) - Number(d.amountPaid));
+    const supplierContact = [d.branchPhone, d.branchEmail].filter(Boolean).join('  •  ');
+
+    let qrDataUri: string | undefined;
     if (d.paymentQrShortUrl) {
-      const qrPng = await QRCode.toBuffer(d.paymentQrShortUrl, { width: 120, margin: 1 });
-      const qrSize = 110;
-      const qrX = pageRight - qrSize;
-      const qrY = doc.page.margins.top;
-      doc.image(qrPng, qrX, qrY, { width: qrSize, height: qrSize });
-      doc
-        .fontSize(8)
-        .fillColor('#444')
-        .text('Scan to Pay via UPI', qrX, qrY + qrSize + 2, { width: qrSize, align: 'center' })
-        .fillColor('#000');
-      if (d.paymentQrAmount && d.paymentQrAmount > 0) {
-        doc
-          .fontSize(9)
-          .font('Helvetica-Bold')
-          .text(inr(d.paymentQrAmount), qrX, qrY + qrSize + 14, { width: qrSize, align: 'center' })
-          .font('Helvetica');
-      }
+      qrDataUri = await QRCode.toDataURL(d.paymentQrShortUrl, { width: 220, margin: 1 });
     }
 
-    doc.moveDown(2);
-
-    // Invoice meta
-    doc.fontSize(18).font('Helvetica-Bold').text('TAX INVOICE', { align: 'left' });
-    doc.fontSize(10).font('Helvetica');
-    doc.text(`Invoice #: ${d.invoiceNumber}`);
-    doc.text(`Date: ${new Date(d.date).toLocaleDateString('en-IN')}`);
-    if (d.dueDate) doc.text(`Due Date: ${new Date(d.dueDate).toLocaleDateString('en-IN')}`);
-    doc.moveDown(0.5);
-
-    // Customer block
-    doc.fontSize(10).font('Helvetica-Bold').text('Bill To:');
-    doc.font('Helvetica').text(d.customerName);
-    if (d.customerPhone) doc.text(d.customerPhone);
-    if (d.customerAddress) doc.text(d.customerAddress, { width: 320 });
-    doc.moveDown(0.5);
-
-    // Items table — simple grid
-    const tableTop = doc.y;
-    const cols = [
-      { label: 'Item', x: 36, w: 170 },
-      { label: 'Batch', x: 206, w: 60 },
-      { label: 'Expiry', x: 266, w: 50 },
-      { label: 'Qty', x: 316, w: 30 },
-      { label: 'Rate', x: 346, w: 55 },
-      { label: 'Disc%', x: 401, w: 35 },
-      { label: 'GST%', x: 436, w: 35 },
-      { label: 'Amount', x: 471, w: 88 },
-    ];
-    doc.font('Helvetica-Bold').fontSize(9);
-    for (const c of cols) doc.text(c.label, c.x, tableTop, { width: c.w });
-    doc
-      .moveTo(36, tableTop + 12)
-      .lineTo(pageRight, tableTop + 12)
-      .stroke();
-
-    let y = tableTop + 16;
-    doc.font('Helvetica').fontSize(9);
-    for (const item of d.items) {
-      doc.text(item.productName, cols[0].x, y, { width: cols[0].w });
-      doc.text(item.batchNumber, cols[1].x, y, { width: cols[1].w });
-      doc.text(new Date(item.expiryDate).toLocaleDateString('en-IN', { year: '2-digit', month: 'short' }), cols[2].x, y, { width: cols[2].w });
-      doc.text(String(item.quantity), cols[3].x, y, { width: cols[3].w });
-      doc.text(Number(item.rate).toFixed(2), cols[4].x, y, { width: cols[4].w });
-      doc.text(Number(item.discountPercent).toFixed(1), cols[5].x, y, { width: cols[5].w });
-      doc.text(Number(item.gstPercent).toFixed(1), cols[6].x, y, { width: cols[6].w });
-      doc.text(inr(Number(item.amount)), cols[7].x, y, { width: cols[7].w, align: 'right' });
-      y += 14;
-      if (y > doc.page.height - 180) {
-        doc.addPage();
-        y = doc.page.margins.top;
-      }
-    }
-
-    doc
-      .moveTo(36, y + 2)
-      .lineTo(pageRight, y + 2)
-      .stroke();
-
-    // Totals (right-aligned block)
-    const totalsX = 380;
-    const valuesX = 480;
-    y += 10;
-    const row = (label: string, value: number, bold = false) => {
-      if (bold) doc.font('Helvetica-Bold');
-      doc.text(label, totalsX, y, { width: 100 });
-      doc.text(inr(value), valuesX, y, { width: 80, align: 'right' });
-      if (bold) doc.font('Helvetica');
-      y += 14;
+    const view = {
+      ...d,
+      supplierName: d.branchName ?? 'Medical Supplier',
+      supplierAddress: d.branchAddress,
+      supplierGstin: d.branchGstin,
+      supplierDlNumber: d.branchDlNumber,
+      supplierContact,
+      outstanding,
+      qrDataUri,
+      // Pre-computed visibility flags keep the template free of math/logic.
+      showDiscount: Number(d.productDiscount) > 0,
+      showCgst: Number(d.cgst) > 0,
+      showSgst: Number(d.sgst) > 0,
+      showIgst: Number(d.igst) > 0,
+      showRoundOff: Number(d.roundOff) !== 0,
+      showPaid: Number(d.amountPaid) > 0,
+      showOutstanding: outstanding > 0.01,
     };
-    row('Subtotal', Number(d.subtotal));
-    if (Number(d.productDiscount) > 0) row('Discount', -Number(d.productDiscount));
-    row('Taxable', Number(d.taxableAmount));
-    row('CGST', Number(d.cgst));
-    row('SGST', Number(d.sgst));
-    if (Number(d.igst) > 0) row('IGST', Number(d.igst));
-    if (Number(d.roundOff) !== 0) row('Round Off', Number(d.roundOff));
-    row('Grand Total', Number(d.grandTotal), true);
-    if (Number(d.amountPaid) > 0) row('Paid', Number(d.amountPaid));
-    const outstanding = Number(d.grandTotal) - Number(d.amountPaid);
-    if (outstanding > 0.01) row('Outstanding', outstanding, true);
 
-    // Footer note
-    doc
-      .font('Helvetica-Oblique')
-      .fontSize(8)
-      .fillColor('#666')
-      .text(
-        'This is a computer-generated invoice. For payment, scan the UPI QR above or contact the pharmacy.',
-        36,
-        doc.page.height - 50,
-        { width: pageRight - 36, align: 'center' },
-      )
-      .fillColor('#000');
+    return template(view);
   }
+
+  // ── Lazy, cached Handlebars compile ──
+  private async getTemplate(): Promise<Handlebars.TemplateDelegate> {
+    if (this.compiled) return this.compiled;
+    const src = await fs.readFile(this.resolveTemplatePath(), 'utf8');
+    this.compiled = Handlebars.compile(src);
+    return this.compiled;
+  }
+
+  // Works both compiled (dist/src/pdf/templates) and under ts-node (src/pdf/templates).
+  // Requires the nest-cli.json asset rule that copies *.hbs into dist (see Step 4).
+  private resolveTemplatePath(): string {
+    const next = join(__dirname, 'templates', 'invoice.hbs');
+    if (existsSync(next)) return next;
+    const fallback = join(process.cwd(), 'src', 'pdf', 'templates', 'invoice.hbs');
+    if (existsSync(fallback)) return fallback;
+    throw new Error(`invoice.hbs not found (looked in ${next} and ${fallback})`);
+  }
+
+  // ── Shared, lazily-launched Chromium. Reused across invoices; relaunched
+  //    automatically if it ever disconnects. Closed on module destroy. ──
+  private async getBrowser(): Promise<Browser> {
+    if (this.browser?.connected) return this.browser;
+    this.logger.log('Launching Chromium for PDF rendering…');
+    this.browser = await puppeteer.launch({
+      headless: true,
+      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage', // avoid /dev/shm exhaustion in containers
+        '--font-render-hinting=none',
+      ],
+    });
+    return this.browser;
+  }
+
+  private registerHelpers() {
+    // ₹ with Indian digit grouping, always 2 dp.
+    Handlebars.registerHelper('money', (n: unknown) =>
+      '₹ ' +
+      Number(n ?? 0).toLocaleString('en-IN', {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+      }),
+    );
+    Handlebars.registerHelper('expiry', (d: unknown) => (d ? dayjs(d as Date).format('MM/YYYY') : '-'));
+    Handlebars.registerHelper('day', (d: unknown) => (d ? dayjs(d as Date).format('DD MMM YYYY') : '-'));
+    Handlebars.registerHelper('inc', (i: number) => i + 1); // 1-based row numbers
+  }
+}
+
+function round2(n: number): number {
+  return Math.round((n + Number.EPSILON) * 100) / 100;
 }

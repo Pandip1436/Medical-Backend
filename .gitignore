@@ -15,3 +15,8 @@ dist
 # Local dev runtime logs
 backend-startup.log
 *.log
+
+# One-time migration re-baseline (2026-06): the 46 pre-baseline migrations,
+# archived locally for reference only. Must NOT be committed — the canonical
+# history is now prisma/migrations/0_init.
+/prisma/migrations_archive/

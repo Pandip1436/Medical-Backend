@@ -8,6 +8,8 @@ import { RolesGuard } from '../common/guards/roles.guard';
 import { Roles } from '../common/decorators/roles.decorator';
 import { PaymentsService } from '../payments/payments.service';
 import { ReconciliationService } from '../payments/reconciliation.service';
+import { DispatchNotificationService } from '../dispatch/dispatch-notification.service';
+import { resolveBranchScope } from '../common/branch-scope.util';
 
 @ApiTags('billing')
 @ApiBearerAuth()
@@ -18,6 +20,7 @@ export class BillingController {
     private readonly billingService: BillingService,
     private readonly paymentsService: PaymentsService,
     private readonly reconciliation: ReconciliationService,
+    private readonly dispatchNotifications: DispatchNotificationService,
   ) {}
 
   @Post()
@@ -56,7 +59,7 @@ export class BillingController {
     @Query('skip') skip?: string,
     @Query('take') take?: string,
   ) {
-    const effectiveBranchId = req.user.branchId ?? branchId;
+    const effectiveBranchId = resolveBranchScope(req.user);
     const skipNum = skip !== undefined ? Number(skip) : undefined;
     const takeNum = take !== undefined ? Number(take) : undefined;
     return this.billingService.findAll(
@@ -91,7 +94,7 @@ export class BillingController {
     @Query('from') from?: string,
     @Query('to') to?: string,
   ) {
-    const effectiveBranchId = req.user.branchId ?? branchId;
+    const effectiveBranchId = resolveBranchScope(req.user);
     return this.billingService.summary(effectiveBranchId, {
       salespersonId: salespersonId || undefined,
       from: from || undefined,
@@ -191,6 +194,18 @@ export class BillingController {
     return this.billingService.emitInvoiceCreatedById(id);
   }
 
+  // Dispatch notification: call this right after you mark an order/invoice as
+  // dispatched. It notifies the hospital over WhatsApp with the invoice PDF.
+  // Fire-and-forget by design — a WhatsApp failure never fails this request
+  // (the service returns { ok: false, skipped } instead of throwing), so it is
+  // safe to call after the dispatch DB write has already committed.
+  @Post(':id/notify-dispatch')
+  @Roles('ADMIN', 'PHARMACIST')
+  @ApiOperation({ summary: 'Notify the hospital over WhatsApp that their order was dispatched' })
+  notifyDispatch(@Param('id') id: string) {
+    return this.dispatchNotifications.notifyHospitalOnDispatch(id);
+  }
+
   @Post(':id/payment-link')
   @Roles('ADMIN', 'PHARMACIST')
   @ApiOperation({ summary: 'Generate / regenerate a UPI payment QR for the invoice outstanding' })
@@ -250,7 +265,7 @@ export class BillingController {
     @Query('branchId') branchId: string,
     @Res() res: Response,
   ) {
-    const effectiveBranchId = req.user.branchId ?? branchId;
+    const effectiveBranchId = resolveBranchScope(req.user);
     const xml = await this.billingService.exportTallyXml(from, to, effectiveBranchId);
     res.setHeader('Content-Type', 'application/xml');
     res.setHeader('Content-Disposition', 'attachment; filename="tally-export.xml"');
@@ -270,7 +285,7 @@ export class BillingController {
     @Query('branchId') branchId: string,
     @Res() res: Response,
   ) {
-    const effectiveBranchId = req.user.branchId ?? branchId;
+    const effectiveBranchId = resolveBranchScope(req.user);
     const csv = await this.billingService.exportCsv(from, to, effectiveBranchId);
     res.setHeader('Content-Type', 'text/csv');
     res.setHeader('Content-Disposition', 'attachment; filename="invoices-export.csv"');

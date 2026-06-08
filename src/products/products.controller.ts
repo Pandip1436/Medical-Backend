@@ -9,6 +9,7 @@ import { ApiTags, ApiOperation, ApiBearerAuth, ApiQuery, ApiConsumes } from '@ne
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
 import { Roles } from '../common/decorators/roles.decorator';
+import { resolveBranchScope } from '../common/branch-scope.util';
 
 @ApiTags('products')
 @ApiBearerAuth()
@@ -91,7 +92,7 @@ export class ProductsController {
     @Query('branchId') branchId?: string,
     @Query('status') status?: string,
   ) {
-    const effectiveBranchId = req.user.branchId ?? branchId;
+    const effectiveBranchId = resolveBranchScope(req.user);
     return this.productsService.findAll({
       query: q,
       categoryId,
@@ -128,7 +129,7 @@ export class ProductsController {
     @Query('schedule') schedule?: string,
     @Query('status') status?: string,
   ) {
-    const effectiveBranchId = req.user?.branchId ?? branchId ?? undefined;
+    const effectiveBranchId = resolveBranchScope(req.user);
     return this.productsService.exportData(effectiveBranchId, {
       query: q?.trim() || undefined,
       categoryId: categoryId || undefined,

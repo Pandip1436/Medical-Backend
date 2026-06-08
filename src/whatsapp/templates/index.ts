@@ -150,6 +150,54 @@ export function customerSaleReminderTemplate(v: CustomerSaleReminderVars) {
   };
 }
 
+// Sent to a hospital/customer when their order (Invoice) is dispatched from a
+// branch warehouse. Carries the official invoice PDF as a header document so
+// the recipient can download it natively in WhatsApp — no raw link needed.
+//
+// Meta template literal to register (UTILITY category, en_US) with a DOCUMENT
+// header:
+//   Header:  [document]
+//   Body:
+//     Hello {{1}}, your order #{{2}} has been dispatched from our {{3}}
+//     warehouse. Your official invoice is attached above.
+//     Thank you for your order.
+export interface OrderDispatchedVars {
+  hospitalName: string;   // customer.name (full name, e.g. "City General Hospital")
+  orderNumber: string;    // invoice.invoiceNumber — the doc number the hospital recognises
+  branchName: string;     // dispatching branch/warehouse name
+  pdfUrl: string;         // public R2 URL to the invoice PDF
+  languageCode?: string;  // default en_US
+}
+
+export function orderDispatchedTemplate(v: OrderDispatchedVars) {
+  return {
+    name: 'order_dispatched',
+    language: { code: v.languageCode ?? 'en_US' },
+    components: [
+      {
+        type: 'header',
+        parameters: [
+          {
+            type: 'document',
+            document: {
+              link: v.pdfUrl,
+              filename: `Invoice_${v.orderNumber}.pdf`,
+            },
+          },
+        ],
+      },
+      {
+        type: 'body',
+        parameters: [
+          { type: 'text', text: v.hospitalName },
+          { type: 'text', text: v.orderNumber },
+          { type: 'text', text: v.branchName },
+        ],
+      },
+    ],
+  };
+}
+
 // Registry of every template name → builder. The retry sweeper uses this to
 // rebuild a Meta template payload from the `templateVars` JSON stored on a
 // failed WhatsAppMessage row, without needing to re-fire the source event.
@@ -163,4 +211,5 @@ export const TEMPLATE_BUILDERS: Record<string, TemplateBuilder> = {
   payment_received: paymentReceivedTemplate,
   low_stock_supplier_alert: lowStockSupplierTemplate,
   customer_sale_reminder: customerSaleReminderTemplate,
+  order_dispatched: orderDispatchedTemplate,
 };

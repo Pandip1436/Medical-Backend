@@ -1,4 +1,4 @@
-import { IsString, IsNotEmpty, IsNumber, Min, IsDateString } from 'class-validator';
+import { IsString, IsNotEmpty, IsNumber, Min, IsDateString, IsOptional } from 'class-validator';
 
 export class CreateInvoiceItemDto {
   @IsString()
@@ -9,17 +9,20 @@ export class CreateInvoiceItemDto {
   @IsNotEmpty()
   productName: string;
 
+  // Optional: when omitted on a real sale, the backend auto-selects the batch
+  // via FEFO (oldest unexpired batch with enough stock). batchNumber/expiryDate
+  // are then snapshotted from the resolved batch.
   @IsString()
-  @IsNotEmpty()
-  batchId: string;
+  @IsOptional()
+  batchId?: string;
 
   @IsString()
-  @IsNotEmpty()
-  batchNumber: string;
+  @IsOptional()
+  batchNumber?: string;
 
   @IsDateString()
-  @IsNotEmpty()
-  expiryDate: string;
+  @IsOptional()
+  expiryDate?: string;
 
   @IsNumber()
   @Min(1)

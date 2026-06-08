@@ -21,6 +21,7 @@ import {
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
 import { Roles } from '../common/decorators/roles.decorator';
+import { resolveBranchScope } from '../common/branch-scope.util';
 
 @ApiTags('grn')
 @ApiBearerAuth()
@@ -71,13 +72,13 @@ export class GrnController {
     @Query('page') page?: string,
     @Query('pageSize') pageSize?: string,
   ) {
-    const effectiveBranchId = req.user.branchId ?? branchId ?? undefined;
+    const effectiveBranchId = resolveBranchScope(req.user);
     const pageNum = page ? Number(page) : undefined;
     const pageSizeNum = pageSize ? Number(pageSize) : undefined;
     return this.grnService.findAll(q, effectiveBranchId, pageNum, pageSizeNum);
   }
 
-  @Get('admin/backfill-po-qty')
+  @Post('admin/backfill-po-qty')
   @Roles('ADMIN')
   @ApiOperation({
     summary:
@@ -87,7 +88,7 @@ export class GrnController {
     return this.grnService.backfillPoReceivedQty();
   }
 
-  @Get('admin/backfill-grn-ordered-qty')
+  @Post('admin/backfill-grn-ordered-qty')
   @Roles('ADMIN')
   @ApiOperation({
     summary:
@@ -97,7 +98,7 @@ export class GrnController {
     return this.grnService.backfillGrnOrderedQty();
   }
 
-  @Get('admin/backfill-supplier-outstanding')
+  @Post('admin/backfill-supplier-outstanding')
   @Roles('ADMIN')
   @ApiOperation({
     summary:
@@ -107,7 +108,7 @@ export class GrnController {
     return this.grnService.backfillSupplierOutstanding();
   }
 
-  @Get('admin/backfill-po-status-with-debit-notes')
+  @Post('admin/backfill-po-status-with-debit-notes')
   @Roles('ADMIN')
   @ApiOperation({
     summary: 'Recompute PO status including short-delivery debit notes',
@@ -116,7 +117,7 @@ export class GrnController {
     return this.grnService.backfillPoStatusWithDebitNotes();
   }
 
-  @Get('admin/reverse-short-delivery-stock')
+  @Post('admin/reverse-short-delivery-stock')
   @Roles('ADMIN')
   @ApiOperation({
     summary: 'Reverse wrongly-deducted stock for short-delivery debit notes',
@@ -125,7 +126,7 @@ export class GrnController {
     return this.grnService.reverseShortDeliveryStockDeduction();
   }
 
-  @Get('admin/backfill-batch-grnitem')
+  @Post('admin/backfill-batch-grnitem')
   @Roles('ADMIN')
   @ApiOperation({
     summary:
