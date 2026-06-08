@@ -47,6 +47,7 @@ import { WebhooksModule } from './webhooks/webhooks.module';
 import { PdfModule } from './pdf/pdf.module';
 import { EventsModule } from './events/events.module';
 import { PublicPayModule } from './public-pay/public-pay.module';
+import { DeliveryModule } from './delivery/delivery.module';
 import { ServeStaticModule } from '@nestjs/serve-static';
 import { join } from 'path';
 
@@ -100,6 +101,7 @@ import { join } from 'path';
     WebhooksModule,
     EventsModule,
     PublicPayModule,
+    DeliveryModule,
   ],
   controllers: [AppController],
   providers: [
