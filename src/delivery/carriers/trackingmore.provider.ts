@@ -199,11 +199,17 @@ export class TrackingMoreProvider implements CarrierProvider {
         ? checkpoints[checkpoints.length - 1].status
         : null;
 
+    const delivered = (tracking.delivery_status ?? '').toLowerCase() === 'delivered';
+    // The actual delivery time is the last DELIVERED checkpoint's timestamp,
+    // not when we polled.
+    const deliveredCp = checkpoints.filter((c) => c.status === 'DELIVERED').pop();
+
     return {
       slug: code,
       checkpoints,
       latestStatus,
-      delivered: (tracking.delivery_status ?? '').toLowerCase() === 'delivered',
+      delivered,
+      deliveredAt: delivered ? deliveredCp?.occurredAt : undefined,
     };
   }
 }

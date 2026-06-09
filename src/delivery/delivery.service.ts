@@ -138,10 +138,14 @@ export class DeliveryService {
       ];
     }
 
+    // "Dispatched" isn't a user-facing status — it folds into "In Transit".
+    // So selecting In Transit matches both IN_TRANSIT and DISPATCHED rows.
     const statusWhere: Prisma.DeliveryTrackingWhereInput =
-      status && status in STATUS_LABEL
-        ? { status: status as DeliveryStatus }
-        : {};
+      status === 'IN_TRANSIT'
+        ? { status: { in: ['IN_TRANSIT', 'DISPATCHED'] as DeliveryStatus[] } }
+        : status && status in STATUS_LABEL
+          ? { status: status as DeliveryStatus }
+          : {};
     const courierWhere: Prisma.DeliveryTrackingWhereInput = opts?.courier
       ? { courierName: opts.courier }
       : {};
@@ -181,6 +185,12 @@ export class DeliveryService {
     for (const g of statusGrouped) {
       statusCounts[g.status] = g._count._all;
       allCount += g._count._all;
+    }
+    // Fold DISPATCHED into IN_TRANSIT so the chip count matches the folded
+    // workflow (Dispatched is not shown as its own filter row).
+    if (statusCounts.DISPATCHED) {
+      statusCounts.IN_TRANSIT = (statusCounts.IN_TRANSIT ?? 0) + statusCounts.DISPATCHED;
+      delete statusCounts.DISPATCHED;
     }
     statusCounts.ALL = allCount;
 
@@ -372,7 +382,8 @@ export class DeliveryService {
         carrierSlug: result.slug,
         lastSyncedAt: new Date(),
         ...(result.latestStatus ? { status: result.latestStatus } : {}),
-        ...(result.delivered ? { deliveredAt: new Date() } : {}),
+        // Use the carrier's actual delivery time, not the sync time.
+        ...(result.delivered ? { deliveredAt: result.deliveredAt ?? new Date() } : {}),
       },
       include: deliveryInclude,
     });
@@ -431,6 +442,23 @@ export class DeliveryService {
       failed,
       checkedAt: new Date().toISOString(),
     };
+  }
+
+  // Wipe the timeline and reset the delivery to a fresh "Booked" state — used to
+  // clear a messy/duplicated event log before re-syncing from the carrier.
+  async clearTimeline(id: string, branchId?: string) {
+    await this.findOne(id, branchId);
+    await this.prisma.deliveryEvent.deleteMany({ where: { deliveryId: id } });
+    return this.prisma.deliveryTracking.update({
+      where: { id },
+      data: {
+        status: 'BOOKED',
+        deliveredAt: null,
+        lastSyncedAt: null,
+        events: { create: { status: 'BOOKED', note: 'Shipment booked' } },
+      },
+      include: deliveryInclude,
+    });
   }
 
   async remove(id: string, branchId?: string) {
