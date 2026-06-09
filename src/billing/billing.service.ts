@@ -561,6 +561,18 @@ export class BillingService {
         }
       }
 
+      // 4b. Record at-counter cash/card/UPI collection as a Payment row so it
+      // posts to the customer's payment history + ledger (not just amountPaid).
+      if (!isQuotation && !isDraft) {
+        await this.recordCounterPayment(tx, {
+          invoiceId: invoice.id,
+          customerId: createInvoiceDto.customerId,
+          paymentMode: createInvoiceDto.paymentMode,
+          amountPaid: createInvoiceDto.amountPaid,
+          branchId,
+        });
+      }
+
       // 5. Auto-create a PAYMENT_DUE notification for new credit invoices.
       // Skipped for drafts — nothing's due yet.
       if (!isQuotation && !isDraft && createInvoiceDto.paymentMode === 'CREDIT') {
@@ -598,6 +610,52 @@ export class BillingService {
       this.events.emit(INVOICE_CREATED, payload);
     }
     return created;
+  }
+
+  // Record money physically collected at the billing counter as a first-class
+  // Payment row, so it appears in the customer's payment history + ledger
+  // instead of living only implicitly inside invoice.amountPaid. Fires only for
+  // real money-in modes (CASH / CARD / UPI) against a registered customer:
+  //   - CREDIT extends the ledger via currentOutstanding, not a receipt;
+  //   - SPLIT's mixed tender is left to the Cash Book's at-sale synthesis so its
+  //     cash portion isn't mis-categorised here.
+  // Double-count-safe: getCustomerLedger, getInvoicePayments and getCashBook all
+  // subtract real Payment rows from their synthesised at-sale figure, so this
+  // row nets out everywhere it's consumed.
+  private async recordCounterPayment(
+    tx: Prisma.TransactionClient,
+    args: {
+      invoiceId: string;
+      customerId?: string | null;
+      paymentMode: string;
+      amountPaid: number | null | undefined;
+      branchId?: string | null;
+    },
+  ) {
+    const amount = r2(args.amountPaid);
+    if (
+      !args.customerId ||
+      amount <= 0.01 ||
+      !['CASH', 'CARD', 'UPI'].includes(args.paymentMode)
+    ) {
+      return;
+    }
+    const receiptNumber = await this.numbering.nextNumber(
+      tx,
+      'RCPT',
+      args.branchId ?? null,
+    );
+    await tx.payment.create({
+      data: {
+        receiptNumber,
+        customerId: args.customerId,
+        invoiceId: args.invoiceId,
+        amount,
+        paymentMode: args.paymentMode,
+        notes: 'Collected at billing',
+        branchId: args.branchId ?? null,
+      },
+    });
   }
 
   // Public helper so the manual `POST /:id/send-whatsapp` controller endpoint
@@ -960,6 +1018,99 @@ export class BillingService {
     };
   }
 
+  // One-time migration: backfill Payment rows for historical at-counter
+  // CASH/CARD/UPI sales that predate recordCounterPayment(). Each qualifying
+  // invoice gets ONE Payment row for the gap between invoice.amountPaid and the
+  // sum of its existing Payment rows, dated on the invoice date so Cash Book /
+  // ledger timing is preserved. Idempotent: a re-run finds gap ≤ 0 (the
+  // backfilled row closes it) and the deterministic `RCT-BF-<invoiceId>` receipt
+  // number is unique per invoice (createMany skipDuplicates is a second guard).
+  // Mirrors the synthesis used by getInvoicePayments / getCustomerLedger /
+  // getCashBook, so reported totals never change — only the rows become real.
+  // Not wrapped in one giant transaction on purpose: each page's createMany is
+  // atomic, and idempotency makes a re-run after a partial failure safe.
+  async backfillCounterPayments(branchId?: string) {
+    const PAGE = 500;
+    let skip = 0;
+    let scanned = 0;
+    let created = 0;
+    let skippedNoGap = 0;
+    let totalAmount = 0;
+
+    for (;;) {
+      const invoices = await this.prisma.invoice.findMany({
+        where: {
+          type: 'INVOICE',
+          customerId: { not: null },
+          paymentMode: { in: ['CASH', 'CARD', 'UPI'] },
+          status: { notIn: ['DRAFT', 'CANCELLED'] },
+          amountPaid: { gt: 0 },
+          ...(branchId ? { branchId } : {}),
+        },
+        orderBy: { date: 'asc' },
+        skip,
+        take: PAGE,
+        select: {
+          id: true,
+          customerId: true,
+          branchId: true,
+          date: true,
+          amountPaid: true,
+          paymentMode: true,
+        },
+      });
+      if (invoices.length === 0) break;
+      scanned += invoices.length;
+
+      // Sum existing Payment rows per invoice so we only backfill the uncovered
+      // portion (idempotent + correct for partially-recorded invoices).
+      const ids = invoices.map((i) => i.id);
+      const agg = await this.prisma.payment.groupBy({
+        by: ['invoiceId'],
+        where: { invoiceId: { in: ids } },
+        _sum: { amount: true },
+      });
+      const realPaid = new Map(
+        agg.map((a) => [a.invoiceId, Number(a._sum.amount ?? 0)]),
+      );
+
+      const toCreate = invoices
+        .map((inv) => {
+          const gap = Number(inv.amountPaid) - (realPaid.get(inv.id) ?? 0);
+          if (gap <= 0.01) {
+            skippedNoGap++;
+            return null;
+          }
+          totalAmount += r2(gap);
+          return {
+            receiptNumber: `RCT-BF-${inv.id}`,
+            customerId: inv.customerId as string,
+            invoiceId: inv.id,
+            amount: r2(gap),
+            paymentMode: inv.paymentMode,
+            notes: 'Backfilled at-counter collection',
+            branchId: inv.branchId ?? null,
+            // Preserve original timing — the Cash Book dates Payment rows by
+            // createdAt, so the default now() would shift historical cash.
+            createdAt: inv.date,
+          };
+        })
+        .filter((r): r is NonNullable<typeof r> => r !== null);
+
+      if (toCreate.length) {
+        const res = await this.prisma.payment.createMany({
+          data: toCreate,
+          skipDuplicates: true,
+        });
+        created += res.count;
+      }
+
+      skip += PAGE;
+    }
+
+    return { scanned, created, skippedNoGap, totalAmount: r2(totalAmount) };
+  }
+
   async convertToInvoice(id: string, branchId?: string) {
     return this.prisma.$transaction(async (tx) => {
       const quotation = await tx.invoice.findUnique({
@@ -1182,6 +1333,18 @@ export class BillingService {
             });
           }
         }
+      }
+
+      // Record at-counter cash/card/UPI collection as a Payment row (parity
+      // with create()) so finalized-draft sales also post to the ledger.
+      if (existing.type === 'INVOICE') {
+        await this.recordCounterPayment(tx, {
+          invoiceId: id,
+          customerId: dto.customerId,
+          paymentMode: dto.paymentMode,
+          amountPaid: dto.amountPaid,
+          branchId: existing.branchId ?? branchId,
+        });
       }
 
       // PAYMENT_DUE notification for credit finalizations.

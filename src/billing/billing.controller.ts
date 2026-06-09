@@ -31,6 +31,19 @@ export class BillingController {
     return this.billingService.create(createInvoiceDto, req.user.userId, effectiveBranchId, req.user.role);
   }
 
+  // One-time migration. Declared before `@Get(':id')`/`@Patch(':id')` so the
+  // literal `admin/...` path is never captured as an id. ADMIN-only.
+  @Post('admin/backfill-counter-payments')
+  @Roles('ADMIN')
+  @ApiOperation({
+    summary:
+      'One-time migration: create Payment rows for historical at-counter CASH/CARD/UPI sales so they appear in the customer payment history & ledger. Idempotent — safe to re-run.',
+  })
+  backfillCounterPayments(@Request() req: any) {
+    const effectiveBranchId = resolveBranchScope(req.user);
+    return this.billingService.backfillCounterPayments(effectiveBranchId);
+  }
+
   @Get()
   @Roles('ADMIN', 'PHARMACIST', 'ACCOUNTANT', 'SALESPERSON')
   @ApiOperation({ summary: 'Get all invoices or search' })

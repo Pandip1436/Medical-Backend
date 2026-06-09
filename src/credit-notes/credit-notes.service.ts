@@ -259,6 +259,35 @@ export class CreditNotesService {
 
       const finalSettlementMode = opts.settlementMode ?? cn.settlementMode;
 
+      // Guard: "Adjust Against Outstanding" (CREDIT) only makes sense when the
+      // customer actually owes money. For a fully-settled customer (no open
+      // balance — e.g. a cash sale), a return must be refunded in cash/UPI so it
+      // posts to the customer ledger, not converted into an open-ended store-
+      // credit advance. Computed LIVE from open invoices rather than the
+      // denormalised currentOutstanding cache (which can drift) so the guard is
+      // trustworthy.
+      if (finalSettlementMode === 'CREDIT') {
+        let liveOutstanding = 0;
+        if (cn.customerId) {
+          const openAgg = await tx.invoice.aggregate({
+            where: {
+              customerId: cn.customerId,
+              type: 'INVOICE',
+              status: { in: ['UNPAID', 'PARTIAL'] },
+            },
+            _sum: { grandTotal: true, amountPaid: true },
+          });
+          liveOutstanding =
+            Number(openAgg._sum.grandTotal ?? 0) -
+            Number(openAgg._sum.amountPaid ?? 0);
+        }
+        if (liveOutstanding <= 0.01) {
+          throw new BadRequestException(
+            'This customer has no outstanding balance to adjust against. Settle this return as a Refund (cash/UPI) so it posts to the customer ledger, instead of Credit / Adjustment.',
+          );
+        }
+      }
+
       // Restore stock (was lines 113-120 of the old create()).
       for (const item of cn.items) {
         await tx.batch.update({
