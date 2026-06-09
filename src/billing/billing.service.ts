@@ -5,7 +5,7 @@ import { ApprovalsService } from '../approvals/approvals.service';
 import { DocumentNumberingService } from '../common/services/document-numbering.service';
 import { CreateInvoiceDto } from './dto/create-invoice.dto';
 import { CreateInvoiceItemDto } from './dto/create-invoice-item.dto';
-import { PaymentMode, Prisma } from '@prisma/client';
+import { PaymentMode, Prisma, InvoiceStatus } from '@prisma/client';
 import { INVOICE_CREATED, InvoiceCreatedPayload } from '../events/invoice-events';
 import { syncPaymentDueForInvoice } from '../notifications/payment-due-sync';
 
@@ -468,6 +468,21 @@ export class BillingService {
         }
       }
 
+      // Derive the payment status from the actual money collected rather than
+      // trusting the client: a partial cash/UPI collection (amountPaid <
+      // grandTotal) must land as PARTIAL, not PAID. Drafts/quotations keep their
+      // explicit DRAFT status. Mirrors the rule used by the edit path
+      // (updateInvoice, step 5) so create and edit stay consistent.
+      const grandTotalNum = r2(createInvoiceDto.grandTotal);
+      const amountPaidNum = r2(createInvoiceDto.amountPaid);
+      const derivedStatus: InvoiceStatus = isDraft
+        ? createInvoiceDto.status
+        : amountPaidNum + 0.01 >= grandTotalNum
+          ? InvoiceStatus.PAID
+          : amountPaidNum > 0
+            ? InvoiceStatus.PARTIAL
+            : InvoiceStatus.UNPAID;
+
       // 3. Create the Invoice and InvoiceItems
       const mrpFallbacks = await this.resolveItemMrpFallbacks(tx, createInvoiceDto.items);
       const invoice = await tx.invoice.create({
@@ -491,7 +506,7 @@ export class BillingService {
           paymentMode: createInvoiceDto.paymentMode,
           paymentDetails: createInvoiceDto.paymentDetails,
           dueDate: createInvoiceDto.dueDate ? new Date(createInvoiceDto.dueDate) : null,
-          status: createInvoiceDto.status,
+          status: derivedStatus,
           amountPaid: r2(createInvoiceDto.amountPaid),
           changeReturned: r2(createInvoiceDto.changeReturned),
           salespersonId: createInvoiceDto.salespersonId ?? null,
@@ -510,8 +525,12 @@ export class BillingService {
         }
       });
 
-      // 4. If CREDIT or SPLIT payment and customer exists, update outstanding ledger.
-      // Skipped for drafts — outstanding isn't extended until the draft is finalized.
+      // 4. Extend the customer's outstanding ledger by any unpaid balance.
+      // Applies to ANY payment mode — a partial cash/UPI collection leaves a
+      // balance the customer still owes, exactly like a credit/split sale. The
+      // inner `amountAddedToCredit > 0` guard means a fully-paid cash/UPI sale
+      // is a no-op. Skipped for drafts — outstanding isn't extended until the
+      // draft is finalized.
       //
       // Side-effect: if the customer is sitting on a credit balance (negative
       // currentOutstanding from a prior CN-Adjust whose cascade had nothing
@@ -520,7 +539,7 @@ export class BillingService {
       // we know what credit was available pre-sale; bump invoice.amountPaid
       // by min(credit, balance); record a PAYMENT row tagged CREDIT_APPLIED
       // so the ledger has an auditable receipt for the credit consumption.
-      if (!isDraft && (createInvoiceDto.paymentMode === 'CREDIT' || createInvoiceDto.paymentMode === 'SPLIT') && createInvoiceDto.customerId) {
+      if (!isDraft && createInvoiceDto.customerId) {
         const amountAddedToCredit = createInvoiceDto.grandTotal - createInvoiceDto.amountPaid;
 
         if (amountAddedToCredit > 0) {
