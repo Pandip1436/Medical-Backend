@@ -20,6 +20,8 @@ export interface CarrierTrackingResult {
   // Latest carrier status (from the most recent checkpoint / top-level tag).
   latestStatus: DeliveryStatus | null;
   delivered: boolean;
+  // Actual delivery timestamp (the DELIVERED checkpoint's time), when delivered.
+  deliveredAt?: Date;
 }
 
 // A pluggable tracking provider. Today only AfterShip is implemented; swapping

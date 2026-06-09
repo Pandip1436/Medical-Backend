@@ -188,11 +188,15 @@ export class AftershipProvider implements CarrierProvider {
           ? mapCheckpoint(tracking.tag)
           : null;
 
+    const delivered = tracking.tag === 'Delivered';
+    const deliveredCp = checkpoints.filter((c) => c.status === 'DELIVERED').pop();
+
     return {
       slug,
       checkpoints,
       latestStatus,
-      delivered: tracking.tag === 'Delivered',
+      delivered,
+      deliveredAt: delivered ? deliveredCp?.occurredAt : undefined,
     };
   }
 }

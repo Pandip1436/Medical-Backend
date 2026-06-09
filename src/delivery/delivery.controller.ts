@@ -139,6 +139,16 @@ export class DeliveryController {
     return this.deliveryService.addEvent(id, dto, req.user.branchId);
   }
 
+  @Post(':id/clear-timeline')
+  @Roles('ADMIN', 'PHARMACIST', 'ACCOUNTANT')
+  @ApiOperation({
+    summary:
+      'Clear the delivery timeline and reset the shipment to a fresh Booked state (for re-syncing).',
+  })
+  clearTimeline(@Param('id') id: string, @Request() req: any) {
+    return this.deliveryService.clearTimeline(id, req.user.branchId);
+  }
+
   @Post(':id/check-status')
   @Roles('ADMIN', 'PHARMACIST', 'ACCOUNTANT')
   @ApiOperation({
