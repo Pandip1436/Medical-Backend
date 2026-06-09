@@ -250,9 +250,38 @@ export class DeliveryService {
       if (dto.status === 'DELIVERED') data.deliveredAt = new Date();
     }
 
+    // Switching courier or tracking number points the record at a different
+    // live-carrier identity: the persisted carrierSlug and any previously
+    // imported carrier checkpoints belong to the OLD parcel. The slug in
+    // particular takes priority in the provider's code resolution, so leaving
+    // it stale makes "Check Tracking Status" query the wrong carrier and
+    // silently return no new events. Reset it (and drop the old carrier-imported
+    // events) so the next sync re-resolves the carrier from the new courier
+    // name / tracking id. Manual events + the genesis "Booked" (externalId NULL)
+    // are preserved.
+    const carrierIdentityChanged =
+      (dto.trackingId !== undefined && dto.trackingId !== current.trackingId) ||
+      (dto.courierName !== undefined && dto.courierName !== current.courierName);
+    if (carrierIdentityChanged) {
+      await this.prisma.deliveryEvent.deleteMany({
+        where: { deliveryId: id, externalId: { not: null } },
+      });
+      data.carrierSlug = null;
+      data.lastSyncedAt = null;
+      // Without an explicit status in this same save, fall back to BOOKED so a
+      // stale "Delivered" from the previous parcel doesn't linger; the next
+      // sync re-advances it from the new carrier's checkpoints.
+      if (!dto.status) {
+        data.status = 'BOOKED';
+        data.deliveredAt = null;
+      }
+    }
+
     // A manual status change records a matching timeline event so the history
-    // stays consistent with the headline status.
-    const statusChanged = dto.status && dto.status !== current.status;
+    // stays consistent with the headline status. Skipped on a carrier-identity
+    // reset (the genesis Booked already covers the fresh state).
+    const statusChanged =
+      dto.status && dto.status !== current.status && !carrierIdentityChanged;
 
     return this.prisma.deliveryTracking.update({
       where: { id },
@@ -305,12 +334,35 @@ export class DeliveryService {
       throw new BadRequestException('Add a tracking ID before checking status');
     }
 
+    // Manual "track on the courier's own site" link — always offered as a
+    // fallback whenever live tracking can't produce an update.
+    const trackingUrl = this.carrier.trackingUrl(
+      delivery.courierName,
+      delivery.trackingId,
+    );
+
     // No provider key loaded in the running process.
     if (!this.carrier.isConfigured()) {
       return {
         delivery,
         liveIntegration: false,
         reason: 'not_configured',
+        trackingUrl,
+        checkedAt: new Date().toISOString(),
+      };
+    }
+
+    // The active provider can't auto-track this courier at all (e.g. the web
+    // scraper has no scraper for it because the courier gates tracking behind a
+    // CAPTCHA). Don't pretend it was a transient lookup failure — tell the UI to
+    // offer the manual link instead.
+    if (!this.carrier.supportsCourier(delivery.courierName)) {
+      return {
+        delivery,
+        liveIntegration: false,
+        reason: 'courier_unsupported',
+        provider: this.carrier.providerName(),
+        trackingUrl,
         checkedAt: new Date().toISOString(),
       };
     }
@@ -321,14 +373,15 @@ export class DeliveryService {
     });
 
     // Provider is configured, but the carrier lookup failed (courier couldn't
-    // be resolved, or the API errored) → fall back to the saved timeline but
-    // tell the UI it was a lookup failure, not a missing key.
+    // be resolved, or the API/scrape errored) → fall back to the saved timeline
+    // but tell the UI it was a lookup failure, not a missing key.
     if (!result) {
       return {
         delivery,
         liveIntegration: false,
         reason: 'lookup_failed',
         provider: this.carrier.providerName(),
+        trackingUrl,
         checkedAt: new Date().toISOString(),
       };
     }
@@ -455,6 +508,10 @@ export class DeliveryService {
         status: 'BOOKED',
         deliveredAt: null,
         lastSyncedAt: null,
+        // Drop the stale carrier identity too, so re-syncing re-resolves the
+        // carrier from the current courier name / tracking id rather than the
+        // slug cached from a previous courier.
+        carrierSlug: null,
         events: { create: { status: 'BOOKED', note: 'Shipment booked' } },
       },
       include: deliveryInclude,
