@@ -68,8 +68,11 @@ type PaymentDueState = {
 
 // How much worse the situation must be to override suppression
 const LOW_STOCK_DROP_PCT = 0.25;    // stock dropped 25%+ from last snapshot
-const PAYMENT_GROWTH_PCT = 0.10;    // outstanding grew 10%+ since last alert
-const PAYMENT_AGE_BUMP_DAYS = 30;   // OR invoice aged 30+ more days
+
+// Payment-due reminders: nudge once a day for up to this many days, then stop.
+// A one-time Resolve (or the invoice being paid) ends them early — see
+// generatePaymentDueAlerts.
+const PAYMENT_DUE_MAX_REMINDERS = Number(process.env.PAYMENT_DUE_MAX_REMINDERS ?? 3);
 
 function shouldEscalateLowStock(prev: LowStockState | null, next: LowStockState): boolean {
   // Legacy rows (entityState null — created before this field existed) used
@@ -83,15 +86,6 @@ function shouldEscalateLowStock(prev: LowStockState | null, next: LowStockState)
   if (prev.totalStock > prev.minStock && next.totalStock <= next.minStock) return true;
   // Stock dropped meaningfully.
   if (next.totalStock < prev.totalStock * (1 - LOW_STOCK_DROP_PCT)) return true;
-  return false;
-}
-function shouldEscalatePaymentDue(prev: PaymentDueState | null, next: PaymentDueState): boolean {
-  // See note on shouldEscalateLowStock above: null prev no longer auto-fires.
-  if (!prev) return false;
-  // Outstanding grew (e.g. extra credit added to the same invoice).
-  if (next.outstanding > prev.outstanding * (1 + PAYMENT_GROWTH_PCT)) return true;
-  // Invoice aged another month without payment — re-poke.
-  if (next.daysOutstanding - prev.daysOutstanding >= PAYMENT_AGE_BUMP_DAYS) return true;
   return false;
 }
 // Expiry: the batch's expiry date is fixed; once acknowledged, never re-fire
@@ -260,10 +254,27 @@ export class NotificationsService {
 
   // Marks the notification as resolved (action taken). Independent of isRead.
   async resolve(id: string, userId?: string) {
-    return this.prisma.notification.update({
+    const row = await this.prisma.notification.update({
       where: { id },
       data: { resolvedAt: new Date(), resolvedById: userId ?? null, isRead: true },
     });
+    // Payment-due reminders fire daily for the same invoice. Resolving one
+    // resolves the whole run — a single "done" stops every reminder for that
+    // invoice (and the generator never re-creates them once resolved).
+    if (row.type === NotificationType.PAYMENT_DUE) {
+      const m = (row.message ?? '').match(/\[invoiceId:([^\]]+)\]/);
+      if (m) {
+        await this.prisma.notification.updateMany({
+          where: {
+            type: NotificationType.PAYMENT_DUE,
+            message: { contains: `[invoiceId:${m[1]}]` },
+            resolvedAt: null,
+          },
+          data: { resolvedAt: new Date(), resolvedById: userId ?? null, isRead: true },
+        });
+      }
+    }
+    return row;
   }
 
   async remove(id: string) {
@@ -412,7 +423,55 @@ export class NotificationsService {
       );
       created++;
     }
-    return { created };
+
+    // Reconcile: expiry has no per-sale sync like payment-due, so a batch that
+    // sold out (qty → 0) or was deleted leaves its alert stuck in the Unread
+    // list forever. Resolve those here on the sweep so the list stays truthful.
+    const resolved = await this.resolveStaleExpiryAlerts(branchId);
+    return { created, resolved };
+  }
+
+  // Resolve active EXPIRY alerts whose batch no longer has stock (qty 0) or was
+  // deleted — they're no longer actionable. Resolved (not deleted) so they stay
+  // in the All/Resolved history.
+  private async resolveStaleExpiryAlerts(branchId?: string): Promise<number> {
+    const active = await this.prisma.notification.findMany({
+      where: {
+        type: NotificationType.EXPIRY,
+        resolvedAt: null,
+        ...(branchId ? { OR: [{ branchId }, { branchId: null }] } : {}),
+      },
+      select: { id: true, message: true },
+    });
+
+    // Map each alert to the batchId in its [batchId:…] marker.
+    const idsByBatch = new Map<string, string[]>();
+    for (const n of active) {
+      const m = n.message.match(/\[batchId:([^\]]+)\]/);
+      if (!m) continue;
+      const list = idsByBatch.get(m[1]) ?? [];
+      list.push(n.id);
+      idsByBatch.set(m[1], list);
+    }
+    if (idsByBatch.size === 0) return 0;
+
+    const liveBatches = await this.prisma.batch.findMany({
+      where: { id: { in: [...idsByBatch.keys()] }, quantity: { gt: 0 } },
+      select: { id: true },
+    });
+    const live = new Set(liveBatches.map((b) => b.id));
+
+    const staleIds: string[] = [];
+    for (const [batchId, ids] of idsByBatch) {
+      if (!live.has(batchId)) staleIds.push(...ids);
+    }
+    if (staleIds.length === 0) return 0;
+
+    const res = await this.prisma.notification.updateMany({
+      where: { id: { in: staleIds } },
+      data: { resolvedAt: new Date(), isRead: true },
+    });
+    return res.count;
   }
 
   async generateReminderAlerts() {
@@ -499,15 +558,35 @@ export class NotificationsService {
     for (const inv of invoices) {
       const outstanding = Number(inv.grandTotal) - Number(inv.amountPaid);
       const daysOutstanding = Math.floor((now.getTime() - new Date(inv.date).getTime()) / 86_400_000);
-      // Layered suppression — see suppressionClauses().
-      const existing = await this.prisma.notification.findFirst({
-        where: {
-          type: NotificationType.PAYMENT_DUE,
-          message: { contains: `[invoiceId:${inv.id}]` },
-          OR: suppressionClauses(),
-        },
-        orderBy: { createdAt: 'desc' },
+
+      // Reminder policy: nudge once a day for up to PAYMENT_DUE_MAX_REMINDERS
+      // days, then stop. A one-time Resolve (or the invoice being paid, which
+      // sets resolvedAt via syncPaymentDueForInvoice) ends the reminders early
+      // and for good.
+      const marker = {
+        type: NotificationType.PAYMENT_DUE,
+        message: { contains: `[invoiceId:${inv.id}]` },
+      };
+
+      // 1) Resolved at any point → never notify again.
+      const resolved = await this.prisma.notification.findFirst({
+        where: { ...marker, resolvedAt: { not: null } },
+        select: { id: true },
       });
+      if (resolved) continue;
+
+      // 2) Already sent the full run of daily reminders → stop.
+      const sentCount = await this.prisma.notification.count({ where: marker });
+      if (sentCount >= PAYMENT_DUE_MAX_REMINDERS) continue;
+
+      // 3) At most one reminder per day — skip if we already sent one in the
+      //    last ~20h (guards against a same-day re-run, e.g. a server restart).
+      const sentRecently = await this.prisma.notification.findFirst({
+        where: { ...marker, createdAt: { gte: new Date(now.getTime() - 20 * 60 * 60 * 1000) } },
+        select: { id: true },
+      });
+      if (sentRecently) continue;
+
       const nextState: PaymentDueState = buildPaymentDueState({
         outstanding,
         daysOutstanding,
@@ -515,10 +594,6 @@ export class NotificationsService {
         customerName: inv.customerName,
         customerPhone: inv.customer?.phone ?? null,
       });
-      // Suppressed AND outstanding hasn't grown / invoice hasn't aged enough — skip.
-      if (existing && !shouldEscalatePaymentDue(existing.entityState as PaymentDueState | null, nextState)) {
-        continue;
-      }
       await this.createAndEmit(
         {
           type: NotificationType.PAYMENT_DUE,

@@ -662,6 +662,7 @@ enum POStatus {
   PARTIALLY_RECEIVED
   FULLY_RECEIVED
   CLOSED
+  CANCELLED
 }
 
 // ── GRN ───────────────────────────────────────────────────────

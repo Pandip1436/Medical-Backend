@@ -14,12 +14,15 @@ import { UpdatePurchaseOrderDto } from './dto/update-purchase-order.dto';
 // GRN flow and not by client PATCH calls — but we allow them here too in case
 // an admin needs to correct state manually.
 const PO_STATUS_TRANSITIONS: Record<POStatus, POStatus[]> = {
-  DRAFT: ['SENT', 'CLOSED'],
-  SENT: ['ACKNOWLEDGED', 'PARTIALLY_RECEIVED', 'FULLY_RECEIVED', 'CLOSED'],
-  ACKNOWLEDGED: ['PARTIALLY_RECEIVED', 'FULLY_RECEIVED', 'CLOSED'],
-  PARTIALLY_RECEIVED: ['FULLY_RECEIVED', 'CLOSED'],
+  DRAFT: ['SENT', 'CLOSED', 'CANCELLED'],
+  SENT: ['ACKNOWLEDGED', 'PARTIALLY_RECEIVED', 'FULLY_RECEIVED', 'CLOSED', 'CANCELLED'],
+  ACKNOWLEDGED: ['PARTIALLY_RECEIVED', 'FULLY_RECEIVED', 'CLOSED', 'CANCELLED'],
+  // Partial receipts can still be cancelled (the remaining lines won't arrive).
+  PARTIALLY_RECEIVED: ['FULLY_RECEIVED', 'CLOSED', 'CANCELLED'],
+  // Once fully received the goods are in — close it, don't cancel.
   FULLY_RECEIVED: ['CLOSED'],
   CLOSED: [],
+  CANCELLED: [],
 };
 
 @Injectable()

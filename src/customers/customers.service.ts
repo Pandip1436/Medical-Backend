@@ -448,13 +448,28 @@ export class CustomersService {
       include: {
         prescriptions: true,
         invoices: { take: 10, orderBy: { date: 'desc' } },
+        // Count of unsettled (UNPAID/PARTIAL) invoices — the same figure the
+        // credit-sale gate uses (see BillingService). Surfaced so the UI can
+        // show credit usage as "<pending>/<max>".
+        _count: {
+          select: {
+            invoices: { where: { status: { in: ['UNPAID', 'PARTIAL'] } } },
+          },
+        },
       },
     });
     if (!customer) throw new NotFoundException('Customer not found');
     if (branchId && customer.branchId && customer.branchId !== branchId) {
       throw new NotFoundException('Customer not found');
     }
-    return customer;
+    const { _count, ...rest } = customer as typeof customer & {
+      _count: { invoices: number };
+    };
+    return {
+      ...rest,
+      pendingCreditCount: _count.invoices,
+      maxPendingCredit: Number(process.env.MAX_PENDING_CREDIT ?? 3),
+    };
   }
 
   async update(id: string, updateCustomerDto: UpdateCustomerDto, branchId?: string) {

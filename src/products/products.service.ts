@@ -386,7 +386,7 @@ export class ProductsService {
     }
 
     const include = {
-      product: { select: { id: true, name: true, genericName: true, packSize: true, minStock: true, totalStock: true } },
+      product: { select: { id: true, name: true, genericName: true, packSize: true, minStock: true, totalStock: true, rackLocation: true } },
       supplier: { select: { id: true, name: true, phone: true } },
     };
 
@@ -409,7 +409,7 @@ export class ProductsService {
     const batch = await this.prisma.batch.findUnique({
       where: { id },
       include: {
-        product: { select: { id: true, name: true, genericName: true, packSize: true, manufacturer: true, minStock: true, totalStock: true, branchId: true } },
+        product: { select: { id: true, name: true, genericName: true, packSize: true, manufacturer: true, minStock: true, totalStock: true, branchId: true, rackLocation: true } },
         supplier: { select: { id: true, name: true, phone: true, address: true } },
         // The GRN line that received this batch — its parent GRN carries the
         // actual purchase/receipt date + supplier-invoice reference shown on the
@@ -438,6 +438,7 @@ export class ProductsService {
       manufacturer: b.product?.manufacturer ?? null,
       minStock: b.product?.minStock ?? null,
       productTotalStock: b.product?.totalStock ?? null,
+      rackLocation: b.product?.rackLocation ?? null,
       mfgDate: b.mfgDate,
       expiryDate: b.expiryDate,
       quantity: b.quantity,

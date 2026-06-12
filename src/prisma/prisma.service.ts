@@ -50,7 +50,18 @@ export class PrismaService
   private readonly logger = new Logger(PrismaService.name);
 
   constructor() {
-    super();
+    // Raise the interactive-transaction limits above Prisma's defaults
+    // (maxWait 2s / timeout 5s). Several transactions — invoice creation,
+    // GRN posting, purchase returns — do many sequential writes against a
+    // remote Neon DB, where round-trip latency makes 5s easy to exceed and
+    // trip P2028 ("transaction already closed"). These are ceilings, not
+    // delays: fast transactions are unaffected.
+    super({
+      transactionOptions: {
+        maxWait: 10_000, // wait up to 10s to acquire a pooled connection
+        timeout: 20_000, // allow a transaction to run up to 20s
+      },
+    });
 
     // Auto-retry transient connection failures. Neon (and similar serverless
     // Postgres) suspends compute when idle — the first query after a long
