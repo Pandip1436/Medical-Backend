@@ -6,6 +6,11 @@ RUN apt-get update && apt-get install -y openssl && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
+# Don't let Puppeteer download its own Chromium during `npm install` — the slim
+# image has no tar/unzip to extract it, and we ship a system Chromium instead
+# (see runner stage). Puppeteer launches use PUPPETEER_EXECUTABLE_PATH at runtime.
+ENV PUPPETEER_SKIP_DOWNLOAD=true
+
 # Copy package files
 COPY package*.json ./
 
@@ -27,8 +32,21 @@ RUN npm run build
 # --- Production Stage ---
 FROM node:22-slim AS runner
 
-# Install OpenSSL for Prisma runtime
-RUN apt-get update && apt-get install -y openssl && rm -rf /var/lib/apt/lists/*
+# Install OpenSSL for Prisma plus a system Chromium (+ fonts) for Puppeteer.
+# Puppeteer renders invoice PDFs and drives courier scraping at runtime, so the
+# runtime image needs a real browser; we use the distro's Chromium rather than
+# Puppeteer's bundled download.
+RUN apt-get update && apt-get install -y \
+    openssl \
+    chromium \
+    fonts-liberation \
+    fonts-noto-color-emoji \
+    && rm -rf /var/lib/apt/lists/*
+
+# Skip the Puppeteer Chrome download here too, and point Puppeteer at the
+# system Chromium installed above (the app reads PUPPETEER_EXECUTABLE_PATH).
+ENV PUPPETEER_SKIP_DOWNLOAD=true \
+    PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
 
 WORKDIR /app
 
