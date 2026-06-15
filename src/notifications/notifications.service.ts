@@ -74,6 +74,14 @@ const LOW_STOCK_DROP_PCT = 0.25;    // stock dropped 25%+ from last snapshot
 // generatePaymentDueAlerts.
 const PAYMENT_DUE_MAX_REMINDERS = Number(process.env.PAYMENT_DUE_MAX_REMINDERS ?? 3);
 
+// Customer dues start alerting only this many days BEFORE the invoice's due
+// date (a pre-due reminder). Invoices with no due date alert immediately.
+const CUSTOMER_PAYMENT_DUE_BEFORE_DAYS = Number(process.env.CUSTOMER_PAYMENT_DUE_BEFORE_DAYS ?? 3);
+
+// Supplier dues only start alerting once the GRN is this many days past its
+// supplier-invoice date (the agreed payment term). Set to 0 to alert immediately.
+const SUPPLIER_PAYMENT_DUE_AFTER_DAYS = Number(process.env.SUPPLIER_PAYMENT_DUE_AFTER_DAYS ?? 60);
+
 function shouldEscalateLowStock(prev: LowStockState | null, next: LowStockState): boolean {
   // Legacy rows (entityState null — created before this field existed) used
   // to fall through and force a refresh. That caused visible duplicates: the
@@ -258,16 +266,22 @@ export class NotificationsService {
       where: { id },
       data: { resolvedAt: new Date(), resolvedById: userId ?? null, isRead: true },
     });
-    // Payment-due reminders fire daily for the same invoice. Resolving one
+    // Payment-due reminders fire daily for the same entity. Resolving one
     // resolves the whole run — a single "done" stops every reminder for that
-    // invoice (and the generator never re-creates them once resolved).
-    if (row.type === NotificationType.PAYMENT_DUE) {
-      const m = (row.message ?? '').match(/\[invoiceId:([^\]]+)\]/);
+    // invoice / GRN (and the generator never re-creates them once resolved).
+    const dueSibling: { type: NotificationType; marker: RegExp } | null =
+      row.type === NotificationType.PAYMENT_DUE
+        ? { type: NotificationType.PAYMENT_DUE, marker: /\[invoiceId:([^\]]+)\]/ }
+        : row.type === NotificationType.SUPPLIER_PAYMENT_DUE
+          ? { type: NotificationType.SUPPLIER_PAYMENT_DUE, marker: /\[grnId:([^\]]+)\]/ }
+          : null;
+    if (dueSibling) {
+      const m = (row.message ?? '').match(dueSibling.marker);
       if (m) {
         await this.prisma.notification.updateMany({
           where: {
-            type: NotificationType.PAYMENT_DUE,
-            message: { contains: `[invoiceId:${m[1]}]` },
+            type: dueSibling.type,
+            message: { contains: m[0] },
             resolvedAt: null,
           },
           data: { resolvedAt: new Date(), resolvedById: userId ?? null, isRead: true },
@@ -550,6 +564,7 @@ export class NotificationsService {
         amountPaid: true,
         branchId: true,
         date: true,
+        dueDate: true,
       },
     });
 
@@ -558,6 +573,13 @@ export class NotificationsService {
     for (const inv of invoices) {
       const outstanding = Number(inv.grandTotal) - Number(inv.amountPaid);
       const daysOutstanding = Math.floor((now.getTime() - new Date(inv.date).getTime()) / 86_400_000);
+
+      // Only start reminding within the lead window before the due date (default
+      // 3 days). Invoices with no due date fall back to alerting immediately.
+      if (inv.dueDate) {
+        const daysUntilDue = Math.ceil((new Date(inv.dueDate).getTime() - now.getTime()) / 86_400_000);
+        if (daysUntilDue > CUSTOMER_PAYMENT_DUE_BEFORE_DAYS) continue;
+      }
 
       // Reminder policy: nudge once a day for up to PAYMENT_DUE_MAX_REMINDERS
       // days, then stop. A one-time Resolve (or the invoice being paid, which
@@ -601,12 +623,131 @@ export class NotificationsService {
           message: buildPaymentDueMessage(inv.customerName, outstanding, inv.invoiceNumber, inv.id),
           actionUrl: `/customers/invoices/detail?id=${inv.id}`,
           branchId: inv.branchId ?? branchId ?? null,
-          entityState: nextState as any,
+          // Carry the due date so the UI can show "Due in Xd / Overdue Xd".
+          entityState: { ...nextState, dueDate: inv.dueDate ?? null } as any,
         },
         inv.id,
       );
       created++;
     }
     return { created };
+  }
+
+  // Supplier-side mirror of generatePaymentDueAlerts — money the business OWES
+  // suppliers on unpaid/partial GRNs (Purchase Entries). Same cadence: nudge
+  // once a day for up to PAYMENT_DUE_MAX_REMINDERS days, stop on a one-time
+  // Resolve (or when the GRN is paid off).
+  async generateSupplierPaymentDueAlerts(branchId?: string) {
+    const grns = await this.prisma.gRN.findMany({
+      where: {
+        paymentStatus: { in: ['UNPAID', 'PARTIAL'] },
+        ...(branchId ? { branchId } : {}),
+      },
+      select: {
+        id: true,
+        grnNumber: true,
+        supplierId: true,
+        supplierName: true,
+        supplierInvoiceAmount: true,
+        amountPaid: true,
+        supplierInvoiceDate: true,
+        branchId: true,
+      },
+    });
+
+    const now = new Date();
+    let created = 0;
+    for (const g of grns) {
+      const outstanding = Number(g.supplierInvoiceAmount) - Number(g.amountPaid);
+      if (outstanding <= 0.01) continue;
+      const daysOutstanding = Math.floor(
+        (now.getTime() - new Date(g.supplierInvoiceDate).getTime()) / 86_400_000,
+      );
+      // Grace period: don't nag until the payment term (default 60 days) elapses.
+      if (daysOutstanding < SUPPLIER_PAYMENT_DUE_AFTER_DAYS) continue;
+
+      const marker = {
+        type: NotificationType.SUPPLIER_PAYMENT_DUE,
+        message: { contains: `[grnId:${g.id}]` },
+      };
+      // Resolved once → never notify again.
+      const resolved = await this.prisma.notification.findFirst({
+        where: { ...marker, resolvedAt: { not: null } },
+        select: { id: true },
+      });
+      if (resolved) continue;
+      // Cap at the daily-reminder run.
+      const sentCount = await this.prisma.notification.count({ where: marker });
+      if (sentCount >= PAYMENT_DUE_MAX_REMINDERS) continue;
+      // One reminder per day.
+      const sentRecently = await this.prisma.notification.findFirst({
+        where: { ...marker, createdAt: { gte: new Date(now.getTime() - 20 * 60 * 60 * 1000) } },
+        select: { id: true },
+      });
+      if (sentRecently) continue;
+
+      await this.createAndEmit(
+        {
+          type: NotificationType.SUPPLIER_PAYMENT_DUE,
+          title: 'Supplier Payment Due',
+          message: `${g.supplierName} — ₹${outstanding.toFixed(2)} payable · PE ${g.grnNumber}. [grnId:${g.id}]`,
+          actionUrl: `/purchase/grn/detail?id=${g.id}`,
+          branchId: g.branchId ?? branchId ?? null,
+          entityState: {
+            kind: 'SUPPLIER_PAYMENT_DUE',
+            outstanding,
+            daysOutstanding,
+            supplierId: g.supplierId,
+            supplierName: g.supplierName,
+          } as any,
+        },
+        g.id,
+      );
+      created++;
+    }
+
+    // Reconcile: resolve alerts for GRNs that have since been paid off so they
+    // drop out of Unread (no per-payment sync hook for supplier dues yet).
+    const resolvedCount = await this.resolveSettledSupplierAlerts(branchId);
+    return { created, resolved: resolvedCount };
+  }
+
+  private async resolveSettledSupplierAlerts(branchId?: string): Promise<number> {
+    const active = await this.prisma.notification.findMany({
+      where: {
+        type: NotificationType.SUPPLIER_PAYMENT_DUE,
+        resolvedAt: null,
+        ...(branchId ? { branchId } : {}),
+      },
+      select: { id: true, message: true },
+    });
+    const idsByGrn = new Map<string, string[]>();
+    for (const n of active) {
+      const m = n.message.match(/\[grnId:([^\]]+)\]/);
+      if (!m) continue;
+      const list = idsByGrn.get(m[1]) ?? [];
+      list.push(n.id);
+      idsByGrn.set(m[1], list);
+    }
+    if (idsByGrn.size === 0) return 0;
+
+    // GRNs still owing money (unpaid/partial) — anything else is settled/gone.
+    const owing = await this.prisma.gRN.findMany({
+      where: { id: { in: [...idsByGrn.keys()] }, paymentStatus: { in: ['UNPAID', 'PARTIAL'] } },
+      select: { id: true },
+    });
+    const owingSet = new Set(owing.map((g) => g.id));
+
+    const staleIds: string[] = [];
+    for (const [grnId, ids] of idsByGrn) {
+      if (!owingSet.has(grnId)) staleIds.push(...ids);
+    }
+    if (staleIds.length === 0) return 0;
+
+    const res = await this.prisma.notification.updateMany({
+      where: { id: { in: staleIds } },
+      data: { resolvedAt: new Date(), isRead: true },
+    });
+    return res.count;
   }
 }

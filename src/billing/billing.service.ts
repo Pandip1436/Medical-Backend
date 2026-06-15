@@ -586,25 +586,49 @@ export class BillingService {
         await this.recordCounterPayment(tx, {
           invoiceId: invoice.id,
           customerId: createInvoiceDto.customerId,
-          paymentMode: createInvoiceDto.paymentMode,
+          // A credit sale can carry an up-front cash advance (amountPaid > 0).
+          // Record it as CASH so it posts to payment history — recordCounterPayment
+          // ignores the CREDIT mode otherwise. A zero advance is a no-op there.
+          paymentMode:
+            createInvoiceDto.paymentMode === 'CREDIT'
+              ? 'CASH'
+              : createInvoiceDto.paymentMode,
           amountPaid: createInvoiceDto.amountPaid,
           branchId,
         });
       }
 
-      // 5. Auto-create a PAYMENT_DUE notification for new credit invoices.
-      // Skipped for drafts — nothing's due yet.
+      // 5. Auto-create a PAYMENT_DUE notification for new credit invoices —
+      // but only once the due date is within the lead window (default 3 days),
+      // matching the daily sweep. A far-off due date stays quiet until then;
+      // the sweep raises it when the window opens. Skipped for drafts and for a
+      // credit sale whose cash advance already cleared the balance.
       if (!isQuotation && !isDraft && createInvoiceDto.paymentMode === 'CREDIT') {
         const outstanding = Number(createInvoiceDto.grandTotal) - Number(createInvoiceDto.amountPaid);
-        await tx.notification.create({
-          data: {
-            type: 'PAYMENT_DUE',
-            title: 'Payment Due',
-            message: `Invoice ${invoiceNumber} for ${createInvoiceDto.customerName} has ₹${outstanding.toFixed(2)} outstanding. [invoiceId:${invoice.id}]`,
-            actionUrl: `/customers/invoices/detail?id=${invoice.id}`,
-            branchId: branchId ?? null,
-          },
-        });
+        const beforeDays = Number(process.env.CUSTOMER_PAYMENT_DUE_BEFORE_DAYS ?? 3);
+        const dueDate = createInvoiceDto.dueDate ? new Date(createInvoiceDto.dueDate) : null;
+        const daysUntilDue = dueDate
+          ? Math.ceil((dueDate.getTime() - Date.now()) / 86_400_000)
+          : null;
+        const withinWindow = daysUntilDue === null || daysUntilDue <= beforeDays;
+        if (outstanding > 0.01 && withinWindow) {
+          await tx.notification.create({
+            data: {
+              type: 'PAYMENT_DUE',
+              title: 'Payment Due',
+              message: `Invoice ${invoiceNumber} for ${createInvoiceDto.customerName} has ₹${outstanding.toFixed(2)} outstanding. [invoiceId:${invoice.id}]`,
+              actionUrl: `/customers/invoices/detail?id=${invoice.id}`,
+              branchId: branchId ?? null,
+              // Carry the due date so the UI can show "Due in Xd / Overdue Xd".
+              entityState: {
+                kind: 'PAYMENT_DUE',
+                outstanding,
+                customerName: createInvoiceDto.customerName,
+                dueDate: dueDate ?? null,
+              } as Prisma.InputJsonValue,
+            },
+          });
+        }
       }
 
       return invoice;

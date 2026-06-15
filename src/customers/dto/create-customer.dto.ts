@@ -64,6 +64,11 @@ export class CreateCustomerDto {
   @IsOptional()
   referredBy?: string;
 
+  // How the customer was acquired (Walk-in, Referral, IndiaMART, …). Optional.
+  @IsString()
+  @IsOptional()
+  source?: string;
+
   // Customer-level consent for transactional WhatsApp messages (invoice +
   // payment QR delivery via Meta Cloud API). Default true so existing rows
   // and new customers are auto-opted-in unless the user explicitly toggles

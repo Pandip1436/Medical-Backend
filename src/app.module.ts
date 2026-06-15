@@ -40,6 +40,7 @@ import { ContactsModule } from './contacts/contacts.module';
 import { LeadsModule } from './leads/leads.module';
 import { LeadActivitiesModule } from './lead-activities/lead-activities.module';
 import { IndiamartModule } from './indiamart/indiamart.module';
+import { JustdialModule } from './justdial/justdial.module';
 import { CommonServicesModule } from './common/services/common-services.module';
 import { PaymentsModule } from './payments/payments.module';
 import { WhatsAppModule } from './whatsapp/whatsapp.module';
@@ -95,6 +96,7 @@ import { join } from 'path';
     LeadsModule,
     LeadActivitiesModule,
     IndiamartModule,
+    JustdialModule,
     PdfModule,
     PaymentsModule,
     WhatsAppModule,

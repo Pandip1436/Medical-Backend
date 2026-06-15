@@ -80,6 +80,7 @@ export class CustomersController {
   })
   @ApiQuery({ name: 'hasOutstanding', required: false, type: Boolean })
   @ApiQuery({ name: 'hasGstin', required: false, type: Boolean })
+  @ApiQuery({ name: 'customerSource', required: false })
   findAll(
     @Request() req: AuthenticatedRequest,
     @Query('q') q?: string,
@@ -89,6 +90,7 @@ export class CustomersController {
     @Query('customerType') customerType?: 'RETAIL' | 'WHOLESALE' | 'DOCTOR',
     @Query('hasOutstanding') hasOutstanding?: string,
     @Query('hasGstin') hasGstin?: string,
+    @Query('customerSource') customerSource?: string,
   ) {
     const effectiveBranchId = req.user.branchId ?? branchId ?? undefined;
     const skipNum = skip !== undefined ? Number(skip) : undefined;
@@ -111,6 +113,7 @@ export class CustomersController {
             : undefined,
         hasGstin:
           typeof hasGstin === 'string' ? hasGstin === 'true' : undefined,
+        source: customerSource?.trim() || undefined,
       },
     );
   }
@@ -118,14 +121,44 @@ export class CustomersController {
   @Get('summary')
   @Roles('ADMIN', 'PHARMACIST', 'ACCOUNTANT')
   @ApiOperation({
-    summary: 'Global customer counts + total outstanding (for stat cards)',
+    summary:
+      'Customer counts + billed/paid/outstanding totals for the stat cards. Honours the same filters as the list so the cards reflect the active filter.',
   })
+  @ApiQuery({ name: 'q', required: false })
+  @ApiQuery({
+    name: 'customerType',
+    required: false,
+    enum: ['RETAIL', 'WHOLESALE', 'DOCTOR'],
+  })
+  @ApiQuery({ name: 'hasOutstanding', required: false, type: Boolean })
+  @ApiQuery({ name: 'hasGstin', required: false, type: Boolean })
+  @ApiQuery({ name: 'customerSource', required: false })
   summary(
     @Request() req: AuthenticatedRequest,
     @Query('branchId') branchId?: string,
+    @Query('q') q?: string,
+    @Query('customerType') customerType?: 'RETAIL' | 'WHOLESALE' | 'DOCTOR',
+    @Query('hasOutstanding') hasOutstanding?: string,
+    @Query('hasGstin') hasGstin?: string,
+    @Query('customerSource') customerSource?: string,
   ) {
     const effectiveBranchId = req.user.branchId ?? branchId ?? undefined;
-    return this.customersService.summary(effectiveBranchId);
+    return this.customersService.summary(effectiveBranchId, {
+      q: q?.trim() || undefined,
+      customerType:
+        customerType === 'RETAIL' ||
+        customerType === 'WHOLESALE' ||
+        customerType === 'DOCTOR'
+          ? customerType
+          : undefined,
+      hasOutstanding:
+        typeof hasOutstanding === 'string'
+          ? hasOutstanding === 'true'
+          : undefined,
+      hasGstin:
+        typeof hasGstin === 'string' ? hasGstin === 'true' : undefined,
+      source: customerSource?.trim() || undefined,
+    });
   }
 
   // Powers the Export → edit → Re-import workflow. Returns the full nested
@@ -146,6 +179,7 @@ export class CustomersController {
   })
   @ApiQuery({ name: 'hasOutstanding', required: false, type: Boolean })
   @ApiQuery({ name: 'hasGstin', required: false, type: Boolean })
+  @ApiQuery({ name: 'customerSource', required: false })
   exportData(
     @Request() req: AuthenticatedRequest,
     @Query('q') q?: string,
@@ -153,6 +187,7 @@ export class CustomersController {
     @Query('customerType') customerType?: 'RETAIL' | 'WHOLESALE' | 'DOCTOR',
     @Query('hasOutstanding') hasOutstanding?: string,
     @Query('hasGstin') hasGstin?: string,
+    @Query('customerSource') customerSource?: string,
   ) {
     const effectiveBranchId = req.user.branchId ?? branchId ?? undefined;
     return this.customersService.exportData(effectiveBranchId, {
@@ -169,6 +204,7 @@ export class CustomersController {
           : undefined,
       hasGstin:
         typeof hasGstin === 'string' ? hasGstin === 'true' : undefined,
+      source: customerSource?.trim() || undefined,
     });
   }
 

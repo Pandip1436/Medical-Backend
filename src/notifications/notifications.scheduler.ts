@@ -23,14 +23,15 @@ export class NotificationsScheduler implements OnApplicationBootstrap, OnApplica
 
   private async runAll(trigger: string) {
     try {
-      const [lowStock, expiry, paymentDue, reminders] = await Promise.all([
+      const [lowStock, expiry, paymentDue, supplierDue, reminders] = await Promise.all([
         this.service.generateLowStockAlerts(undefined),
         this.service.generateExpiryAlerts(undefined, 90),
         this.service.generatePaymentDueAlerts(undefined),
+        this.service.generateSupplierPaymentDueAlerts(undefined),
         this.service.generateReminderAlerts(),
       ]);
       this.logger.log(
-        `[${trigger}] Alerts generated — lowStock: ${lowStock.created}, expiry: ${expiry.created}, paymentDue: ${paymentDue.created}, reminders: ${reminders.created}`,
+        `[${trigger}] Alerts generated — lowStock: ${lowStock.created}, expiry: ${expiry.created}, paymentDue: ${paymentDue.created}, supplierDue: ${supplierDue.created}, reminders: ${reminders.created}`,
       );
     } catch (err) {
       this.logger.error(`[${trigger}] Failed to generate alerts`, err);

@@ -134,6 +134,7 @@ model Customer {
   dlNumber           String?
   registrationNumber String?   // For DOCTOR type: Medical Council Reg. No.
   notes              String?
+  source             String?   // How the customer was acquired (Walk-in, Referral, IndiaMART, …). Optional.
   branchId           String?
   branch             Branch?        @relation(fields: [branchId], references: [id])
   whatsappOptIn      Boolean        @default(true)  // customer-level consent for transactional WhatsApp messages
@@ -1096,6 +1097,7 @@ enum NotificationType {
   LOW_STOCK
   EXPIRY
   PAYMENT_DUE
+  SUPPLIER_PAYMENT_DUE
   SYSTEM
   APPROVAL
 }
@@ -1202,6 +1204,7 @@ enum LeadTouchStatus {
 enum LeadSource {
   MANUAL
   INDIAMART
+  JUSTDIAL
   REFERRAL
   WEBSITE
   WHATSAPP
@@ -1391,6 +1394,7 @@ model LeadActivity {
 
 enum IntegrationProvider {
   INDIAMART
+  JUSTDIAL
 }
 
 enum SyncJobStatus {

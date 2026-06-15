@@ -158,40 +158,10 @@ export class CustomersService {
       customerType?: 'RETAIL' | 'WHOLESALE' | 'DOCTOR';
       hasOutstanding?: boolean;
       hasGstin?: boolean;
+      source?: string;
     },
   ) {
-    const where: any = {};
-    if (branchId) where.branchId = branchId;
-    if (query) {
-      // Match against name (case-insensitive), phone digits, GSTIN, or address.
-      // Typing a GSTIN or a locality/street into the search box should surface
-      // the right customer.
-      where.OR = [
-        { name: { contains: query, mode: 'insensitive' } },
-        { phone: { contains: query } },
-        { gstin: { contains: query, mode: 'insensitive' } },
-        { address: { contains: query, mode: 'insensitive' } },
-      ];
-    }
-
-    if (filters?.customerType) {
-      where.type = filters.customerType;
-    }
-    if (typeof filters?.hasOutstanding === 'boolean') {
-      where.currentOutstanding = filters.hasOutstanding
-        ? { gt: 0 }
-        : { lte: 0 };
-    }
-    if (typeof filters?.hasGstin === 'boolean') {
-      // Empty-string GSTIN is treated the same as null (legacy rows persist
-      // both). Use NOT/OR to capture either case correctly.
-      where.AND = [
-        ...(where.AND ?? []),
-        filters.hasGstin
-          ? { NOT: [{ gstin: '' }, { gstin: null as any }] }
-          : { OR: [{ gstin: '' }, { gstin: null as any }] },
-      ];
-    }
+    const where = this.buildCustomerWhere(branchId, { ...filters, q: query });
 
     const paginated = typeof skip === 'number' && typeof take === 'number';
     // Clamp take to a sane max so a rogue caller can't request the universe.
@@ -221,9 +191,35 @@ export class CustomersService {
         ])
       : [await this.prisma.customer.findMany(findArgs), undefined];
 
+    // Per-customer billed/paid totals across all real invoices (DRAFT and
+    // CANCELLED excluded so they mirror the live ledger). One grouped query
+    // for the whole page instead of N per-row aggregations.
+    const ids = (customers as Array<any>).map((c) => c.id);
+    const invoiceAgg = ids.length
+      ? await this.prisma.invoice.groupBy({
+          by: ['customerId'],
+          where: {
+            customerId: { in: ids },
+            status: { notIn: ['DRAFT', 'CANCELLED'] },
+          },
+          _sum: { grandTotal: true, amountPaid: true },
+        })
+      : [];
+    const aggByCustomer = new Map(
+      invoiceAgg.map((a) => [
+        a.customerId,
+        {
+          totalAmount: Number(a._sum.grandTotal ?? 0),
+          paidAmount: Number(a._sum.amountPaid ?? 0),
+        },
+      ]),
+    );
+
     const flattened = (customers as Array<any>).map(({ _count, ...c }) => ({
       ...c,
       pendingCreditCount: _count.invoices,
+      totalAmount: aggByCustomer.get(c.id)?.totalAmount ?? 0,
+      paidAmount: aggByCustomer.get(c.id)?.paidAmount ?? 0,
     }));
 
     // Legacy callers (no pagination params) keep the plain-array contract.
@@ -248,33 +244,11 @@ export class CustomersService {
       customerType?: 'RETAIL' | 'WHOLESALE' | 'DOCTOR';
       hasOutstanding?: boolean;
       hasGstin?: boolean;
+      source?: string;
       q?: string;
     },
   ) {
-    const where: any = {};
-    if (branchId) where.branchId = branchId;
-    if (filters?.q) {
-      where.OR = [
-        { name: { contains: filters.q, mode: 'insensitive' } },
-        { phone: { contains: filters.q } },
-        { gstin: { contains: filters.q, mode: 'insensitive' } },
-        { address: { contains: filters.q, mode: 'insensitive' } },
-      ];
-    }
-    if (filters?.customerType) where.type = filters.customerType;
-    if (typeof filters?.hasOutstanding === 'boolean') {
-      where.currentOutstanding = filters.hasOutstanding
-        ? { gt: 0 }
-        : { lte: 0 };
-    }
-    if (typeof filters?.hasGstin === 'boolean') {
-      where.AND = [
-        ...(where.AND ?? []),
-        filters.hasGstin
-          ? { NOT: [{ gstin: '' }, { gstin: null as any }] }
-          : { OR: [{ gstin: '' }, { gstin: null as any }] },
-      ];
-    }
+    const where = this.buildCustomerWhere(branchId, filters);
 
     const customers = await this.prisma.customer.findMany({
       where,
@@ -373,11 +347,14 @@ export class CustomersService {
   // Returns the per-customer rollup so downstream callers can derive either
   // total-by-customer (summary) or row-level aging (getOutstanding) without
   // running the same query twice.
-  async computeLiveOutstanding(branchId?: string) {
+  async computeLiveOutstanding(branchId?: string, customerWhere?: any) {
     const invoices = await this.prisma.invoice.findMany({
       where: {
         status: { in: ['UNPAID', 'PARTIAL'] },
         ...(branchId ? { branchId } : {}),
+        // When the caller passes a customer-level filter (the customers-page
+        // stat cards), scope the live outstanding to just those customers.
+        ...(customerWhere ? { customer: { is: customerWhere } } : {}),
       },
       select: {
         id: true,
@@ -429,17 +406,94 @@ export class CustomersService {
   // Global summary across all customers (optionally scoped to a branch). Kept
   // unfiltered intentionally — these power top-of-page stat cards that should
   // remain stable as the user types in the search box below.
-  async summary(branchId?: string) {
-    const where: any = branchId ? { branchId } : {};
-    const [total, live] = await Promise.all([
+  async summary(
+    branchId?: string,
+    filters?: {
+      customerType?: 'RETAIL' | 'WHOLESALE' | 'DOCTOR';
+      hasOutstanding?: boolean;
+      hasGstin?: boolean;
+      source?: string;
+      q?: string;
+    },
+  ) {
+    // Build the same customer WHERE as findAll() so the stat cards reflect
+    // exactly the set the operator is currently filtered to. When no filters
+    // are active this is just the branch scope (or {} for all branches).
+    const where = this.buildCustomerWhere(branchId, filters);
+    const hasCustomerFilter = Object.keys(where).length > 0;
+
+    // Billed/paid across the filtered customers' real invoices (DRAFT +
+    // CANCELLED excluded). Scope by the customer relation when filtered;
+    // otherwise stay on the cheaper branch-only invoice query.
+    const invoiceWhere: any = {
+      status: { notIn: ['DRAFT', 'CANCELLED'] },
+    };
+    if (branchId) invoiceWhere.branchId = branchId;
+    if (hasCustomerFilter) invoiceWhere.customer = { is: where };
+
+    const [total, live, billed] = await Promise.all([
       this.prisma.customer.count({ where }),
-      this.computeLiveOutstanding(branchId),
+      this.computeLiveOutstanding(
+        branchId,
+        hasCustomerFilter ? where : undefined,
+      ),
+      this.prisma.invoice.aggregate({
+        where: invoiceWhere,
+        _sum: { grandTotal: true, amountPaid: true },
+      }),
     ]);
     return {
       total,
       withOutstanding: live.withOutstanding,
       totalOutstanding: live.totalOutstanding,
+      totalAmount: Number(billed._sum.grandTotal ?? 0),
+      paidAmount: Number(billed._sum.amountPaid ?? 0),
     };
+  }
+
+  // Shared customer WHERE builder so findAll(), exportData() and summary()
+  // narrow to an identical set for any given filter combination.
+  private buildCustomerWhere(
+    branchId?: string,
+    filters?: {
+      customerType?: 'RETAIL' | 'WHOLESALE' | 'DOCTOR';
+      hasOutstanding?: boolean;
+      hasGstin?: boolean;
+      source?: string;
+      q?: string;
+    },
+  ): any {
+    const where: any = {};
+    if (branchId) where.branchId = branchId;
+    if (filters?.q) {
+      where.OR = [
+        { name: { contains: filters.q, mode: 'insensitive' } },
+        { phone: { contains: filters.q } },
+        { gstin: { contains: filters.q, mode: 'insensitive' } },
+        { address: { contains: filters.q, mode: 'insensitive' } },
+      ];
+    }
+    if (filters?.customerType) where.type = filters.customerType;
+    if (filters?.source) {
+      where.source =
+        filters.source === 'none'
+          ? { in: [null as any, ''] }
+          : filters.source;
+    }
+    if (typeof filters?.hasOutstanding === 'boolean') {
+      where.currentOutstanding = filters.hasOutstanding
+        ? { gt: 0 }
+        : { lte: 0 };
+    }
+    if (typeof filters?.hasGstin === 'boolean') {
+      where.AND = [
+        ...(where.AND ?? []),
+        filters.hasGstin
+          ? { NOT: [{ gstin: '' }, { gstin: null as any }] }
+          : { OR: [{ gstin: '' }, { gstin: null as any }] },
+      ];
+    }
+    return where;
   }
 
   async findOne(id: string, branchId?: string) {

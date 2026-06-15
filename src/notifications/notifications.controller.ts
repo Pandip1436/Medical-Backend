@@ -190,11 +190,12 @@ export class NotificationsController {
     @Query('branchId') queryBranchId?: string,
   ) {
     const branchId = req.user.branchId ?? queryBranchId ?? undefined;
-    const [lowStock, expiry, paymentDue] = await Promise.all([
+    const [lowStock, expiry, paymentDue, supplierDue] = await Promise.all([
       this.service.generateLowStockAlerts(branchId),
       this.service.generateExpiryAlerts(branchId),
       this.service.generatePaymentDueAlerts(branchId),
+      this.service.generateSupplierPaymentDueAlerts(branchId),
     ]);
-    return { lowStock, expiry, paymentDue };
+    return { lowStock, expiry, paymentDue, supplierDue };
   }
 }

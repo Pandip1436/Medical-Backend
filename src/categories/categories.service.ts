@@ -42,19 +42,29 @@ export class CategoriesService {
       orderBy: { name: 'asc' },
       // _count.products is the source of truth for the "With Products" KPI on
       // the Categories page. Scope it to active products so a category whose
-      // products have all been archived doesn't keep showing as "in use".
-      include: { _count: { select: { products: { where: { isActive: true } } } } },
+      // products have all been archived doesn't keep showing as "in use", and
+      // to the current branch so this total agrees with the branch-scoped
+      // "Total Products" count on the Products page (a global category can hold
+      // products from several branches).
+      include: { _count: { select: { products: { where: this.productScope(branchId) } } } },
     });
     return categories.map((c) => ({ ...c, productCount: c._count.products }));
+  }
+
+  // Matches the active + branch filter used by the products list so the
+  // category product counts line up with the Products page total.
+  private productScope(branchId?: string) {
+    return { isActive: true, ...(branchId ? { branchId } : {}) };
   }
 
   async findOne(id: string, branchId?: string) {
     const category = await this.prisma.category.findUnique({
       where: { id },
       // _count.products is the source of truth for the "With Products" KPI on
-      // the Categories page. Scope it to active products so a category whose
-      // products have all been archived doesn't keep showing as "in use".
-      include: { _count: { select: { products: { where: { isActive: true } } } } },
+      // the Categories page. Scope it to active products (so archived products
+      // don't keep a category showing as "in use") and to the current branch
+      // so the count agrees with the branch-scoped Products page.
+      include: { _count: { select: { products: { where: this.productScope(branchId) } } } },
     });
     if (!category) throw new NotFoundException('Category not found');
     if (branchId && (category as any).branchId && (category as any).branchId !== branchId) {
