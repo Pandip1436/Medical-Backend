@@ -215,9 +215,32 @@ export class CustomersService {
       ]),
     );
 
+    // Per-customer LIVE outstanding (only UNPAID/PARTIAL invoices carry a
+    // balance). Computed here rather than trusting the cached
+    // `currentOutstanding` column, which isn't decremented when an invoice is
+    // CANCELLED — so the list's Outstanding column stays consistent with the
+    // "Total Outstanding" card (computeLiveOutstanding) and the detail header.
+    const outstandingAgg = ids.length
+      ? await this.prisma.invoice.groupBy({
+          by: ['customerId'],
+          where: {
+            customerId: { in: ids },
+            status: { in: ['UNPAID', 'PARTIAL'] },
+          },
+          _sum: { grandTotal: true, amountPaid: true },
+        })
+      : [];
+    const outstandingByCustomer = new Map(
+      outstandingAgg.map((a) => [
+        a.customerId,
+        Math.max(0, Number(a._sum.grandTotal ?? 0) - Number(a._sum.amountPaid ?? 0)),
+      ]),
+    );
+
     const flattened = (customers as Array<any>).map(({ _count, ...c }) => ({
       ...c,
       pendingCreditCount: _count.invoices,
+      currentOutstanding: outstandingByCustomer.get(c.id) ?? 0,
       totalAmount: aggByCustomer.get(c.id)?.totalAmount ?? 0,
       paidAmount: aggByCustomer.get(c.id)?.paidAmount ?? 0,
     }));
@@ -519,8 +542,23 @@ export class CustomersService {
     const { _count, ...rest } = customer as typeof customer & {
       _count: { invoices: number };
     };
+    // Compute outstanding LIVE from open invoices rather than trusting the
+    // cached `currentOutstanding` column. The cache is only decremented by the
+    // payment/credit-note paths, not when an invoice is CANCELLED — so a
+    // cancelled UNPAID/PARTIAL invoice would otherwise leave its balance stuck
+    // in the header. Mirrors computeLiveOutstanding: only UNPAID/PARTIAL count
+    // (CANCELLED, RETURNED, PAID, DRAFT are all excluded).
+    const openInvoices = await this.prisma.invoice.findMany({
+      where: { customerId: id, status: { in: ['UNPAID', 'PARTIAL'] } },
+      select: { grandTotal: true, amountPaid: true },
+    });
+    const liveOutstanding = openInvoices.reduce((sum, inv) => {
+      const due = Number(inv.grandTotal) - Number(inv.amountPaid);
+      return sum + (due > 0 ? due : 0);
+    }, 0);
     return {
       ...rest,
+      currentOutstanding: liveOutstanding,
       pendingCreditCount: _count.invoices,
       maxPendingCredit: Number(process.env.MAX_PENDING_CREDIT ?? 3),
     };

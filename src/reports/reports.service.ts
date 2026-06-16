@@ -1271,7 +1271,15 @@ export class ReportsService {
     }
 
     const invoices = await this.prisma.invoice.findMany({
-      where: { customerId, ...(dateFilter ? { date: dateFilter } : {}), ...bFilter },
+      // Exclude DRAFT (never posted) and CANCELLED (wound down) invoices so
+      // they don't appear as billed ledger rows or inflate the "Total Sales"
+      // KPI. Mirrors the customer list/summary aggregates (CustomersService).
+      where: {
+        customerId,
+        status: { notIn: ['DRAFT', 'CANCELLED'] },
+        ...(dateFilter ? { date: dateFilter } : {}),
+        ...bFilter,
+      },
       orderBy: { date: 'asc' },
       select: {
         id: true,
@@ -1349,7 +1357,78 @@ export class ReportsService {
       select: { totalAmount: true },
     });
 
-    const entries: Array<{ date: Date; ref: string; description: string; debit: number; credit: number; neutral?: boolean; sourceType: 'INVOICE' | 'PAYMENT' | 'CREDIT_NOTE'; sourceId: string }> = [];
+    // Cash/bank refunds paid out to the customer (from Refund-mode returns AND
+    // the excess of an over-value Adjust-Against-Outstanding return). Shown in
+    // the ledger for visibility; money-neutral to what the customer owes, so
+    // they don't move the running balance.
+    const refunds = await this.prisma.refund.findMany({
+      where: {
+        customerId,
+        ...(dateFilter ? { createdAt: dateFilter } : {}),
+        ...bFilter,
+      },
+      orderBy: { createdAt: 'asc' },
+      select: {
+        id: true,
+        refundNumber: true,
+        createdAt: true,
+        amount: true,
+        paymentMode: true,
+      },
+    });
+
+    // A CREDIT-settled ("Adjust Against Outstanding") credit note reduces the
+    // customer's balance via its own ledger row AND, at approve-time, bumps the
+    // absorbing invoices' `amountPaid`. The legacy-payment bridge below
+    // synthesises a payment from any `amountPaid` not backed by a real Payment
+    // row — which would re-count that same credit as a phantom "Payment (CREDIT)"
+    // line, double-subtracting it from the running balance. Reconstruct how much
+    // of each invoice's `amountPaid` came from credit notes (mirroring the
+    // approve-time allocation: source invoice first, then FIFO by date, capped at
+    // each invoice's pre-credit room) so the bridge can exclude it.
+    const creditAbsorbedByInvoice = new Map<string, number>();
+    {
+      const capacity = new Map<string, number>();
+      for (const inv of invoices) {
+        capacity.set(
+          inv.id,
+          Math.max(0, Number(inv.grandTotal) - (realPaidByInvoice.get(inv.id) ?? 0)),
+        );
+      }
+      const creditCNs = creditNotes
+        .filter((c) => c.settlementMode === 'CREDIT')
+        .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+      for (const cn of creditCNs) {
+        let remaining = Number(cn.totalAmount);
+        const absorb = (invId: string) => {
+          if (remaining <= 0.01) return;
+          const room = capacity.get(invId) ?? 0;
+          if (room <= 0.01) return;
+          const apply = Math.min(remaining, room);
+          capacity.set(invId, room - apply);
+          creditAbsorbedByInvoice.set(
+            invId,
+            (creditAbsorbedByInvoice.get(invId) ?? 0) + apply,
+          );
+          remaining -= apply;
+        };
+        // 1. Source invoice first (matches CreditNotesService allocation order).
+        if (cn.invoiceId && capacity.has(cn.invoiceId)) absorb(cn.invoiceId);
+        // 2. Cascade leftover FIFO to the customer's other invoices (oldest
+        //    first — `invoices` is already date-ascending).
+        if (remaining > 0.01) {
+          for (const inv of invoices) {
+            if (remaining <= 0.01) break;
+            if (inv.id === cn.invoiceId) continue;
+            absorb(inv.id);
+          }
+        }
+        // Anything still remaining was refunded (excess return) — it never
+        // touched an invoice's amountPaid and doesn't move the balance.
+      }
+    }
+
+    const entries: Array<{ date: Date; ref: string; description: string; debit: number; credit: number; neutral?: boolean; sourceType: 'INVOICE' | 'PAYMENT' | 'CREDIT_NOTE' | 'REFUND'; sourceId: string }> = [];
 
     invoices.forEach((inv) => {
       entries.push({
@@ -1361,10 +1440,13 @@ export class ReportsService {
         sourceType: 'INVOICE',
         sourceId: inv.id,
       });
-      // Bridge invoices whose amountPaid wasn't captured as a Payment row.
+      // Bridge invoices whose amountPaid wasn't captured as a Payment row —
+      // but exclude the slice that came from CREDIT credit notes (the CN row
+      // already moves the balance; counting it here too would double-subtract).
       const amountPaid = Number(inv.amountPaid);
       const realPaid = realPaidByInvoice.get(inv.id) ?? 0;
-      const legacyGap = amountPaid - realPaid;
+      const creditAbsorbed = creditAbsorbedByInvoice.get(inv.id) ?? 0;
+      const legacyGap = amountPaid - realPaid - creditAbsorbed;
       if (legacyGap > 0.01) {
         entries.push({
           date: inv.date,
@@ -1391,9 +1473,16 @@ export class ReportsService {
     });
 
     creditNotes.forEach((cn) => {
-      // Only CREDIT-settlement returns move the balance. REFUND / REPLACEMENT
-      // are shown but neutral (cash/goods went back — no change to outstanding).
-      const neutral = cn.settlementMode !== 'CREDIT';
+      // Only CREDIT-settlement returns move the balance — by their FULL value.
+      // An over-value Adjust takes the customer into advance (negative balance);
+      // its excess refund (below) then brings them back to zero, so every row's
+      // displayed amount matches the balance shift it causes. A REFUND-mode
+      // return likewise moves the balance by its full value (the customer is in
+      // advance until the cash refund below clears it) so the credit note's
+      // impact is visible in the Balance column. Only REPLACEMENT stays neutral
+      // — it's settled by a future replacement invoice, not cash, so it must not
+      // drift the balance away from currentOutstanding in the meantime.
+      const neutral = cn.settlementMode === 'REPLACEMENT';
       const tag =
         cn.settlementMode === 'REFUND' ? ' (Refund)'
         : cn.settlementMode === 'REPLACEMENT' ? ' (Replacement)'
@@ -1410,19 +1499,41 @@ export class ReportsService {
       });
     });
 
+    refunds.forEach((r) => {
+      // Cash paid back to the customer (a debit). It clears the advance the
+      // matching credit note created — whether that was an over-value Adjust
+      // (excess refunded) or a Refund-mode return (full amount refunded) — so it
+      // always moves the balance from advance back toward zero.
+      entries.push({
+        date: r.createdAt,
+        ref: r.refundNumber,
+        description: `Refund (${r.paymentMode})`,
+        debit: Number(r.amount),
+        credit: 0,
+        sourceType: 'REFUND',
+        sourceId: r.id,
+      });
+    });
+
     entries.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
     let balance = 0;
     const ledger = entries.map((e) => {
-      // Neutral rows (refund/replacement returns) display their amount but do
-      // not move the running balance.
+      // Neutral rows (refund/replacement returns, refund-mode payouts) display
+      // their amount but do not move the running balance.
       if (!e.neutral) balance += e.debit - e.credit;
       return { ...e, balance };
     });
 
     // KPI totals exclude neutral rows so Closing Balance reconciles with
-    // Opening + Debit − Credit.
+    // Opening + Debit − Credit. Total Debit/Credit are accounting figures (they
+    // include refund debits); "Total Sales" is the business metric — only what
+    // was actually invoiced — so it must exclude refund debits.
     const totalDebit = entries.reduce((s, e) => s + (e.neutral ? 0 : e.debit), 0);
     const totalCredit = entries.reduce((s, e) => s + (e.neutral ? 0 : e.credit), 0);
+    const totalSales = entries.reduce(
+      (s, e) => s + (e.sourceType === 'INVOICE' ? e.debit : 0),
+      0,
+    );
     const totalReturns = approvedReturnsForStats.reduce((s, cn) => s + Number(cn.totalAmount), 0);
 
     // Active Quotations is a current snapshot, not a period stat — must not be
@@ -1457,7 +1568,7 @@ export class ReportsService {
         { label: 'Total Credit', value: this.inr(totalCredit) },
         { label: 'Closing Balance', value: this.inr(balance) },
         { label: 'Outstanding', value: this.inr(Number(customer.currentOutstanding)) },
-        { label: 'Total Sales', value: this.inr(totalDebit) },
+        { label: 'Total Sales', value: this.inr(totalSales) },
         { label: 'Total Returns', value: this.inr(totalReturns) },
         { label: 'Active Quotations', value: String(activeQuotationsCount) },
       ],

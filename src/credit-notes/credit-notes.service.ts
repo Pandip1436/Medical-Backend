@@ -266,8 +266,11 @@ export class CreditNotesService {
       // credit advance. Computed LIVE from open invoices rather than the
       // denormalised currentOutstanding cache (which can drift) so the guard is
       // trustworthy.
+      // Live outstanding for the customer, computed from open invoices. Drives
+      // both the CREDIT guard below and the adjust-vs-refund split when the
+      // return value exceeds what the customer owes.
+      let liveOutstanding = 0;
       if (finalSettlementMode === 'CREDIT') {
-        let liveOutstanding = 0;
         if (cn.customerId) {
           const openAgg = await tx.invoice.aggregate({
             where: {
@@ -304,32 +307,37 @@ export class CreditNotesService {
       // the customer's outstanding AND the source invoice's amountPaid so the
       // per-invoice balances reconcile with the customer-level number.
       //
-      // Allocation order:
+      // Split rule: only the portion of the return value that the customer
+      // actually owes is adjusted against the outstanding; any EXCESS (return
+      // worth more than the balance) is paid back to the customer as a cash
+      // Refund rather than parked as open-ended store credit. So:
+      //     adjustable = min(returnValue, liveOutstanding)   → reduces balance
+      //     excess     = returnValue − adjustable            → refunded
+      //
+      // Allocation of the adjustable part:
       //   1. The source invoice (cn.invoiceId) — the invoice the CN was
       //      created against. Standard accounting practice.
-      //   2. If the source invoice can't absorb the full CN amount (already
-      //      fully paid, or remaining balance < CN amount), the leftover
-      //      cascades FIFO to the customer's other UNPAID / PARTIAL invoices.
-      //   3. Anything still leftover stays as customer-level credit
-      //      (currentOutstanding goes negative — we owe them future credit).
-      //
-      // currentOutstanding is decremented by the full CN amount up front;
-      // step (1) + (2) then sync each invoice's amountPaid so the sum of
+      //   2. Leftover cascades FIFO to the customer's other UNPAID / PARTIAL
+      //      invoices, oldest first.
+      // currentOutstanding is decremented by `adjustable` (landing at ~0, never
+      // negative); step (1)+(2) sync each invoice's amountPaid so the sum of
       // open-invoice balances stays in lockstep with currentOutstanding.
-      // CREDIT and REFUND both settle at approval: CREDIT applies to the
-      // outstanding (below), REFUND records the cash payout (Refund row, below).
-      // REPLACEMENT stays unsettled until the replacement invoice is issued.
+      // CREDIT and REFUND both settle at approval; REPLACEMENT stays unsettled
+      // until the replacement invoice is issued.
       const settledAt =
         finalSettlementMode === 'CREDIT' || finalSettlementMode === 'REFUND'
           ? new Date()
           : null;
+      const creditAdjustable = Math.min(Number(cn.totalAmount), liveOutstanding);
+      const creditExcess = Number(cn.totalAmount) - creditAdjustable;
       if (finalSettlementMode === 'CREDIT' && cn.customerId) {
         await tx.customer.update({
           where: { id: cn.customerId },
-          data: { currentOutstanding: { decrement: cn.totalAmount } },
+          // Only knock off what they owe — the excess is refunded below.
+          data: { currentOutstanding: { decrement: creditAdjustable } },
         });
 
-        let remaining = Number(cn.totalAmount);
+        let remaining = creditAdjustable;
 
         // Helper: apply as much of `remaining` as the invoice can absorb,
         // update its amountPaid/status, and shrink `remaining` accordingly.
@@ -414,9 +422,35 @@ export class CreditNotesService {
             await applyToInvoice(inv);
           }
         }
-        // Anything still in `remaining` stays as customer-level credit
-        // (currentOutstanding already decremented). Next credit purchase
-        // will use it up.
+
+        // Excess: the return was worth more than the customer owed. Pay the
+        // surplus back as a cash/bank Refund (same treatment as a Refund-mode
+        // return) instead of leaving an open-ended store-credit advance. The
+        // @unique on Refund.creditNoteId is safe here — a CN is either CREDIT
+        // or REFUND, never both, so only one Refund row is ever created.
+        if (creditExcess > 0.01) {
+          const invoiceMode = cn.invoice.paymentMode;
+          const refundMode =
+            opts.refundMode ??
+            (['CASH', 'CARD', 'UPI'].includes(invoiceMode) ? invoiceMode : 'CASH');
+          const refundNumber = await this.numbering.nextNumber(
+            tx,
+            'REF',
+            cn.branchId ?? branchId ?? null,
+          );
+          await tx.refund.create({
+            data: {
+              refundNumber,
+              creditNoteId: cn.id,
+              customerId: cn.customerId,
+              invoiceId: cn.invoiceId,
+              amount: creditExcess,
+              paymentMode: refundMode,
+              branchId: cn.branchId,
+              createdById: reviewerUserId,
+            },
+          });
+        }
       }
 
       // REFUND mode ("Refund to Customer"): record the cash/bank payout as a

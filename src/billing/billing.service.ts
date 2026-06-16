@@ -1735,6 +1735,31 @@ export class BillingService {
     if (branchId && invoice.branchId && invoice.branchId !== branchId) {
       throw new NotFoundException('Invoice not found');
     }
+
+    // Cancelling an invoice that still carries an open balance must release that
+    // balance from the customer's cached `currentOutstanding`. Otherwise the
+    // cancelled amount stays stuck on the customer (inflating the detail header,
+    // ledger KPI, and aged-receivables report, all of which read the cache).
+    // Only UNPAID/PARTIAL invoices hold outstanding.
+    const openBalance = Number(invoice.grandTotal) - Number(invoice.amountPaid);
+    const releasesOutstanding =
+      data?.status === 'CANCELLED' &&
+      invoice.status !== 'CANCELLED' &&
+      !!invoice.customerId &&
+      ['UNPAID', 'PARTIAL'].includes(invoice.status) &&
+      openBalance > 0;
+
+    if (releasesOutstanding) {
+      return this.prisma.$transaction(async (tx) => {
+        const updated = await tx.invoice.update({ where: { id }, data });
+        await tx.customer.update({
+          where: { id: invoice.customerId! },
+          data: { currentOutstanding: { decrement: openBalance } },
+        });
+        return updated;
+      });
+    }
+
     return this.prisma.invoice.update({ where: { id }, data });
   }
 
