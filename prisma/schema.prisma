@@ -735,6 +735,10 @@ model GRNItem {
   expiryDate   DateTime
   purchaseRate Decimal
   mrp          Decimal
+  // GST rate (%) for this line at receive time. The purchase rate is
+  // GST-inclusive, so this lets the detail view / PDF extract the tax from
+  // within the line value. Default 0 for legacy rows created before this field.
+  gstPercent   Decimal  @default(0)
   damageQty    Int      @default(0)
   batches      Batch[]
 }

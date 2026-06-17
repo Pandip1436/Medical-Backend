@@ -69,4 +69,11 @@ export class CreateGrnItemDto {
   @IsNumber()
   @Min(0)
   mrp: number;
+
+  // GST rate (%) for this line. The purchase rate is GST-inclusive; this is
+  // stored so the detail view / PDF can extract the tax. Optional for back-compat.
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  gstPercent?: number;
 }

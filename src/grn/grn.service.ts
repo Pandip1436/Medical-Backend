@@ -185,6 +185,7 @@ export class GrnService {
           expiryDate,
           purchaseRate: item.purchaseRate,
           mrp: item.mrp,
+          gstPercent: item.gstPercent ?? 0,
         },
       });
 
@@ -498,6 +499,7 @@ export class GrnService {
       expiryDate: Date;
       purchaseRate: Prisma.Decimal;
       mrp: Prisma.Decimal;
+      gstPercent?: Prisma.Decimal;
     }>;
   }): Prisma.InputJsonValue {
     return {
@@ -522,6 +524,7 @@ export class GrnService {
         expiryDate: it.expiryDate.toISOString(),
         purchaseRate: Number(it.purchaseRate),
         mrp: Number(it.mrp),
+        gstPercent: Number(it.gstPercent ?? 0),
       })),
     };
   }
