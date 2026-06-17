@@ -192,6 +192,22 @@ export class SuppliersController {
     });
   }
 
+  // Declared before `@Get(':id')` so "summary" isn't captured as a supplier id.
+  @Get('summary')
+  @Roles('ADMIN', 'INVENTORY_MANAGER', 'PHARMACIST', 'ACCOUNTANT')
+  @ApiOperation({
+    summary:
+      'Directory-wide supplier KPIs: total purchases and pending payments (for the stat cards).',
+  })
+  @ApiQuery({ name: 'branchId', required: false })
+  getSummary(
+    @Request() req: AuthenticatedRequest,
+    @Query('branchId') branchId?: string,
+  ) {
+    const effectiveBranchId = req.user.branchId ?? branchId ?? undefined;
+    return this.suppliersService.summary(effectiveBranchId);
+  }
+
   @Get(':id')
   @Roles('ADMIN', 'INVENTORY_MANAGER', 'PHARMACIST', 'ACCOUNTANT')
   @ApiOperation({ summary: 'Get supplier details including basic history' })

@@ -276,24 +276,76 @@ export class SuppliersService {
   private async withLiveOutstanding<T extends { id: string; currentOutstanding: unknown }>(
     suppliers: T[],
     branchId?: string,
-  ): Promise<T[]> {
-    if (suppliers.length === 0) return suppliers;
+  ): Promise<Array<T & { totalPurchases: number; paidAmount: number }>> {
+    if (suppliers.length === 0)
+      return suppliers as Array<T & { totalPurchases: number; paidAmount: number }>;
+    // One pass over every non-replacement GRN gives all three figures: total
+    // purchased (Σ invoice), paid (Σ amountPaid), and the live outstanding (the
+    // still-positive due on UNPAID/PARTIAL GRNs — the canonical balance, same
+    // basis as getOutstanding()).
     const grns = await this.prisma.gRN.findMany({
       where: {
         supplierId: { in: suppliers.map((s) => s.id) },
         isReplacement: false,
-        paymentStatus: { in: ['UNPAID', 'PARTIAL'] },
         ...(branchId ? { branchId } : {}),
       },
-      select: { supplierId: true, supplierInvoiceAmount: true, amountPaid: true },
+      select: {
+        supplierId: true,
+        supplierInvoiceAmount: true,
+        amountPaid: true,
+        paymentStatus: true,
+      },
     });
-    const liveMap = new Map<string, number>();
+    const outMap = new Map<string, number>();
+    const totalMap = new Map<string, number>();
+    const paidMap = new Map<string, number>();
     for (const g of grns) {
-      const due = Number(g.supplierInvoiceAmount) - Number(g.amountPaid);
-      if (due <= 0.01) continue;
-      liveMap.set(g.supplierId, (liveMap.get(g.supplierId) ?? 0) + due);
+      const inv = Number(g.supplierInvoiceAmount);
+      const paid = Number(g.amountPaid);
+      totalMap.set(g.supplierId, (totalMap.get(g.supplierId) ?? 0) + inv);
+      paidMap.set(g.supplierId, (paidMap.get(g.supplierId) ?? 0) + paid);
+      if (g.paymentStatus === 'UNPAID' || g.paymentStatus === 'PARTIAL') {
+        const due = inv - paid;
+        if (due > 0.01)
+          outMap.set(g.supplierId, (outMap.get(g.supplierId) ?? 0) + due);
+      }
     }
-    return suppliers.map((s) => ({ ...s, currentOutstanding: liveMap.get(s.id) ?? 0 }));
+    return suppliers.map((s) => ({
+      ...s,
+      currentOutstanding: outMap.get(s.id) ?? 0,
+      totalPurchases: totalMap.get(s.id) ?? 0,
+      paidAmount: paidMap.get(s.id) ?? 0,
+    }));
+  }
+
+  // Directory-wide KPIs for the Suppliers page stat cards. Both figures come
+  // from GRNs (the system of record for what was purchased and what's still
+  // owed), excluding replacement GRNs (₹0 money-neutral receipts).
+  async summary(branchId?: string) {
+    const branchScope = branchId ? { branchId } : {};
+    const [purchased, pending] = await Promise.all([
+      // Total Purchases — everything ever billed by suppliers.
+      this.prisma.gRN.aggregate({
+        where: { isReplacement: false, ...branchScope },
+        _sum: { supplierInvoiceAmount: true },
+      }),
+      // Pending Payments — still-open balance on UNPAID / PARTIAL GRNs.
+      this.prisma.gRN.aggregate({
+        where: {
+          isReplacement: false,
+          paymentStatus: { in: ['UNPAID', 'PARTIAL'] },
+          ...branchScope,
+        },
+        _sum: { supplierInvoiceAmount: true, amountPaid: true },
+      }),
+    ]);
+    const totalPurchases = Number(purchased._sum.supplierInvoiceAmount ?? 0);
+    const pendingPayments = Math.max(
+      0,
+      Number(pending._sum.supplierInvoiceAmount ?? 0) -
+        Number(pending._sum.amountPaid ?? 0),
+    );
+    return { totalPurchases, pendingPayments };
   }
 
   async findOne(id: string, branchId?: string) {
