@@ -91,6 +91,8 @@ export class CustomersController {
     @Query('hasOutstanding') hasOutstanding?: string,
     @Query('hasGstin') hasGstin?: string,
     @Query('customerSource') customerSource?: string,
+    @Query('createdFrom') createdFrom?: string,
+    @Query('createdTo') createdTo?: string,
   ) {
     const effectiveBranchId = req.user.branchId ?? branchId ?? undefined;
     const skipNum = skip !== undefined ? Number(skip) : undefined;
@@ -114,6 +116,13 @@ export class CustomersController {
         hasGstin:
           typeof hasGstin === 'string' ? hasGstin === 'true' : undefined,
         source: customerSource?.trim() || undefined,
+        // yyyy-mm-dd bounds — narrows to customers created within the range.
+        createdFrom: /^\d{4}-\d{2}-\d{2}$/.test(createdFrom ?? '')
+          ? createdFrom
+          : undefined,
+        createdTo: /^\d{4}-\d{2}-\d{2}$/.test(createdTo ?? '')
+          ? createdTo
+          : undefined,
       },
     );
   }
@@ -141,6 +150,8 @@ export class CustomersController {
     @Query('hasOutstanding') hasOutstanding?: string,
     @Query('hasGstin') hasGstin?: string,
     @Query('customerSource') customerSource?: string,
+    @Query('createdFrom') createdFrom?: string,
+    @Query('createdTo') createdTo?: string,
   ) {
     const effectiveBranchId = req.user.branchId ?? branchId ?? undefined;
     return this.customersService.summary(effectiveBranchId, {
@@ -158,6 +169,12 @@ export class CustomersController {
       hasGstin:
         typeof hasGstin === 'string' ? hasGstin === 'true' : undefined,
       source: customerSource?.trim() || undefined,
+      createdFrom: /^\d{4}-\d{2}-\d{2}$/.test(createdFrom ?? '')
+        ? createdFrom
+        : undefined,
+      createdTo: /^\d{4}-\d{2}-\d{2}$/.test(createdTo ?? '')
+        ? createdTo
+        : undefined,
     });
   }
 
@@ -283,6 +300,21 @@ export class CustomersController {
     return this.customersService.update(
       id,
       updateCustomerDto,
+      req.user.branchId ?? undefined,
+    );
+  }
+
+  @Patch(':id/active')
+  @Roles('ADMIN', 'PHARMACIST')
+  @ApiOperation({ summary: 'Activate / deactivate a customer (soft-disable)' })
+  setActive(
+    @Param('id') id: string,
+    @Body() body: { isActive: boolean },
+    @Request() req: AuthenticatedRequest,
+  ) {
+    return this.customersService.setActive(
+      id,
+      body.isActive !== false,
       req.user.branchId ?? undefined,
     );
   }

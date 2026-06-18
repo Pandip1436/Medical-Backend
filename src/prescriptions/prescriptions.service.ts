@@ -74,6 +74,26 @@ export class PrescriptionsService {
     return p
   }
 
+  // Edit the metadata (type/doctor, notes, valid-until) of an existing record.
+  // The uploaded file itself isn't replaced here — only its details.
+  async update(
+    id: string,
+    data: { doctorName?: string; notes?: string; validUntil?: string },
+    branchId?: string,
+  ) {
+    await this.findOne(id, branchId) // existence + branch-scope guard
+    return this.prisma.prescription.update({
+      where: { id },
+      data: {
+        ...(data.doctorName !== undefined ? { doctorName: data.doctorName } : {}),
+        ...(data.notes !== undefined ? { notes: data.notes || null } : {}),
+        ...(data.validUntil !== undefined
+          ? { validUntil: data.validUntil ? new Date(data.validUntil) : null }
+          : {}),
+      },
+    })
+  }
+
   async remove(id: string, branchId?: string) {
     const p = await this.findOne(id, branchId)
     if (p.imageUrl) {

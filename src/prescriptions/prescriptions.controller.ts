@@ -2,6 +2,7 @@ import {
   Controller,
   Get,
   Post,
+  Patch,
   Delete,
   Param,
   Body,
@@ -89,6 +90,18 @@ export class PrescriptionsController {
   @Roles('ADMIN', 'PHARMACIST', 'ACCOUNTANT')
   findOne(@Param('id') id: string, @Request() req: any) {
     return this.svc.findOne(id, req.user.branchId)
+  }
+
+  @Patch(':id')
+  @Roles('ADMIN', 'PHARMACIST')
+  update(
+    @Param('id') id: string,
+    @Request() req: any,
+    @Body('doctorName') doctorName?: string,
+    @Body('notes') notes?: string,
+    @Body('validUntil') validUntil?: string,
+  ) {
+    return this.svc.update(id, { doctorName, notes, validUntil }, req.user.branchId)
   }
 
   @Delete(':id')

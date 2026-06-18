@@ -1365,6 +1365,7 @@ export class CustomerImportService {
       email: row.email?.trim() || null,
       address: row.address?.trim() || null,
       type: row.type ?? CustomerType.RETAIL,
+      source: row.source?.trim() || null,
       doctorRef: row.doctorRef?.trim() || null,
       referredBy: row.referredBy?.trim() || null,
       creditLimit: new Prisma.Decimal(row.creditLimit ?? 0),
@@ -1393,6 +1394,7 @@ export class CustomerImportService {
     if (row.email !== undefined) data.email = row.email?.trim() || null;
     if (row.address !== undefined) data.address = row.address?.trim() || null;
     if (row.type !== undefined) data.type = row.type;
+    if (row.source !== undefined) data.source = row.source?.trim() || null;
     if (row.doctorRef !== undefined)
       data.doctorRef = row.doctorRef?.trim() || null;
     if (row.referredBy !== undefined)

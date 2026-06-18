@@ -159,6 +159,8 @@ export class CustomersService {
       hasOutstanding?: boolean;
       hasGstin?: boolean;
       source?: string;
+      createdFrom?: string;
+      createdTo?: string;
     },
   ) {
     const where = this.buildCustomerWhere(branchId, { ...filters, q: query });
@@ -436,6 +438,8 @@ export class CustomersService {
       hasOutstanding?: boolean;
       hasGstin?: boolean;
       source?: string;
+      createdFrom?: string;
+      createdTo?: string;
       q?: string;
     },
   ) {
@@ -483,11 +487,27 @@ export class CustomersService {
       hasOutstanding?: boolean;
       hasGstin?: boolean;
       source?: string;
+      createdFrom?: string;
+      createdTo?: string;
       q?: string;
     },
   ): any {
     const where: any = {};
     if (branchId) where.branchId = branchId;
+    // createdFrom / createdTo (yyyy-mm-dd) → bound customers by creation date.
+    // `to` is inclusive of the whole day (< next day at 00:00).
+    if (filters?.createdFrom || filters?.createdTo) {
+      const createdAt: any = {};
+      if (filters.createdFrom && /^\d{4}-\d{2}-\d{2}$/.test(filters.createdFrom)) {
+        const [y, m, d] = filters.createdFrom.split('-').map(Number);
+        createdAt.gte = new Date(y, m - 1, d);
+      }
+      if (filters.createdTo && /^\d{4}-\d{2}-\d{2}$/.test(filters.createdTo)) {
+        const [y, m, d] = filters.createdTo.split('-').map(Number);
+        createdAt.lt = new Date(y, m - 1, d + 1);
+      }
+      if (createdAt.gte || createdAt.lt) where.createdAt = createdAt;
+    }
     if (filters?.q) {
       where.OR = [
         { name: { contains: filters.q, mode: 'insensitive' } },
@@ -581,6 +601,16 @@ export class CustomersService {
     return this.prisma.customer.update({ where: { id }, data });
   }
 
+  // Soft-disable / re-enable a customer. Preferred over hard delete: it keeps
+  // all history intact and is reversible. Branch-scoped via findOne's guard.
+  async setActive(id: string, isActive: boolean, branchId?: string) {
+    await this.findOne(id, branchId);
+    return this.prisma.customer.update({
+      where: { id },
+      data: { isActive },
+    });
+  }
+
   async remove(id: string, branchId?: string) {
     const customer = await this.findOne(id, branchId);
     // Block delete if the customer has any non-terminal invoices. Hard-deleting
@@ -603,7 +633,42 @@ export class CustomersService {
         `Cannot delete "${customer.name}" — outstanding balance is ₹${outstanding.toFixed(2)}. Reconcile the ledger first.`,
       );
     }
-    return this.prisma.customer.delete({ where: { id } });
+
+    // Block hard-delete when any financial/audit history exists (invoices,
+    // payments, quotations, credit notes, refunds). Those records FK-reference
+    // the customer without a cascade rule, so deleting would either fail with
+    // an opaque DB error or — worse — erase the audit trail. The operator
+    // should set the customer inactive instead to preserve history.
+    const [invoiceCount, paymentCount, quotationCount, creditNoteCount, refundCount] =
+      await Promise.all([
+        this.prisma.invoice.count({ where: { customerId: id } }),
+        this.prisma.payment.count({ where: { customerId: id } }),
+        this.prisma.quotation.count({ where: { customerId: id } }),
+        this.prisma.creditNote.count({ where: { customerId: id } }),
+        this.prisma.refund.count({ where: { customerId: id } }),
+      ]);
+    const historyCount =
+      invoiceCount + paymentCount + quotationCount + creditNoteCount + refundCount;
+    if (historyCount > 0) {
+      const parts = [
+        invoiceCount && `${invoiceCount} invoice(s)`,
+        paymentCount && `${paymentCount} payment(s)`,
+        quotationCount && `${quotationCount} quotation(s)`,
+        creditNoteCount && `${creditNoteCount} credit note(s)`,
+        refundCount && `${refundCount} refund(s)`,
+      ].filter(Boolean);
+      throw new BadRequestException(
+        `Cannot delete "${customer.name}" — they have billing history (${parts.join(', ')}). Set the customer inactive instead to preserve records.`,
+      );
+    }
+
+    // Safe to hard-delete. Remove the non-financial dependents that don't
+    // cascade (prescriptions) inside a transaction; CustomerActivity and
+    // CustomerReminder are removed automatically via their onDelete: Cascade.
+    return this.prisma.$transaction(async (tx) => {
+      await tx.prescription.deleteMany({ where: { customerId: id } });
+      return tx.customer.delete({ where: { id } });
+    });
   }
 
   async getOutstanding(

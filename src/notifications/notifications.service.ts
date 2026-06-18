@@ -574,12 +574,12 @@ export class NotificationsService {
       const outstanding = Number(inv.grandTotal) - Number(inv.amountPaid);
       const daysOutstanding = Math.floor((now.getTime() - new Date(inv.date).getTime()) / 86_400_000);
 
-      // Only start reminding within the lead window before the due date (default
-      // 3 days). Invoices with no due date fall back to alerting immediately.
-      if (inv.dueDate) {
-        const daysUntilDue = Math.ceil((new Date(inv.dueDate).getTime() - now.getTime()) / 86_400_000);
-        if (daysUntilDue > CUSTOMER_PAYMENT_DUE_BEFORE_DAYS) continue;
-      }
+      // Payment-due alerts are strictly relative to a due date: only invoices
+      // that carry one are eligible, and only once we're within the lead window
+      // before it (default 3 days). Invoices without a due date never alert.
+      if (!inv.dueDate) continue;
+      const daysUntilDue = Math.ceil((new Date(inv.dueDate).getTime() - now.getTime()) / 86_400_000);
+      if (daysUntilDue > CUSTOMER_PAYMENT_DUE_BEFORE_DAYS) continue;
 
       // Reminder policy: nudge once a day for up to PAYMENT_DUE_MAX_REMINDERS
       // days, then stop. A one-time Resolve (or the invoice being paid, which

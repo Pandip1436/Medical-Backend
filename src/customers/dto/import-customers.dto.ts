@@ -189,6 +189,7 @@ export class ImportCustomerDto {
   @IsOptional() @IsString() email?: string;
   @IsOptional() @IsString() address?: string;
   @IsOptional() @IsEnum(CustomerType) type?: CustomerType;
+  @IsOptional() @IsString() source?: string;
   @IsOptional() @IsString() doctorRef?: string;
   @IsOptional() @IsString() referredBy?: string;
   @IsOptional() @IsNumber() creditLimit?: number;

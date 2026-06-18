@@ -32,6 +32,7 @@ export interface PaymentDueStateInput {
   customerId?: string | null;
   customerName?: string | null;
   customerPhone?: string | null;
+  dueDate?: Date | string | null;
 }
 
 // The small JSON snapshot the table view reads for the "Aged" column and phone
@@ -44,6 +45,9 @@ export function buildPaymentDueState(input: PaymentDueStateInput) {
     customerId: input.customerId ?? null,
     customerName: input.customerName ?? null,
     customerPhone: input.customerPhone ?? null,
+    // The UI's "Due" column reads this. Always carry it so a refresh (e.g. on a
+    // partial payment) never blanks the due date back to "—".
+    dueDate: input.dueDate ?? null,
   };
 }
 
@@ -59,6 +63,9 @@ export interface InvoiceLike {
   invoiceNumber?: string | null;
   customerId?: string | null;
   customerPhone?: string | null;
+  /** Credit-sale due date. If a caller doesn't include it, the refresh branch
+   *  fetches it so the snapshot's `dueDate` is never blanked. */
+  dueDate?: Date | null;
 }
 
 // Statuses that mean "nothing is owed anymore" — paid off, fully returned, or
@@ -105,6 +112,18 @@ export async function syncPaymentDueForInvoice(
     const daysOutstanding = inv.date
       ? Math.floor((Date.now() - new Date(inv.date).getTime()) / 86_400_000)
       : 0;
+    // Preserve the due date through the refresh. Most callers don't select it,
+    // so fetch it when it's not supplied — otherwise the snapshot's dueDate
+    // would be overwritten with null and the UI's "Due" column would show "—".
+    const dueDate =
+      inv.dueDate !== undefined
+        ? inv.dueDate
+        : (
+            await db.invoice.findUnique({
+              where: { id: inv.id },
+              select: { dueDate: true },
+            })
+          )?.dueDate ?? null;
     await db.notification.updateMany({
       where: base,
       data: {
@@ -120,6 +139,7 @@ export async function syncPaymentDueForInvoice(
           customerId: inv.customerId,
           customerName: inv.customerName,
           customerPhone: inv.customerPhone,
+          dueDate,
         }) as any,
       },
     });

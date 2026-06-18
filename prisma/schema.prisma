@@ -137,6 +137,10 @@ model Customer {
   source             String?   // How the customer was acquired (Walk-in, Referral, IndiaMART, …). Optional.
   branchId           String?
   branch             Branch?        @relation(fields: [branchId], references: [id])
+  // Soft-disable a customer instead of hard-deleting (deleting is blocked once
+  // they have billing history). Inactive customers stay in the DB for audit but
+  // are flagged in the UI and can be reactivated.
+  isActive           Boolean        @default(true)
   whatsappOptIn      Boolean        @default(true)  // customer-level consent for transactional WhatsApp messages
   whatsappNumber     String?        // override of `phone` if WhatsApp lives on a different number
   createdAt          DateTime       @default(now())

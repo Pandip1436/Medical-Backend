@@ -174,10 +174,14 @@ export class QuotationsService {
       throw new NotFoundException('Quotation not found');
     }
 
+    // A quotation can be converted to an invoice directly from DRAFT/SENT
+    // (the user doesn't have to formally Accept first), so CONVERTED is
+    // reachable from those too — otherwise the convert flow's status update
+    // silently fails and quotations stay stuck as Draft/Sent.
     const validTransitions: Record<string, string[]> = {
-      DRAFT: ['SENT', 'ACCEPTED', 'REJECTED'],
-      SENT: ['ACCEPTED', 'REJECTED'],
-      ACCEPTED: ['CONVERTED'],
+      DRAFT: ['SENT', 'ACCEPTED', 'REJECTED', 'CONVERTED'],
+      SENT: ['ACCEPTED', 'REJECTED', 'CONVERTED'],
+      ACCEPTED: ['CONVERTED', 'REJECTED'],
       REJECTED: ['DRAFT'],
       CONVERTED: [],
     };

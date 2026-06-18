@@ -1534,6 +1534,9 @@ export class ReportsService {
       (s, e) => s + (e.sourceType === 'INVOICE' ? e.debit : 0),
       0,
     );
+    // Total Paid — what the customer has actually settled against their
+    // invoices (Σ amountPaid over the same real invoices Total Sales counts).
+    const totalPaid = invoices.reduce((s, inv) => s + Number(inv.amountPaid), 0);
     const totalReturns = approvedReturnsForStats.reduce((s, cn) => s + Number(cn.totalAmount), 0);
 
     // Active Quotations is a current snapshot, not a period stat — must not be
@@ -1569,6 +1572,7 @@ export class ReportsService {
         { label: 'Closing Balance', value: this.inr(balance) },
         { label: 'Outstanding', value: this.inr(Number(customer.currentOutstanding)) },
         { label: 'Total Sales', value: this.inr(totalSales) },
+        { label: 'Total Paid', value: this.inr(totalPaid) },
         { label: 'Total Returns', value: this.inr(totalReturns) },
         { label: 'Active Quotations', value: String(activeQuotationsCount) },
       ],
