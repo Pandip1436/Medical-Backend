@@ -20,7 +20,7 @@ import { Roles } from '../common/decorators/roles.decorator';
 
 type AuthedRequest = { user: { role?: string } };
 
-const STATS_ROLES = new Set(['ADMIN', 'ACCOUNTANT']);
+const STATS_ROLES = new Set(['SUPER_ADMIN', 'ADMIN', 'ACCOUNTANT']);
 
 @ApiTags('branches')
 @ApiBearerAuth()

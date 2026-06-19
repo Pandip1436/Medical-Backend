@@ -1,4 +1,4 @@
-import { IsString, IsNotEmpty, IsEnum, IsNumber, Min, IsOptional, ValidateNested, ArrayMinSize, IsDateString } from 'class-validator';
+import { IsString, IsNotEmpty, IsEnum, IsNumber, Min, IsOptional, IsBoolean, ValidateNested, ArrayMinSize, IsDateString } from 'class-validator';
 import { Type } from 'class-transformer';
 import { InvoiceType, BillingType, PaymentMode, InvoiceStatus } from '@prisma/client';
 import { CreateInvoiceItemDto } from './create-invoice-item.dto';
@@ -9,6 +9,12 @@ export class CreateInvoiceDto {
 
   @IsEnum(BillingType)
   billingType: BillingType;
+
+  // No-charge replacement invoice (fulfilling a REPLACEMENT credit note) —
+  // gets its own REPL number series instead of the regular INV series.
+  @IsOptional()
+  @IsBoolean()
+  isReplacement?: boolean;
 
   @IsString()
   @IsOptional()

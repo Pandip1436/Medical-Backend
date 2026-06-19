@@ -335,9 +335,14 @@ export class ProductsService {
     query?: string;
     productId?: string;
     supplierId?: string;
+    categoryId?: string;
     expiringWithin?: number;   // days; e.g. 30 / 60 / 90 / 180
     expired?: boolean;
     status?: 'active' | 'expired' | 'out_of_stock' | 'all';
+    // Product-stock status (orthogonal to expiry). Resolved to the set of
+    // product ids matching the rule, since `totalStock < minStock` can't be
+    // expressed as a column-to-column Prisma filter.
+    stockStatus?: 'low_stock' | 'healthy';
     // Orthogonal to `status`: just filters out zero-qty batches without
     // touching the expiry constraint. Used by Expiry Management's All
     // Batches / Expired / Expiring Soon folders to hide written-off and
@@ -347,14 +352,45 @@ export class ProductsService {
     take?: number;
     branchId?: string;
   } = {}) {
-    const { query, productId, supplierId, expiringWithin, expired, status, hasStock, skip = 0, take, branchId } = opts;
+    const { query, productId, supplierId, categoryId, expiringWithin, expired, status, stockStatus, hasStock, skip = 0, take, branchId } = opts;
 
     const where: any = {};
     if (productId) where.productId = productId;
     if (supplierId) where.supplierId = supplierId;
-    if (branchId) where.product = { branchId };
+    // Branch + category scope live on the related product.
+    const productFilter: any = {};
+    if (branchId) productFilter.branchId = branchId;
+    if (categoryId) productFilter.categoryId = categoryId;
+    if (Object.keys(productFilter).length > 0) where.product = productFilter;
 
     const now = new Date();
+
+    // Product-stock status: resolve to matching product ids (low_stock /
+    // healthy can't be a direct column comparison), then restrict to in-stock,
+    // not-near/expired batches so expiry statuses keep precedence.
+    if (stockStatus === 'low_stock' || stockStatus === 'healthy') {
+      const prods = await this.prisma.product.findMany({
+        where: {
+          isActive: true,
+          ...(branchId ? { branchId } : {}),
+          ...(categoryId ? { categoryId } : {}),
+        },
+        select: { id: true, totalStock: true, minStock: true },
+      });
+      const ids = prods
+        .filter((p) =>
+          stockStatus === 'low_stock'
+            ? p.totalStock > 0 && p.totalStock < p.minStock
+            : p.totalStock > 0 && p.totalStock >= p.minStock,
+        )
+        .map((p) => p.id);
+      where.productId = { in: ids };
+      where.quantity = { gt: 0 };
+      where.expiryDate = {
+        gt: new Date(now.getTime() + 90 * 24 * 60 * 60 * 1000),
+      };
+    }
+
     if (expired === true) {
       where.expiryDate = { lt: now };
     } else if (expiringWithin !== undefined && !Number.isNaN(expiringWithin)) {

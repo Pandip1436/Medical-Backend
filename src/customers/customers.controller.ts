@@ -93,6 +93,7 @@ export class CustomersController {
     @Query('customerSource') customerSource?: string,
     @Query('createdFrom') createdFrom?: string,
     @Query('createdTo') createdTo?: string,
+    @Query('active') active?: string,
   ) {
     const effectiveBranchId = req.user.branchId ?? branchId ?? undefined;
     const skipNum = skip !== undefined ? Number(skip) : undefined;
@@ -123,6 +124,8 @@ export class CustomersController {
         createdTo: /^\d{4}-\d{2}-\d{2}$/.test(createdTo ?? '')
           ? createdTo
           : undefined,
+        isActive:
+          active === 'true' ? true : active === 'false' ? false : undefined,
       },
     );
   }
@@ -152,6 +155,7 @@ export class CustomersController {
     @Query('customerSource') customerSource?: string,
     @Query('createdFrom') createdFrom?: string,
     @Query('createdTo') createdTo?: string,
+    @Query('active') active?: string,
   ) {
     const effectiveBranchId = req.user.branchId ?? branchId ?? undefined;
     return this.customersService.summary(effectiveBranchId, {
@@ -175,6 +179,8 @@ export class CustomersController {
       createdTo: /^\d{4}-\d{2}-\d{2}$/.test(createdTo ?? '')
         ? createdTo
         : undefined,
+      isActive:
+        active === 'true' ? true : active === 'false' ? false : undefined,
     });
   }
 

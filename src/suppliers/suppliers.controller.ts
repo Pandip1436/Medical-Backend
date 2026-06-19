@@ -200,12 +200,34 @@ export class SuppliersController {
       'Directory-wide supplier KPIs: total purchases and pending payments (for the stat cards).',
   })
   @ApiQuery({ name: 'branchId', required: false })
+  @ApiQuery({ name: 'q', required: false })
+  @ApiQuery({ name: 'isActive', required: false, type: Boolean })
+  @ApiQuery({ name: 'paymentTerms', required: false })
+  @ApiQuery({ name: 'hasGstin', required: false, type: Boolean })
+  @ApiQuery({ name: 'outstandingMin', required: false, type: Number })
+  @ApiQuery({ name: 'outstandingMax', required: false, type: Number })
   getSummary(
     @Request() req: AuthenticatedRequest,
     @Query('branchId') branchId?: string,
+    @Query('q') q?: string,
+    @Query('isActive') isActive?: string,
+    @Query('paymentTerms') paymentTerms?: string,
+    @Query('hasGstin') hasGstin?: string,
+    @Query('outstandingMin') outstandingMin?: string,
+    @Query('outstandingMax') outstandingMax?: string,
   ) {
     const effectiveBranchId = req.user.branchId ?? branchId ?? undefined;
-    return this.suppliersService.summary(effectiveBranchId);
+    const minNum = outstandingMin !== undefined ? Number(outstandingMin) : undefined;
+    const maxNum = outstandingMax !== undefined ? Number(outstandingMax) : undefined;
+    return this.suppliersService.summary(effectiveBranchId, {
+      q: q?.trim() || undefined,
+      isActive: typeof isActive === 'string' ? isActive === 'true' : undefined,
+      paymentTerms:
+        paymentTerms && paymentTerms !== 'all' ? paymentTerms : undefined,
+      hasGstin: typeof hasGstin === 'string' ? hasGstin === 'true' : undefined,
+      outstandingMin: Number.isFinite(minNum) ? minNum : undefined,
+      outstandingMax: Number.isFinite(maxNum) ? maxNum : undefined,
+    });
   }
 
   @Get(':id')

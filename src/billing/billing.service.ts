@@ -443,11 +443,18 @@ export class BillingService {
         }
       }
 
-      // 2. Generate unique invoice/quotation number (atomic, FY-aware)
+      // 2. Generate unique invoice/quotation number (atomic, FY-aware).
+      // Replacement invoices (no-charge, fulfilling a credit note) get their
+      // own REPL series so they're distinguishable from regular sales.
       const isQuotation = createInvoiceDto.type === 'QUOTATION';
+      const docType: 'QTN' | 'INV' | 'REPL' = isQuotation
+        ? 'QTN'
+        : createInvoiceDto.isReplacement
+          ? 'REPL'
+          : 'INV';
       const invoiceNumber = await this.numbering.nextNumber(
         tx,
-        isQuotation ? 'QTN' : 'INV',
+        docType,
         branchId ?? null,
       );
 
@@ -785,6 +792,22 @@ export class BillingService {
       customerPhone: row.customer?.phone ?? null,
     });
 
+    // Flags invoices that were issued to fulfil a REPLACEMENT credit note
+    // (referenced via CreditNote.replacementInvoiceId) so the Sales List can
+    // badge them "Replacement" instead of a plain PAID — mirrors the Purchase
+    // Entry list's replacement marker.
+    const withReplacementFlag = async <T extends { id: string }>(rows: T[]) => {
+      if (!rows.length) return rows.map((r) => ({ ...r, isReplacement: false }));
+      const cns = await this.prisma.creditNote.findMany({
+        where: { replacementInvoiceId: { in: rows.map((r) => r.id) } },
+        select: { replacementInvoiceId: true },
+      });
+      const replSet = new Set(
+        cns.map((c) => c.replacementInvoiceId).filter(Boolean) as string[],
+      );
+      return rows.map((r) => ({ ...r, isReplacement: replSet.has(r.id) }));
+    };
+
     if (!paginated) {
       // Legacy callers (NewSale, dashboard, customer detail) — keep the
       // lightweight array contract. Capped at 200 to avoid runaway responses.
@@ -794,7 +817,7 @@ export class BillingService {
         orderBy: { date: 'desc' },
         take: 200,
       });
-      return rows.map(mapPhone);
+      return withReplacementFlag(rows.map(mapPhone));
     }
 
     const safeTake = Math.min(Math.max(take!, 1), 100);
@@ -811,7 +834,7 @@ export class BillingService {
       this.prisma.invoice.count({ where }),
     ]);
 
-    const data = rows.map(mapPhone);
+    const data = await withReplacementFlag(rows.map(mapPhone));
     return {
       data,
       total,
@@ -828,7 +851,14 @@ export class BillingService {
     branchId?: string,
     filters?: { salespersonId?: string; from?: string; to?: string },
   ) {
-    const base: any = { type: 'INVOICE' };
+    // Real, posted sales only — DRAFT (not posted) and CANCELLED (voided) must
+    // not count toward Total Sales / Collected. The per-status sub-queries
+    // below override `status` for their own buckets (PAID / UNPAID+PARTIAL /
+    // RETURNED), so the notIn here only governs the totals.
+    const base: any = {
+      type: 'INVOICE',
+      status: { notIn: ['DRAFT', 'CANCELLED'] },
+    };
     if (branchId) base.branchId = branchId;
     if (filters?.salespersonId) base.salespersonId = filters.salespersonId;
     if (filters?.from || filters?.to) {
@@ -847,9 +877,11 @@ export class BillingService {
         this.prisma.invoice.count({ where: base }),
         this.prisma.invoice.aggregate({ where: base, _sum: { grandTotal: true } }),
         this.prisma.invoice.count({ where: { ...base, status: 'PAID' } }),
+        // Collected = actual cash received across ALL real invoices, including
+        // part-payments on PARTIAL invoices — not just fully-PAID totals.
         this.prisma.invoice.aggregate({
-          where: { ...base, status: 'PAID' },
-          _sum: { grandTotal: true },
+          where: base,
+          _sum: { amountPaid: true },
         }),
         this.prisma.invoice.findMany({
           where: { ...base, status: { in: ['UNPAID', 'PARTIAL'] } },
@@ -867,7 +899,7 @@ export class BillingService {
       totalInvoices,
       totalAmount: Number(totalAmountAgg._sum.grandTotal ?? 0),
       paidCount,
-      paidTotal: Number(paidAgg._sum.grandTotal ?? 0),
+      paidTotal: Number(paidAgg._sum.amountPaid ?? 0),
       outstandingAmount,
       outstandingCount: outstandingAgg.length,
       returnsCount,

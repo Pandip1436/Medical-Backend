@@ -234,8 +234,19 @@ export class ReportsController {
   @Get('inventory/stats')
   @Roles('ADMIN', 'INVENTORY_MANAGER', 'PHARMACIST', 'ACCOUNTANT', 'SALESPERSON')
   @ApiOperation({ summary: 'Lightweight inventory KPI counters (no row data)' })
-  getInventoryStats(@Request() req: any, @Query('branchId') branchId?: string) {
-    return this.reportsService.getInventoryStats(req.user.branchId ?? branchId);
+  getInventoryStats(
+    @Request() req: any,
+    @Query('branchId') branchId?: string,
+    @Query('categoryId') categoryId?: string,
+    @Query('status') status?: string,
+    @Query('supplierId') supplierId?: string,
+  ) {
+    return this.reportsService.getInventoryStats(
+      req.user.branchId ?? branchId,
+      categoryId?.trim() || undefined,
+      status?.trim() || undefined,
+      supplierId?.trim() || undefined,
+    );
   }
 
   // ── Financial ─────────────────────────────────────────────────

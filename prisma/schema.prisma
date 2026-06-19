@@ -804,6 +804,9 @@ model CreditNote {
   // Null = pending settlement. Distinct from `status`: a CN can be APPROVED
   // but still have settledAt = null (e.g. REFUND mode pending cash payout).
   settledAt       DateTime?
+  // For REPLACEMENT settlement: the new sales invoice raised to hand the
+  // replacement goods to the customer. Set (with settledAt) once issued.
+  replacementInvoiceId String?
   notes           String?
   createdById     String
   createdAt       DateTime         @default(now())

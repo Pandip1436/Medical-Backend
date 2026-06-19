@@ -161,6 +161,7 @@ export class CustomersService {
       source?: string;
       createdFrom?: string;
       createdTo?: string;
+      isActive?: boolean;
     },
   ) {
     const where = this.buildCustomerWhere(branchId, { ...filters, q: query });
@@ -440,6 +441,7 @@ export class CustomersService {
       source?: string;
       createdFrom?: string;
       createdTo?: string;
+      isActive?: boolean;
       q?: string;
     },
   ) {
@@ -489,11 +491,13 @@ export class CustomersService {
       source?: string;
       createdFrom?: string;
       createdTo?: string;
+      isActive?: boolean;
       q?: string;
     },
   ): any {
     const where: any = {};
     if (branchId) where.branchId = branchId;
+    if (typeof filters?.isActive === 'boolean') where.isActive = filters.isActive;
     // createdFrom / createdTo (yyyy-mm-dd) → bound customers by creation date.
     // `to` is inclusive of the whole day (< next day at 00:00).
     if (filters?.createdFrom || filters?.createdTo) {

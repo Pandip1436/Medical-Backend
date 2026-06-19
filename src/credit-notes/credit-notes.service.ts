@@ -560,6 +560,38 @@ export class CreditNotesService {
     });
   }
 
+  /**
+   * Fulfil a REPLACEMENT credit note by linking the new sales invoice that was
+   * raised to hand the replacement goods to the customer, and marking the CN
+   * settled. Closes the "replacement issued but never settled" gap — a
+   * REPLACEMENT CN has no financial effect, so settlement = goods delivered.
+   */
+  async markReplacementIssued(id: string, invoiceId: string, branchId?: string) {
+    const cn = await this.prisma.creditNote.findUnique({ where: { id } });
+    if (!cn) throw new NotFoundException('Credit note not found');
+    if (branchId && cn.branchId && cn.branchId !== branchId) {
+      throw new NotFoundException('Credit note not found');
+    }
+    if (cn.settlementMode !== 'REPLACEMENT') {
+      throw new BadRequestException(
+        'Only REPLACEMENT credit notes are settled by issuing a replacement invoice.',
+      );
+    }
+    if (cn.status !== 'APPROVED') {
+      throw new BadRequestException(
+        `Credit note must be APPROVED before issuing a replacement (currently ${cn.status.toLowerCase()}).`,
+      );
+    }
+    if (cn.settledAt) {
+      throw new BadRequestException('This replacement has already been issued.');
+    }
+    return this.prisma.creditNote.update({
+      where: { id },
+      data: { replacementInvoiceId: invoiceId, settledAt: new Date() },
+      include: { items: true, invoice: true },
+    });
+  }
+
   async findAll(
     query?: string,
     customerId?: string,

@@ -2,6 +2,7 @@ import {
   Controller,
   Get,
   Post,
+  Patch,
   Body,
   Param,
   Query,
@@ -73,6 +74,24 @@ export class CreditNotesController {
       id,
       req.user.userId,
       dto,
+      req.user.branchId,
+    );
+  }
+
+  @Patch(':id/replacement')
+  @Roles('ADMIN', 'PHARMACIST')
+  @ApiOperation({
+    summary:
+      'Settle a REPLACEMENT credit note by linking the new sales invoice issued to the customer.',
+  })
+  markReplacementIssued(
+    @Param('id') id: string,
+    @Body() body: { invoiceId: string },
+    @Request() req: any,
+  ) {
+    return this.creditNotesService.markReplacementIssued(
+      id,
+      body.invoiceId,
       req.user.branchId,
     );
   }

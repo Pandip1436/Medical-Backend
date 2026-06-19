@@ -218,10 +218,11 @@ export class SuppliersService {
         conditions.push({ paymentTerms: filters.paymentTerms as any });
       }
       if (typeof filters.hasGstin === 'boolean') {
+        // `gstin` is a non-nullable String on Supplier (defaults to ''), so the
+        // presence check is purely empty-vs-non-empty. Filtering on `null` here
+        // makes Prisma reject the query ("Argument `gstin` is missing").
         conditions.push(
-          filters.hasGstin
-            ? { NOT: [{ gstin: '' }, { gstin: null as any }] }
-            : { OR: [{ gstin: '' }, { gstin: null as any }] },
+          filters.hasGstin ? { gstin: { not: '' } } : { gstin: '' },
         );
       }
       if (
@@ -321,21 +322,77 @@ export class SuppliersService {
   // Directory-wide KPIs for the Suppliers page stat cards. Both figures come
   // from GRNs (the system of record for what was purchased and what's still
   // owed), excluding replacement GRNs (₹0 money-neutral receipts).
-  async summary(branchId?: string) {
-    const branchScope = branchId ? { branchId } : {};
+  async summary(
+    branchId?: string,
+    filters?: {
+      q?: string;
+      isActive?: boolean;
+      paymentTerms?: string;
+      hasGstin?: boolean;
+      outstandingMin?: number;
+      outstandingMax?: number;
+    },
+  ) {
+    // Same supplier WHERE as findAll() so the stat cards reflect exactly the
+    // set the operator has filtered to (status / terms / GSTIN / outstanding).
+    const conditions: Prisma.SupplierWhereInput[] = [];
+    if (branchId && branchId !== 'all') {
+      conditions.push({ OR: [{ branchId }, { branchId: null }] });
+    }
+    if (filters?.q) {
+      conditions.push({
+        OR: [
+          { name: { contains: filters.q, mode: 'insensitive' } },
+          { gstin: { contains: filters.q, mode: 'insensitive' } },
+          { phone: { contains: filters.q } },
+          { address: { contains: filters.q, mode: 'insensitive' } },
+          { contactPerson: { contains: filters.q, mode: 'insensitive' } },
+        ],
+      });
+    }
+    if (typeof filters?.isActive === 'boolean') {
+      conditions.push({ isActive: filters.isActive });
+    }
+    if (filters?.paymentTerms) {
+      conditions.push({
+        paymentTerms:
+          filters.paymentTerms as Prisma.SupplierWhereInput['paymentTerms'],
+      });
+    }
+    if (typeof filters?.hasGstin === 'boolean') {
+      conditions.push(
+        filters.hasGstin ? { NOT: [{ gstin: '' }] } : { OR: [{ gstin: '' }] },
+      );
+    }
+    if (typeof filters?.outstandingMin === 'number') {
+      conditions.push({ currentOutstanding: { gte: filters.outstandingMin } });
+    }
+    if (typeof filters?.outstandingMax === 'number') {
+      conditions.push({ currentOutstanding: { lte: filters.outstandingMax } });
+    }
+    const where: Prisma.SupplierWhereInput =
+      conditions.length > 0 ? { AND: conditions } : {};
+
+    const suppliers = await this.prisma.supplier.findMany({
+      where,
+      select: { id: true, isActive: true },
+    });
+    const ids = suppliers.map((s) => s.id);
+    const totalCount = suppliers.length;
+    const activeCount = suppliers.filter((s) => s.isActive).length;
+    const inactiveCount = totalCount - activeCount;
+
+    // Money KPIs scoped to the filtered supplier set.
+    const grnScope = { isReplacement: false, supplierId: { in: ids } };
     const [purchased, pending] = await Promise.all([
-      // Total Purchases — everything ever billed by suppliers.
+      // Total Purchases — everything ever billed by these suppliers.
       this.prisma.gRN.aggregate({
-        where: { isReplacement: false, ...branchScope },
+        where: grnScope,
         _sum: { supplierInvoiceAmount: true },
       }),
       // Pending Payments — still-open balance on UNPAID / PARTIAL GRNs.
       this.prisma.gRN.aggregate({
-        where: {
-          isReplacement: false,
-          paymentStatus: { in: ['UNPAID', 'PARTIAL'] },
-          ...branchScope,
-        },
+        where: { ...grnScope, paymentStatus: { in: ['UNPAID', 'PARTIAL'] } },
         _sum: { supplierInvoiceAmount: true, amountPaid: true },
       }),
     ]);
@@ -345,7 +402,13 @@ export class SuppliersService {
       Number(pending._sum.supplierInvoiceAmount ?? 0) -
         Number(pending._sum.amountPaid ?? 0),
     );
-    return { totalPurchases, pendingPayments };
+    return {
+      totalCount,
+      activeCount,
+      inactiveCount,
+      totalPurchases,
+      pendingPayments,
+    };
   }
 
   async findOne(id: string, branchId?: string) {

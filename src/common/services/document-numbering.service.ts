@@ -2,7 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 
-export type DocType = 'PO' | 'GRN' | 'DN' | 'INV' | 'CN' | 'QTN' | 'RCPT' | 'ADJ' | 'SPAY' | 'REF';
+export type DocType = 'PO' | 'GRN' | 'DN' | 'INV' | 'REPL' | 'CN' | 'QTN' | 'RCPT' | 'ADJ' | 'SPAY' | 'REF';
 
 export type FyFormat = 'YY-YY' | 'YYYY-YY' | 'YY' | 'YYYY';
 
@@ -17,6 +17,9 @@ const DOC_PREFIX: Record<DocType, string> = {
   GRN: 'PE',
   DN: 'DN',
   INV: 'INV',
+  // No-charge replacement sales invoice — its own series (REPL/FY/NNNNN) so
+  // replacement bills are distinguishable from regular sales at a glance.
+  REPL: 'REPL',
   CN: 'CN',
   QTN: 'QTN',
   RCPT: 'RCPT',

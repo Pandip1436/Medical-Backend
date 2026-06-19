@@ -23,6 +23,26 @@ export class ReportsService {
     return branchId ? { branchId } : {};
   }
 
+  // Shared filters so every report counts the same things as the canonical
+  // getProfitLoss. Sales/revenue/GST = real binding invoices only (never
+  // QUOTATION / DRAFT / CANCELLED). Purchases = received, real GRNs only
+  // (never DRAFT receiving-drafts or replacement goods-for-goods receipts).
+  private readonly REAL_INVOICE_WHERE = {
+    type: 'INVOICE' as const,
+    status: { notIn: ['DRAFT', 'CANCELLED'] as any[] },
+  };
+  private readonly REAL_GRN_WHERE = {
+    status: { not: 'DRAFT' as any },
+    isReplacement: false,
+  };
+  // Sales-return credit notes that actually reverse revenue: approved + settled
+  // as Credit/Refund (Replacement is goods-for-goods, Pending/Rejected aren't
+  // financial events).
+  private readonly REAL_RETURN_WHERE = {
+    status: 'APPROVED' as any,
+    settlementMode: { in: ['CREDIT', 'REFUND'] as any[] },
+  };
+
   private inr(value: number) {
     return value.toLocaleString('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 });
   }
@@ -49,11 +69,11 @@ export class ReportsService {
 
     const bFilter = this.branchFilter(branchId);
     const sales = await this.prisma.invoice.aggregate({
-      where: { date: { gte: startOfMonth }, ...bFilter },
+      where: { date: { gte: startOfMonth }, ...this.REAL_INVOICE_WHERE, ...bFilter },
       _sum: { grandTotal: true },
     });
     const todaysSales = await this.prisma.invoice.aggregate({
-      where: { date: { gte: today }, ...bFilter },
+      where: { date: { gte: today }, ...this.REAL_INVOICE_WHERE, ...bFilter },
       _sum: { grandTotal: true },
     });
     // Canonical "outstanding" rolls up the same live invoice query used by
@@ -296,7 +316,7 @@ export class ReportsService {
     const end = dayjs(query.to).endOf('day');
 
     const invoices = await this.prisma.invoice.findMany({
-      where: { date: { gte: start.toDate(), lte: end.toDate() }, ...bFilter },
+      where: { date: { gte: start.toDate(), lte: end.toDate() }, ...this.REAL_INVOICE_WHERE, ...bFilter },
       select: { date: true, grandTotal: true },
     });
 
@@ -341,7 +361,7 @@ export class ReportsService {
     const tomorrow = dayjs().add(1, 'day').startOf('day').toDate();
 
     const invoices = await this.prisma.invoice.findMany({
-      where: { date: { gte: today, lt: tomorrow }, ...bFilter },
+      where: { date: { gte: today, lt: tomorrow }, ...this.REAL_INVOICE_WHERE, ...bFilter },
       orderBy: { date: 'asc' },
     });
 
@@ -369,7 +389,7 @@ export class ReportsService {
     const avgInvoice = invoices.length > 0 ? totalSales / invoices.length : 0;
 
     const creditNotesToday = await this.prisma.creditNote.aggregate({
-      where: { date: { gte: today, lt: tomorrow }, ...bFilter },
+      where: { date: { gte: today, lt: tomorrow }, ...this.REAL_RETURN_WHERE, ...bFilter },
       _sum: { totalAmount: true },
     });
 
@@ -392,7 +412,7 @@ export class ReportsService {
     const end = dayjs(`${yr}-12-31`).endOf('year').toDate();
 
     const invoices = await this.prisma.invoice.findMany({
-      where: { date: { gte: start, lte: end }, ...bFilter },
+      where: { date: { gte: start, lte: end }, ...this.REAL_INVOICE_WHERE, ...bFilter },
       select: { date: true, grandTotal: true },
     });
 
@@ -423,7 +443,7 @@ export class ReportsService {
   async getYearlySales(branchId?: string) {
     const bFilter = this.branchFilter(branchId);
     const invoices = await this.prisma.invoice.findMany({
-      where: { ...bFilter },
+      where: { ...this.REAL_INVOICE_WHERE, ...bFilter },
       select: { date: true, grandTotal: true },
     });
     const byYear = new Map<number, { amount: number; invoices: number }>();
@@ -446,9 +466,22 @@ export class ReportsService {
     const bFilter = this.branchFilter(query.branchId);
 
     const items = await this.prisma.invoiceItem.findMany({
-      where: { invoice: { date: { gte: from, lte: to }, ...bFilter } },
+      where: { invoice: { date: { gte: from, lte: to }, ...this.REAL_INVOICE_WHERE, ...bFilter } },
       include: { invoice: { select: { date: true } } },
     });
+
+    // Resolve each line's batch purchase rate for real COGS (InvoiceItem stores
+    // batchId without a declared relation, so look them up in one query).
+    const batchIds = Array.from(new Set(items.map((it) => it.batchId).filter(Boolean)));
+    const batchRates = batchIds.length
+      ? await this.prisma.batch.findMany({
+          where: { id: { in: batchIds } },
+          select: { id: true, purchaseRate: true },
+        })
+      : [];
+    const purchaseRateByBatchId = new Map(
+      batchRates.map((b) => [b.id, Number(b.purchaseRate ?? 0)]),
+    );
 
     const productStats = new Map<string, { product: string; qtySold: number; revenue: number; cost: number }>();
     items.forEach((item) => {
@@ -460,7 +493,9 @@ export class ReportsService {
       };
       current.qtySold += item.quantity;
       current.revenue += Number(item.amount);
-      current.cost += Number(item.rate) * 0.7 * item.quantity;
+      // COGS from the batch's real purchase rate (mirrors getProfitLoss) — not
+      // a fabricated 70%-of-sale-price markup, which made every margin ~30%.
+      current.cost += (purchaseRateByBatchId.get(item.batchId) ?? 0) * item.quantity;
       productStats.set(item.productId, current);
     });
 
@@ -498,7 +533,7 @@ export class ReportsService {
     const bFilter = this.branchFilter(query.branchId);
 
     const invoices = await this.prisma.invoice.findMany({
-      where: { date: { gte: from, lte: to }, ...bFilter },
+      where: { date: { gte: from, lte: to }, ...this.REAL_INVOICE_WHERE, ...bFilter },
       select: {
         customerId: true,
         customerName: true,
@@ -571,16 +606,20 @@ export class ReportsService {
     const { from, to } = this.resolvePeriod(query);
     const bFilter = this.branchFilter(query.branchId);
 
+    // Physical stock movement: DRAFT GRNs haven't received goods yet, but
+    // replacement GRNs DO bring stock in — so exclude only DRAFT here (not
+    // isReplacement). Sales-out excludes non-stock-moving invoices, and only
+    // APPROVED returns actually put stock back.
     const grnItems = await this.prisma.gRNItem.findMany({
-      where: { grn: { date: { gte: from, lte: to }, ...bFilter } },
+      where: { grn: { date: { gte: from, lte: to }, status: { not: 'DRAFT' }, ...bFilter } },
       include: { grn: { select: { date: true } } },
     });
     const saleItems = await this.prisma.invoiceItem.findMany({
-      where: { invoice: { date: { gte: from, lte: to }, ...bFilter } },
+      where: { invoice: { date: { gte: from, lte: to }, ...this.REAL_INVOICE_WHERE, ...bFilter } },
       include: { invoice: { select: { date: true } } },
     });
     const returnItems = await this.prisma.creditNoteItem.findMany({
-      where: { creditNote: { date: { gte: from, lte: to }, ...bFilter } },
+      where: { creditNote: { date: { gte: from, lte: to }, status: 'APPROVED', ...bFilter } },
       include: { creditNote: { select: { date: true } } },
     });
     const debitItems = await this.prisma.purchaseReturnItem.findMany({
@@ -676,46 +715,72 @@ export class ReportsService {
   // stays cheap to call from any page. Also includes per-bucket expiry
   // counts/values (30 / 60 / 90 / 180 day windows + expired) so the Expiry
   // page's 5 summary cards can render in a single round-trip.
-  async getInventoryStats(branchId?: string) {
+  async getInventoryStats(
+    branchId?: string,
+    categoryId?: string,
+    status?: string,
+    supplierId?: string,
+  ) {
     const now = new Date();
     const oneEightyDays = dayjs().add(180, 'days').toDate();
-    const branchProductFilter = branchId ? { product: { branchId } } : {};
-    const productBranchFilter = branchId ? { branchId } : {};
+    const ninetyDays = dayjs().add(90, 'days').toDate();
+    // Product-level filter (category/branch). The KPI cards are scoped to this
+    // so they reflect the Stock Overview category + status filters.
+    const productWhere: any = { isActive: true };
+    if (branchId) productWhere.branchId = branchId;
+    if (categoryId) productWhere.categoryId = categoryId;
 
-    const [stockBucket, categoriesCount, activeBatches, expiredBatchesRaw, near180Batches] = await Promise.all([
+    // Optional supplier scope: narrows each product's batches to a single
+    // supplier so the Expiry Management cards reflect that supplier's filter.
+    const batchWhere = supplierId ? { supplierId } : undefined;
+
+    const [products, categoriesCount] = await Promise.all([
       this.prisma.product.findMany({
-        where: { ...productBranchFilter, isActive: true },
-        select: { totalStock: true, minStock: true },
+        where: productWhere,
+        select: {
+          id: true,
+          totalStock: true,
+          minStock: true,
+          batches: {
+            ...(batchWhere ? { where: batchWhere } : {}),
+            select: { quantity: true, mrp: true, expiryDate: true },
+          },
+        },
       }),
       this.prisma.category.count({ where: branchId ? { OR: [{ branchId }, { branchId: null }] } : undefined }),
-      this.prisma.batch.findMany({
-        where: { ...branchProductFilter, expiryDate: { gte: now } },
-        select: { quantity: true, mrp: true },
-      }),
-      this.prisma.batch.findMany({
-        where: { ...branchProductFilter, expiryDate: { lt: now }, quantity: { gt: 0 } },
-        select: { quantity: true, mrp: true },
-      }),
-      // All batches expiring within 180 days (inclusive). We bucket these in
-      // memory rather than firing four separate queries.
-      this.prisma.batch.findMany({
-        where: {
-          ...branchProductFilter,
-          expiryDate: { gte: now, lte: oneEightyDays },
-          quantity: { gt: 0 },
-        },
-        select: { quantity: true, mrp: true, expiryDate: true },
-      }),
     ]);
 
-    const totalProducts = stockBucket.length;
-    const outOfStockItems = stockBucket.filter((p) => p.totalStock === 0).length;
-    // Same canonical "low stock" rule used by getDashboardKpis — see comment
-    // there. Both endpoints must filter identically so the Dashboard, Products,
-    // and Stock Overview KPI tiles never drift apart.
-    const lowStockItems = stockBucket.filter((p) => p.totalStock > 0 && p.totalStock < p.minStock).length;
-    const sellableStockValue = activeBatches.reduce((s, b) => s + b.quantity * Number(b.mrp), 0);
-    const expiredStockValue = expiredBatchesRaw.reduce((s, b) => s + b.quantity * Number(b.mrp), 0);
+    // Per-product stock status — mirrors the frontend's computeProductStatus
+    // priority so the "Status" filter scopes the cards consistently.
+    const statusOf = (p: (typeof products)[number]): string => {
+      if (p.totalStock === 0) return 'out_of_stock';
+      if (p.batches.some((b) => b.quantity > 0 && new Date(b.expiryDate) < now)) return 'expired';
+      if (p.batches.some((b) => b.quantity > 0 && new Date(b.expiryDate) >= now && new Date(b.expiryDate) <= ninetyDays)) return 'near_expiry';
+      if (p.totalStock < p.minStock) return 'low_stock';
+      return 'healthy';
+    };
+    const scoped = status && status !== 'all'
+      ? products.filter((p) => statusOf(p) === status)
+      : products;
+
+    const totalProducts = scoped.length;
+    const outOfStockItems = scoped.filter((p) => p.totalStock === 0).length;
+    // Same canonical "low stock" rule used by getDashboardKpis.
+    const lowStockItems = scoped.filter((p) => p.totalStock > 0 && p.totalStock < p.minStock).length;
+
+    const near180Batches: { quantity: number; mrp: any; expiryDate: Date }[] = [];
+    let sellableStockValue = 0;
+    let expiredStockValue = 0;
+    let expiredBatchCount = 0;
+    for (const p of scoped) {
+      for (const b of p.batches) {
+        const exp = new Date(b.expiryDate);
+        const val = b.quantity * Number(b.mrp);
+        if (exp >= now) sellableStockValue += val;
+        if (exp < now && b.quantity > 0) { expiredStockValue += val; expiredBatchCount += 1; }
+        if (b.quantity > 0 && exp >= now && exp <= oneEightyDays) near180Batches.push(b as any);
+      }
+    }
 
     // Bucket near-expiry batches into 30/60/90/180 day windows (cumulative).
     const buckets = { '30d': { count: 0, value: 0 }, '60d': { count: 0, value: 0 }, '90d': { count: 0, value: 0 }, '180d': { count: 0, value: 0 } };
@@ -735,9 +800,9 @@ export class ReportsService {
       sellableStockValue,
       nearExpiryCount: buckets['30d'].count + buckets['60d'].count + buckets['90d'].count,
       expiredStockValue,
-      expiredBatchCount: expiredBatchesRaw.length,
+      expiredBatchCount,
       expiryBuckets: {
-        expired: { count: expiredBatchesRaw.length, value: expiredStockValue },
+        expired: { count: expiredBatchCount, value: expiredStockValue },
         ...buckets,
       },
     };
@@ -838,12 +903,16 @@ export class ReportsService {
       },
       _sum: { totalAmount: true },
     });
+    // Purchases (informational) — exclude replacement GRNs (goods-for-goods,
+    // not a new purchase) so the displayed figure is real spend.
     const purchases = await this.prisma.gRN.aggregate({
-      where: { date: { gte: from, lte: to }, ...bFilter },
+      where: { date: { gte: from, lte: to }, isReplacement: false, ...bFilter },
       _sum: { totalAmount: true },
     });
+    // Purchase returns (informational) — exclude DRAFT debit notes (not yet
+    // raised), mirroring the APPROVED-only credit-note filter above.
     const purchaseReturns = await this.prisma.purchaseReturn.aggregate({
-      where: { date: { gte: from, lte: to }, ...bFilter },
+      where: { date: { gte: from, lte: to }, status: { not: 'DRAFT' }, ...bFilter },
       _sum: { totalAmount: true },
     });
     const expenses = await this.prisma.expense.aggregate({
@@ -929,11 +998,11 @@ export class ReportsService {
     const { from, to } = this.resolvePeriod(query);
     const bFilter = this.branchFilter(query.branchId);
     const invoices = await this.prisma.invoice.findMany({
-      where: { date: { gte: from, lte: to }, type: 'INVOICE', ...bFilter },
+      where: { date: { gte: from, lte: to }, ...this.REAL_INVOICE_WHERE, ...bFilter },
       include: { items: true },
     });
     const creditNotes = await this.prisma.creditNote.findMany({
-      where: { date: { gte: from, lte: to }, ...bFilter },
+      where: { date: { gte: from, lte: to }, status: 'APPROVED', ...bFilter },
     });
 
     const bySlab = new Map<string, { gstRate: number; taxable: number; cgst: number; sgst: number; igst: number }>();
@@ -989,11 +1058,11 @@ export class ReportsService {
     const { from, to } = this.resolvePeriod(query);
     const bFilter = this.branchFilter(query.branchId);
     const outward = await this.prisma.invoice.aggregate({
-      where: { date: { gte: from, lte: to }, type: 'INVOICE', ...bFilter },
+      where: { date: { gte: from, lte: to }, ...this.REAL_INVOICE_WHERE, ...bFilter },
       _sum: { taxableAmount: true, cgst: true, sgst: true, igst: true },
     });
     const inward = await this.prisma.gRN.aggregate({
-      where: { date: { gte: from, lte: to }, ...bFilter },
+      where: { date: { gte: from, lte: to }, ...this.REAL_GRN_WHERE, ...bFilter },
       _sum: { totalAmount: true },
     });
 
@@ -1027,7 +1096,7 @@ export class ReportsService {
     const { from, to } = this.resolvePeriod(query);
     const bFilter = this.branchFilter(query.branchId);
     const items = await this.prisma.invoiceItem.findMany({
-      where: { invoice: { date: { gte: from, lte: to }, type: 'INVOICE', ...bFilter } },
+      where: { invoice: { date: { gte: from, lte: to }, ...this.REAL_INVOICE_WHERE, ...bFilter } },
     });
     const products = await this.prisma.product.findMany({
       select: { id: true, hsnCode: true, unitOfMeasure: true },
@@ -1709,7 +1778,7 @@ export class ReportsService {
     const { from, to } = this.resolvePeriod(query);
     const bFilter = this.branchFilter(query.branchId);
     const grns = await this.prisma.gRN.findMany({
-      where: { date: { gte: from, lte: to }, ...bFilter },
+      where: { date: { gte: from, lte: to }, ...this.REAL_GRN_WHERE, ...bFilter },
       include: { supplier: { select: { name: true } }, items: true },
       orderBy: { date: 'asc' },
     });
@@ -1744,7 +1813,7 @@ export class ReportsService {
     const { from, to } = this.resolvePeriod(query);
     const bFilter = this.branchFilter(query.branchId);
     const grns = await this.prisma.gRN.findMany({
-      where: { date: { gte: from, lte: to }, ...bFilter },
+      where: { date: { gte: from, lte: to }, ...this.REAL_GRN_WHERE, ...bFilter },
       include: { supplier: { select: { name: true } } },
     });
     const supplierMap = new Map<string, { supplier: string; grns: number; amount: number }>();
@@ -1773,11 +1842,11 @@ export class ReportsService {
     const { from, to } = this.resolvePeriod(query);
     const bFilter = this.branchFilter(query.branchId);
     const invoices = await this.prisma.invoice.findMany({
-      where: { date: { gte: from, lte: to }, ...bFilter },
+      where: { date: { gte: from, lte: to }, ...this.REAL_INVOICE_WHERE, ...bFilter },
       select: { date: true, grandTotal: true },
     });
     const grns = await this.prisma.gRN.findMany({
-      where: { date: { gte: from, lte: to }, ...bFilter },
+      where: { date: { gte: from, lte: to }, ...this.REAL_GRN_WHERE, ...bFilter },
       select: { date: true, totalAmount: true },
     });
     const monthMap = new Map<string, { month: string; sales: number; purchases: number }>();
@@ -1813,7 +1882,7 @@ export class ReportsService {
     const { from, to } = this.resolvePeriod(query);
     const bFilter = this.branchFilter(query.branchId);
     const items = await this.prisma.invoiceItem.findMany({
-      where: { invoice: { date: { gte: from, lte: to }, ...bFilter } },
+      where: { invoice: { date: { gte: from, lte: to }, ...this.REAL_INVOICE_WHERE, ...bFilter } },
       include: { invoice: { select: { date: true } } },
     });
     const products = await this.prisma.product.findMany({ select: { id: true, categoryId: true } });
@@ -1852,7 +1921,9 @@ export class ReportsService {
       totalStock: p.totalStock,
       minStock: p.minStock,
       mrp: Number(p.mrp),
-      status: p.totalStock === 0 ? 'OUT' : p.totalStock <= p.minStock ? 'LOW' : 'OK',
+      // Match the canonical low-stock rule (computeLowStock / getInventoryStats):
+      // in-stock but below minimum. `=== minStock` is OK, not LOW.
+      status: p.totalStock === 0 ? 'OUT' : p.totalStock < p.minStock ? 'LOW' : 'OK',
     }));
     const outOfStock = tableData.filter((r) => r.status === 'OUT').length;
     const lowStock = tableData.filter((r) => r.status === 'LOW').length;
@@ -1874,7 +1945,7 @@ export class ReportsService {
     const { from, to } = this.resolvePeriod(query);
     const bFilter = this.branchFilter(query.branchId);
     const items = await this.prisma.invoiceItem.findMany({
-      where: { invoice: { date: { gte: from, lte: to }, ...bFilter } },
+      where: { invoice: { date: { gte: from, lte: to }, ...this.REAL_INVOICE_WHERE, ...bFilter } },
     });
     const productMap = new Map<string, { product: string; revenue: number }>();
     items.forEach((it) => {
