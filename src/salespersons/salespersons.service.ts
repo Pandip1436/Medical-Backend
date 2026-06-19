@@ -52,8 +52,12 @@ export class SalespersonsService {
     const invoices = await this.prisma.invoice.findMany({
       where: {
         salespersonId: id,
+        type: 'INVOICE',
         ...(branchId ? { branchId } : {}),
-        status: { notIn: ['CANCELLED', 'RETURNED'] },
+        // Canonical "real sales" filter, consistent with billing summary,
+        // customer totals, ledger and P&L: exclude DRAFT (unposted) and
+        // CANCELLED (voided). RETURNED stays in gross sales.
+        status: { notIn: ['DRAFT', 'CANCELLED'] },
       },
       select: {
         grandTotal: true,
@@ -97,8 +101,11 @@ export class SalespersonsService {
         const invoices = await this.prisma.invoice.findMany({
           where: {
             salespersonId: sp.id,
+            type: 'INVOICE',
             ...(branchId ? { branchId } : {}),
-            status: { notIn: ['CANCELLED', 'RETURNED'] },
+            // Same canonical filter as everywhere else — exclude DRAFT +
+            // CANCELLED so this report agrees with the salesperson detail page.
+            status: { notIn: ['DRAFT', 'CANCELLED'] },
             ...(Object.keys(dateFilter).length ? { date: dateFilter } : {}),
           },
           select: { grandTotal: true },

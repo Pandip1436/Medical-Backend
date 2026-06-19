@@ -1003,6 +1003,12 @@ export class BillingService {
     if (branchId && invoice.branchId && invoice.branchId !== branchId) {
       throw new NotFoundException('Invoice not found');
     }
+    // Was this invoice issued to fulfil a REPLACEMENT credit note? Lets the
+    // detail page badge it as a replacement (no-charge) invoice.
+    const replacementCn = await this.prisma.creditNote.findFirst({
+      where: { replacementInvoiceId: invoice.id },
+      select: { creditNoteNo: true },
+    });
     // Surface the customer's contact block (the Invoice row only snapshots the
     // name) so the detail page / preview / PDF can show phone, address, GSTIN.
     return {
@@ -1010,6 +1016,8 @@ export class BillingService {
       customerPhone: invoice.customer?.phone ?? null,
       customerAddress: invoice.customer?.address ?? null,
       customerGstin: invoice.customer?.gstin ?? null,
+      isReplacement: !!replacementCn,
+      replacementForCreditNote: replacementCn?.creditNoteNo ?? null,
     };
   }
 
