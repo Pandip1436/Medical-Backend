@@ -23,7 +23,13 @@ import { Schedule, StorageCondition } from '@prisma/client';
 // scoped) is the primary match. `barcode` is also @@unique([barcode,branchId])
 // so it acts as a secondary match — if the user provides a barcode that
 // already exists in the same branch, we treat that as a duplicate too.
-export type ImportDuplicateHandling = 'UPDATE' | 'SKIP' | 'CREATE';
+export type ImportDuplicateHandling =
+  | 'UPDATE'
+  | 'SKIP'
+  | 'CREATE'
+  // Update matching products only; skip (don't create) rows with no match.
+  // Used to top-up existing products from partial files (e.g. an HSN/GST master).
+  | 'UPDATE_ONLY';
 
 // ── Optional Categories pre-create sheet ──────────────────────────────────
 // Lets the operator define category names + descriptions up-front. Products
@@ -105,7 +111,7 @@ export class ImportProductsDto {
   @Type(() => ImportProductDto)
   products!: ImportProductDto[];
 
-  @IsIn(['UPDATE', 'SKIP', 'CREATE'])
+  @IsIn(['UPDATE', 'SKIP', 'CREATE', 'UPDATE_ONLY'])
   duplicateHandling!: ImportDuplicateHandling;
 
   @IsOptional() @IsBoolean() dryRun?: boolean;

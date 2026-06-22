@@ -491,8 +491,12 @@ export class IndiamartService {
     const cached = this.ownerCache.get(branchId);
     if (cached && cached.expires > Date.now()) return cached.id;
 
+    // "Admin-or-above" owns leads — SUPER_ADMIN counts as an admin here, same
+    // as isAdminRole() in common/roles.util.ts. Prefer a branch admin, then
+    // fall back to any active admin/super-admin in the system.
+    const adminRoles = [Role.ADMIN, Role.SUPER_ADMIN];
     const admin = await this.prisma.user.findFirst({
-      where: { branchId, role: Role.ADMIN, isActive: true },
+      where: { branchId, role: { in: adminRoles }, isActive: true },
       orderBy: { createdAt: 'asc' },
       select: { id: true },
     });
@@ -504,7 +508,7 @@ export class IndiamartService {
       return admin.id;
     }
     const anyAdmin = await this.prisma.user.findFirst({
-      where: { role: Role.ADMIN, isActive: true },
+      where: { role: { in: adminRoles }, isActive: true },
       orderBy: { createdAt: 'asc' },
       select: { id: true },
     });

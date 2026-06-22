@@ -312,9 +312,16 @@ export class ProductImportService {
           result.summary.products.skipped++;
           continue;
         }
-        if (handling === 'UPDATE') result.summary.products.updated++;
+        if (handling === 'UPDATE' || handling === 'UPDATE_ONLY') {
+          result.summary.products.updated++;
+        }
         if (handling === 'CREATE') result.summary.products.created++;
       } else {
+        // UPDATE_ONLY never creates — rows with no existing match are skipped.
+        if (handling === 'UPDATE_ONLY') {
+          result.summary.products.skipped++;
+          continue;
+        }
         result.summary.products.created++;
       }
       if (typeof row.totalStock === 'number' && row.totalStock > 0) {
@@ -525,6 +532,12 @@ export class ProductImportService {
       return;
     }
 
+    // No existing match. UPDATE_ONLY tops up existing products only — skip.
+    if (handling === 'UPDATE_ONLY') {
+      result.summary.products.skipped++;
+      return;
+    }
+
     // No existing match — create.
     try {
       await this.prisma.product.create({
@@ -634,7 +647,7 @@ export class ProductImportService {
   private actionForHandling(
     h: ImportDuplicateHandling,
   ): ImportDuplicateMatch['action'] {
-    if (h === 'UPDATE') return 'will-update';
+    if (h === 'UPDATE' || h === 'UPDATE_ONLY') return 'will-update';
     if (h === 'SKIP') return 'will-skip';
     return 'will-create-new';
   }
