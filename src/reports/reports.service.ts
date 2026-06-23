@@ -946,6 +946,27 @@ export class ReportsService {
     const grossProfit = netSales - costOfGoods;
     const netProfit = grossProfit - opex;
 
+    // Closing stock = current on-hand inventory valued at purchase cost (the
+    // same valuation getStockValuation uses). This is a perpetual-inventory
+    // system, so COGS above is the *actual* cost of goods sold, not a periodic
+    // (Opening + Purchases − Closing) derivation. To keep the P&L's COGS
+    // breakdown internally consistent we expose a real closing stock and back
+    // out the opening stock from the inventory identity:
+    //   COGS = Opening + (Purchases − Returns) − Closing
+    //   ⇒ Opening = COGS − (Purchases − Returns) + Closing
+    // For the current period closing = period-end stock; for past periods it's
+    // an approximation (we don't snapshot historical valuations).
+    const closingBatches = await this.prisma.batch.findMany({
+      where: query.branchId ? { product: { branchId: query.branchId } } : undefined,
+      select: { quantity: true, purchaseRate: true },
+    });
+    const closingStock = closingBatches.reduce(
+      (s, b) => s + Number(b.purchaseRate) * b.quantity,
+      0,
+    );
+    const netPurchases = grossPurchases - purchaseReturn;
+    const openingStock = costOfGoods - netPurchases + closingStock;
+
     return {
       period: { from, to },
       lineItems: [
@@ -966,7 +987,7 @@ export class ReportsService {
           value: netSales > 0 ? `${((netProfit / netSales) * 100).toFixed(1)}%` : '0%',
         },
       ],
-      extras: { grossPurchases, purchaseReturn, totalTax },
+      extras: { grossPurchases, purchaseReturn, totalTax, openingStock, closingStock },
     };
   }
 
