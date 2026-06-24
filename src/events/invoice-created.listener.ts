@@ -119,11 +119,18 @@ export class InvoiceCreatedListener {
         paymentQrAmount: outstanding > 0.01 ? outstanding : undefined,
       });
       const key = `invoices/${invoice.id}/${invoice.invoiceNumber}.pdf`;
-      pdfUrl = await this.r2.upload({
+      const rawPdfUrl = await this.r2.upload({
         buffer: buf,
         key,
         contentType: 'application/pdf',
       });
+      // WhatsApp (and browsers) cache document media keyed by the full URL. The
+      // PDF lives at a STABLE key that we overwrite on every regenerate/resend,
+      // so without a per-send version param WhatsApp re-serves the FIRST PDF it
+      // cached — showing a stale balance + a now-cancelled QR after counter
+      // payments (e.g. message says "₹10,000 due" but the attached PDF still
+      // shows "Balance ₹14,346"). A cache-busting suffix forces a fresh fetch.
+      pdfUrl = `${rawPdfUrl}?v=${Date.now()}`;
 
       // Persist the URL on the invoice for the frontend "Resend" button.
       await this.prisma.invoice.update({

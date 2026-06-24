@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Patch, Delete, Body, Param, Query, UseGuards, Request, Res } from '@nestjs/common';
+import { Controller, Get, Post, Patch, Delete, Body, Param, Query, UseGuards, Request, Res, Logger } from '@nestjs/common';
 import type { Response } from 'express';
 import { BillingService } from './billing.service';
 import { CreateInvoiceDto } from './dto/create-invoice.dto';
@@ -16,6 +16,8 @@ import { resolveBranchScope } from '../common/branch-scope.util';
 @UseGuards(JwtAuthGuard, RolesGuard)
 @Controller('api/v1/billing')
 export class BillingController {
+  private readonly logger = new Logger(BillingController.name);
+
   constructor(
     private readonly billingService: BillingService,
     private readonly paymentsService: PaymentsService,
@@ -190,14 +192,44 @@ export class BillingController {
   @Patch(':id/collect-payment')
   @Roles('ADMIN', 'PHARMACIST', 'ACCOUNTANT')
   @ApiOperation({ summary: 'Collect payment against a credit/partial invoice' })
-  collectPayment(
+  async collectPayment(
     @Param('id') id: string,
     @Body('amountReceived') amountReceived: number,
     @Body('paymentMode') paymentMode: string,
     @Body('referenceNumber') referenceNumber: string | undefined,
     @Request() req: any,
   ) {
-    return this.billingService.collectPayment(id, Number(amountReceived), paymentMode, req.user.branchId, referenceNumber);
+    const result = await this.billingService.collectPayment(
+      id, Number(amountReceived), paymentMode, req.user.branchId, referenceNumber,
+    );
+
+    // Keep the customer-facing UPI QR in sync with the new balance. A counter
+    // payment lowers (or clears) the outstanding, so any previously-issued
+    // payment link must be cancelled or regenerated — otherwise the "Pay Now"
+    // page would still present a QR for the old, higher amount (the customer
+    // could overpay). The button always opens the live pay page, so refreshing
+    // the link here is enough; no WhatsApp resend is needed.
+    //
+    // Best-effort and OUTSIDE the payment transaction: a Razorpay hiccup must
+    // never void an already-recorded receipt. Only invoices that already have
+    // a QR are touched (pure-cash invoices never got one).
+    try {
+      if (await this.paymentsService.invoiceHasPaymentLink(id)) {
+        if (result.status === 'PAID') {
+          // Fully settled — cancel the open QR so it can no longer be paid.
+          // (createPaymentLinkForInvoice returns early without closing when
+          // there's nothing left to collect, so close explicitly here.)
+          await this.paymentsService.closeOpenLinks(id);
+        } else {
+          // Balance remains — reissue the QR for the now-lower outstanding.
+          await this.paymentsService.createPaymentLinkForInvoice(id);
+        }
+      }
+    } catch (e: any) {
+      this.logger.warn(`QR refresh after collect-payment on ${id} failed: ${e?.message ?? e}`);
+    }
+
+    return result;
   }
 
   @Post(':id/send-whatsapp')

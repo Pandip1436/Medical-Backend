@@ -102,4 +102,12 @@ export class PaymentsService {
   getProviderForWebhook() {
     return this.getProvider();
   }
+
+  // Has a UPI payment link (QR) ever been issued for this invoice? Used to
+  // decide whether a counter payment should refresh the customer-facing QR —
+  // pure-cash invoices that never got a QR are left untouched.
+  async invoiceHasPaymentLink(invoiceId: string): Promise<boolean> {
+    const count = await this.prisma.paymentLink.count({ where: { invoiceId } });
+    return count > 0;
+  }
 }
