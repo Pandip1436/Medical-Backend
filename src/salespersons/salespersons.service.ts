@@ -94,7 +94,15 @@ export class SalespersonsService {
 
     const dateFilter: any = {};
     if (from) dateFilter.gte = new Date(from);
-    if (to) dateFilter.lte = new Date(to);
+    if (to) {
+      // Make the `to` boundary inclusive of the entire day, consistent with
+      // the billing summary endpoint — otherwise invoices created later in the
+      // day are silently excluded because `new Date('YYYY-MM-DD')` resolves to
+      // midnight UTC.
+      const toEnd = new Date(to);
+      toEnd.setHours(23, 59, 59, 999);
+      dateFilter.lte = toEnd;
+    }
 
     const results = await Promise.all(
       salespersons.map(async (sp) => {
