@@ -19,18 +19,46 @@ export class ProductsService {
     private readonly numbering: DocumentNumberingService,
   ) {}
 
-  // MRP is the legal maximum retail price under the Drugs (Prices Control)
-  // Order — selling above it is non-negotiable. Enforced server-side too so
-  // a direct API call (CSV import, scripted update) can't bypass the form
-  // validation. Both args are coerced from the multitude of input shapes
-  // (Decimal | number | string) the various callers hand us.
-  private assertSellingPriceBelowMrp(sellingRate: unknown, mrp: unknown) {
+  // Enforce the pricing sanity rules server-side too so a direct API call
+  // (CSV import, scripted update) can't bypass the form validation. All args
+  // are coerced from the multitude of input shapes (Decimal | number | string)
+  // the various callers hand us; non-finite values are skipped rather than
+  // rejected so partial/legacy data doesn't blow up.
+  //   - MRP is the legal maximum retail price under the Drugs (Prices Control)
+  //     Order, so selling above it is non-negotiable.
+  //   - Purchase rate above selling price means every sale loses money.
+  //   - Purchase / wholesale rate above MRP can never be recovered at retail.
+  // Purchase and wholesale rate are optional (0 = not entered), so their
+  // checks only apply when a positive value is present.
+  private assertPricingSane(
+    sellingRate: unknown,
+    mrp: unknown,
+    purchaseRate?: unknown,
+    wholesaleRate?: unknown,
+  ) {
     const sr = Number(sellingRate);
     const m = Number(mrp);
-    if (!Number.isFinite(sr) || !Number.isFinite(m)) return;
-    if (sr > m) {
+    const pr = Number(purchaseRate);
+    const wr = Number(wholesaleRate);
+
+    if (Number.isFinite(sr) && Number.isFinite(m) && sr > m) {
       throw new BadRequestException(
         `Selling price (${sr}) cannot exceed MRP (${m}).`,
+      );
+    }
+    if (Number.isFinite(pr) && pr > 0 && Number.isFinite(sr) && pr > sr) {
+      throw new BadRequestException(
+        `Purchase rate (${pr}) cannot exceed selling price (${sr}).`,
+      );
+    }
+    if (Number.isFinite(pr) && pr > 0 && Number.isFinite(m) && pr > m) {
+      throw new BadRequestException(
+        `Purchase rate (${pr}) cannot exceed MRP (${m}).`,
+      );
+    }
+    if (Number.isFinite(wr) && wr > 0 && Number.isFinite(m) && wr > m) {
+      throw new BadRequestException(
+        `Wholesale rate (${wr}) cannot exceed MRP (${m}).`,
       );
     }
   }
@@ -56,7 +84,7 @@ export class ProductsService {
 
   async create(createProductDto: CreateProductDto & { branchId?: string }) {
     const { categoryId, branchId, ...rest } = createProductDto;
-    this.assertSellingPriceBelowMrp(rest.sellingRate, rest.mrp);
+    this.assertPricingSane(rest.sellingRate, rest.mrp, rest.purchaseRate, rest.wholesaleRate);
     await this.assertUniqueName(rest.name, branchId);
     return this.prisma.product.create({
       data: { ...rest, categoryId, ...(branchId ? { branchId } : {}) } as unknown as Prisma.ProductUncheckedCreateInput,
@@ -524,7 +552,14 @@ export class ProductsService {
     // row already had stored.
     const effectiveSellingRate = updateProductDto.sellingRate ?? existing.sellingRate;
     const effectiveMrp = updateProductDto.mrp ?? existing.mrp;
-    this.assertSellingPriceBelowMrp(effectiveSellingRate, effectiveMrp);
+    const effectivePurchaseRate = updateProductDto.purchaseRate ?? existing.purchaseRate;
+    const effectiveWholesaleRate = updateProductDto.wholesaleRate ?? existing.wholesaleRate;
+    this.assertPricingSane(
+      effectiveSellingRate,
+      effectiveMrp,
+      effectivePurchaseRate,
+      effectiveWholesaleRate,
+    );
     return this.prisma.product.update({ where: { id }, data: updateProductDto });
   }
 
