@@ -13,6 +13,12 @@ const LINKS: { match: RegExp; url: (n: string) => string }[] = [
     url: () => 'https://www.tpcindia.com/',
   },
   {
+    // Shree Tirupati Courier — no captcha-free deep link, so land on their
+    // tracking page for the user to paste the docket number.
+    match: /shree\s*tirupati|tirupati\s*couriers?/i,
+    url: () => 'https://www.shreetirupaticourier.net/',
+  },
+  {
     // Lands on DTDC's results page with the number prefilled — the user only
     // has to solve DTDC's captcha to see the status.
     match: /dtdc/i,

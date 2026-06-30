@@ -291,7 +291,7 @@ export class ReportsController {
   }
 
   @Get('financial/ledger/:customerId')
-  @Roles('ADMIN', 'ACCOUNTANT', 'PHARMACIST')
+  @Roles('ADMIN', 'ACCOUNTANT', 'PHARMACIST', 'SALESPERSON')
   @ApiOperation({ summary: 'Customer ledger with debits/credits and running balance' })
   @ApiQuery({ name: 'from', required: false })
   @ApiQuery({ name: 'to', required: false })

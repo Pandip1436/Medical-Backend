@@ -316,8 +316,7 @@ export class IndiamartService {
       return { accepted: true, unique_query_id: null };
     }
 
-    const uniqueId =
-      typeof lead.UNIQUE_QUERY_ID === 'string' ? lead.UNIQUE_QUERY_ID : null;
+    const uniqueId = this.normalizeQueryId(lead.UNIQUE_QUERY_ID) || null;
     if (!uniqueId) {
       await this.finishJob(job.id, {
         status: SyncJobStatus.FAILED,
@@ -401,7 +400,7 @@ export class IndiamartService {
     branchId: string,
     item: Record<string, unknown>,
   ): Promise<boolean> {
-    const uniqueQueryId = String(item.UNIQUE_QUERY_ID);
+    const uniqueQueryId = this.normalizeQueryId(item.UNIQUE_QUERY_ID);
     const existing = await this.prisma.lead.findUnique({
       where: { externalQueryId: uniqueQueryId },
     });
@@ -559,6 +558,48 @@ export class IndiamartService {
     if (typeof v !== 'string') return null;
     const trimmed = v.trim();
     return trimmed.length ? trimmed : null;
+  }
+
+  // Canonicalise UNIQUE_QUERY_ID to a stable string. IndiaMART occasionally
+  // delivers it as a Buffer / byte-array (the ASCII char codes of the digits)
+  // instead of a plain value; a naive String() then yields a DIFFERENT string
+  // for the same inquiry (e.g. "1270207732" vs "49,50,55,..."), which slipped
+  // past the externalQueryId dedup and created duplicate leads. Decode all
+  // byte-ish shapes back to the underlying string so the same query always
+  // maps to the same id.
+  private normalizeQueryId(v: unknown): string {
+    if (v === null || v === undefined) return '';
+    if (typeof v === 'number' || typeof v === 'bigint') return String(v);
+    if (Buffer.isBuffer(v)) return v.toString('utf8').trim();
+    if (v instanceof Uint8Array) return Buffer.from(v).toString('utf8').trim();
+
+    let s: string;
+    if (typeof v === 'string') {
+      s = v.trim();
+    } else if (Array.isArray(v) && v.every((n) => typeof n === 'number')) {
+      // Plain array of char codes: [49,50,55,...] → "127..."
+      return String.fromCharCode(...(v as number[])).trim();
+    } else {
+      // Buffer serialised to JSON: { type: 'Buffer', data: [49,50,...] }
+      const data = (v as { data?: unknown }).data;
+      if (Array.isArray(data) && data.every((n) => typeof n === 'number')) {
+        return String.fromCharCode(...(data as number[])).trim();
+      }
+      s = String(v).trim();
+    }
+
+    // Catch-all: a value that stringified to a char-code list, e.g.
+    // "[49 50 55 48]", "49,50,55,48" or "{49,50}". A genuine query id is a
+    // single token, so this only fires on the (≥2 numbers) corrupted form;
+    // the printable-ASCII guard keeps us from mangling real numeric ids.
+    const m = s.match(/^[[{(]?\s*(\d+(?:[\s,]+\d+)+)\s*[)}\]]?$/);
+    if (m) {
+      const codes = m[1].split(/[\s,]+/).map(Number);
+      if (codes.every((n) => n >= 32 && n <= 126)) {
+        return String.fromCharCode(...codes).trim();
+      }
+    }
+    return s;
   }
 
   private normalizePhone(v: unknown): string | null {

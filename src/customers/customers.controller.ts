@@ -131,7 +131,7 @@ export class CustomersController {
   }
 
   @Get('summary')
-  @Roles('ADMIN', 'PHARMACIST', 'ACCOUNTANT')
+  @Roles('ADMIN', 'PHARMACIST', 'ACCOUNTANT', 'SALESPERSON')
   @ApiOperation({
     summary:
       'Customer counts + billed/paid/outstanding totals for the stat cards. Honours the same filters as the list so the cards reflect the active filter.',

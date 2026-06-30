@@ -173,7 +173,7 @@ export class ProductsController {
   }
 
   @Get(':id/history')
-  @Roles('ADMIN', 'PHARMACIST', 'INVENTORY_MANAGER', 'ACCOUNTANT')
+  @Roles('ADMIN', 'PHARMACIST', 'INVENTORY_MANAGER', 'ACCOUNTANT', 'SALESPERSON')
   @ApiOperation({ summary: 'Get full sales and purchase history for a product' })
   @ApiQuery({ name: 'skip', required: false })
   @ApiQuery({ name: 'take', required: false })

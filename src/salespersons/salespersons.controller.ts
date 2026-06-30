@@ -69,7 +69,7 @@ export class SalespersonsController {
   }
 
   @Get('report')
-  @Roles('ADMIN', 'ACCOUNTANT')
+  @Roles('ADMIN', 'ACCOUNTANT', 'SALESPERSON')
   getReport(
     @Query('branchId') branchId?: string,
     @Query('from') from?: string,
