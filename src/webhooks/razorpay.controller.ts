@@ -7,10 +7,13 @@ import {
   HttpCode,
   BadRequestException,
 } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import type { Request } from 'express';
 import { PrismaService } from '../prisma/prisma.service';
 import { PaymentsService } from '../payments/payments.service';
 import { ReconciliationService } from '../payments/reconciliation.service';
+import { PAYMENT_RECEIVED } from '../events/invoice-events';
+import type { PaymentReceivedPayload } from '../events/invoice-events';
 import { WebhookEventStatus } from '@prisma/client';
 
 // PUBLIC ENDPOINT — Razorpay hits this server-to-server. No JWT guard.
@@ -31,6 +34,7 @@ export class RazorpayWebhookController {
     private readonly prisma: PrismaService,
     private readonly payments: PaymentsService,
     private readonly reconciliation: ReconciliationService,
+    private readonly eventEmitter: EventEmitter2,
   ) {}
 
   @Post()
@@ -101,13 +105,27 @@ export class RazorpayWebhookController {
         if (!paymentEntity || !linkEntity) {
           throw new Error(`${eventType} missing payment / payment_link entity`);
         }
-        await this.reconciliation.handleQrCredited({
+        const receivedAmount = Number(paymentEntity.amount) / 100;
+        const result = await this.reconciliation.handleQrCredited({
           providerQrId: linkEntity.id,        // plink_xxx — matches PaymentLink.providerQrId
           providerPaymentId: paymentEntity.id, // pay_xxx — idempotency anchor
-          amount: Number(paymentEntity.amount) / 100,
+          amount: receivedAmount,
           invoiceIdFromNotes: linkEntity?.notes?.invoice_id ?? null,
           paidAtUnix: paymentEntity.captured_at ?? null,
         });
+
+        // Emit PAYMENT_RECEIVED so the listener sends a WhatsApp receipt to
+        // the customer. Skip duplicates — they were already handled on first
+        // delivery. pdfUrl is absent: listener generates a compact receipt PDF.
+        if (!result.duplicate && result.receiptNumber) {
+          this.eventEmitter.emit(PAYMENT_RECEIVED, {
+            invoiceId: result.invoiceId,
+            receiptNumber: result.receiptNumber,
+            amount: receivedAmount,
+            paymentMode: 'UPI',
+            referenceNumber: paymentEntity.id,
+          } satisfies PaymentReceivedPayload);
+        }
       } else {
         // payment_link.expired, payment_link.cancelled, payment.failed, etc.
         // No business action — we already mark links as expired/closed at

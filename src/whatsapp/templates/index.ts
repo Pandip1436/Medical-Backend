@@ -58,6 +58,7 @@ export interface PaymentReceivedVars {
   amount: string;
   invoiceNumber: string;
   receiptNumber: string;
+  pdfUrl: string;  // invoice PDF (counter) or compact receipt PDF (Razorpay)
   languageCode?: string;
 }
 
@@ -66,6 +67,18 @@ export function paymentReceivedTemplate(v: PaymentReceivedVars) {
     name: 'payment_received',
     language: { code: v.languageCode ?? 'en_US' },
     components: [
+      {
+        type: 'header',
+        parameters: [
+          {
+            type: 'document',
+            document: {
+              link: v.pdfUrl,
+              filename: `Receipt_${v.receiptNumber}.pdf`,
+            },
+          },
+        ],
+      },
       {
         type: 'body',
         parameters: [

@@ -1,13 +1,13 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { OnEvent } from '@nestjs/event-emitter';
+import { EventEmitter2, OnEvent } from '@nestjs/event-emitter';
 import { PrismaService } from '../prisma/prisma.service';
 import { PaymentsService } from '../payments/payments.service';
 import { InvoicePdfService } from '../pdf/invoice-pdf.service';
 import { R2UploadService } from '../common/services/r2-upload.service';
 import { WhatsAppService } from '../whatsapp/whatsapp.service';
 import { invoicePaymentRequestTemplate } from '../whatsapp/templates';
-import { INVOICE_CREATED } from './invoice-events';
-import type { InvoiceCreatedPayload } from './invoice-events';
+import { INVOICE_CREATED, PAYMENT_RECEIVED } from './invoice-events';
+import type { InvoiceCreatedPayload, PaymentReceivedPayload } from './invoice-events';
 import { PaymentLinkStatus } from '@prisma/client';
 
 // Fires AFTER the BillingService.create transaction commits. Orchestrates
@@ -30,6 +30,7 @@ export class InvoiceCreatedListener {
     private readonly pdf: InvoicePdfService,
     private readonly r2: R2UploadService,
     private readonly whatsapp: WhatsAppService,
+    private readonly eventEmitter: EventEmitter2,
   ) {}
 
   @OnEvent(INVOICE_CREATED, { async: true })
@@ -154,54 +155,69 @@ export class InvoiceCreatedListener {
 
     if (!pdfUrl) return;
 
-    // Step 3: send WhatsApp template.
+    // Step 3: send WhatsApp — receipt if fully paid at counter, payment
+    // request with QR if there is still an outstanding balance.
     try {
       const customerFirstName = (customer.name ?? 'Customer').split(/\s+/)[0];
-      const pharmacyName = invoice.branch?.name ?? 'Pharmacy';
-      const amountStr = outstanding > 0.01
-        ? outstanding.toFixed(2)
-        : Number(invoice.grandTotal).toFixed(2);
-      // Due date: use the date entered at billing time (required for credit
-      // sales on the UI). Fall back to today + 7 for legacy invoices saved
-      // before the dueDate column existed.
-      const due = invoice.dueDate ? new Date(invoice.dueDate) : (() => {
-        const d = new Date();
-        d.setDate(d.getDate() + 7);
-        return d;
-      })();
-      const dueDate = due.toLocaleDateString('en-IN', {
-        day: '2-digit',
-        month: 'short',
-        year: 'numeric',
-      });
 
-      const template = invoicePaymentRequestTemplate({
-        customerFirstName,
-        invoiceNumber: invoice.invoiceNumber,
-        pharmacyName,
-        amount: amountStr,
-        dueDate,
-        pdfUrl,
-        paySlug: invoice.id, // resolves to /pay/:invoiceId on the frontend
-      });
-
-      await this.whatsapp.sendTemplate({
-        to: phone,
-        template,
-        templateName: 'invoice_payment_request',
-        mediaUrl: pdfUrl,
-        bodySnapshot: `Invoice ${invoice.invoiceNumber} for ₹${amountStr}`,
-        relatedEntityType: 'invoice',
-        relatedEntityId: invoice.id,
-        branchId: invoice.branchId,
-      });
-
-      // Mark the PaymentLink as SENT now that the customer has the QR.
-      if (paymentLinkRow) {
-        await this.prisma.paymentLink.update({
-          where: { id: paymentLinkRow.id },
-          data: { status: PaymentLinkStatus.SENT },
+      if (outstanding <= 0.01) {
+        // Fully paid at counter (cash / UPI / card). Fire a PAYMENT_RECEIVED
+        // event so PaymentReceivedListener sends the receipt with the invoice
+        // PDF (which already shows "Amount Paid" and no Balance Due row).
+        this.eventEmitter.emit(PAYMENT_RECEIVED, {
+          invoiceId: invoice.id,
+          receiptNumber: invoice.invoiceNumber,
+          amount: Number(invoice.grandTotal),
+          paymentMode: invoice.paymentMode as string,
+          referenceNumber: null,
+          pdfUrl,
+        } satisfies PaymentReceivedPayload);
+      } else {
+        // Credit or partial payment — send invoice with payment QR and Pay Now button.
+        const pharmacyName = invoice.branch?.name ?? 'Pharmacy';
+        const amountStr = outstanding.toFixed(2);
+        // Due date: use the date entered at billing time (required for credit
+        // sales on the UI). Fall back to today + 7 for legacy invoices saved
+        // before the dueDate column existed.
+        const due = invoice.dueDate ? new Date(invoice.dueDate) : (() => {
+          const d = new Date();
+          d.setDate(d.getDate() + 7);
+          return d;
+        })();
+        const dueDate = due.toLocaleDateString('en-IN', {
+          day: '2-digit',
+          month: 'short',
+          year: 'numeric',
         });
+
+        const template = invoicePaymentRequestTemplate({
+          customerFirstName,
+          invoiceNumber: invoice.invoiceNumber,
+          pharmacyName,
+          amount: amountStr,
+          dueDate,
+          pdfUrl,
+          paySlug: invoice.id,
+        });
+
+        await this.whatsapp.sendTemplate({
+          to: phone,
+          template,
+          templateName: 'invoice_payment_request',
+          mediaUrl: pdfUrl,
+          bodySnapshot: `Invoice ${invoice.invoiceNumber} for ₹${amountStr}`,
+          relatedEntityType: 'invoice',
+          relatedEntityId: invoice.id,
+          branchId: invoice.branchId,
+        });
+
+        // Mark the PaymentLink as SENT now that the customer has the QR.
+        if (paymentLinkRow) {
+          await this.prisma.paymentLink.update({
+            where: { id: paymentLinkRow.id },
+            data: { status: PaymentLinkStatus.SENT },
+          });
+        }
       }
     } catch (e: any) {
       this.logger.error(`WhatsApp send failed for ${invoice.id}: ${e?.message ?? e}`);

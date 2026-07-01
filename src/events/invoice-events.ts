@@ -13,3 +13,16 @@ export interface InvoiceCreatedPayload {
   grandTotal: number;
   amountPaid: number;
 }
+
+export const PAYMENT_RECEIVED = 'payment.received' as const;
+
+export interface PaymentReceivedPayload {
+  invoiceId: string;
+  receiptNumber: string;
+  amount: number;
+  paymentMode: string;
+  referenceNumber?: string | null;
+  // Pre-generated invoice PDF URL (counter/cash sales). When absent the
+  // listener generates a compact receipt PDF via ReceiptPdfService.
+  pdfUrl?: string | null;
+}
