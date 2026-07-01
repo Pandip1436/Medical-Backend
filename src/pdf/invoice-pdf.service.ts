@@ -45,6 +45,7 @@ export interface InvoicePdfData {
   cgst: number;
   sgst: number;
   igst: number;
+  deliveryCharge?: number;
   roundOff: number;
   grandTotal: number;
   amountPaid: number;
@@ -115,6 +116,7 @@ export class InvoicePdfService implements OnModuleDestroy {
       showCgst: Number(d.cgst) > 0,
       showSgst: Number(d.sgst) > 0,
       showIgst: Number(d.igst) > 0,
+      showDelivery: Number(d.deliveryCharge ?? 0) > 0,
       showRoundOff: Number(d.roundOff) !== 0,
       showPaid: Number(d.amountPaid) > 0,
       showOutstanding: outstanding > 0.01,
