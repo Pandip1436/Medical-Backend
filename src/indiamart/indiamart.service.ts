@@ -420,35 +420,59 @@ export class IndiamartService {
     const contactId = await this.ensureContact(branchId, ownerUserId, item);
     const leadNumber = await this.numbering.next();
 
-    await this.prisma.lead.create({
-      data: {
-        leadNumber,
-        title: this.deriveTitle(item),
-        description: null,
-        source: LeadSource.INDIAMART,
-        pipeline: LeadPipeline.SALES,
-        stage: LeadStage.LEAD,
-        status: LeadStatus.OPEN,
-        touchStatus: LeadTouchStatus.UNTOUCHED,
-        score: 50,
-        value: 0,
-        currency: 'INR',
-        contact: { connect: { id: contactId } },
-        assignedToUser: { connect: { id: ownerUserId } },
-        branch: { connect: { id: branchId } },
-        externalQueryId: uniqueQueryId,
-        externalQueryType: this.parseQueryType(item.QUERY_TYPE),
-        externalQueryTime: this.parseQueryTime(item.QUERY_TIME),
-        externalMessage: this.cleanString(item.QUERY_MESSAGE),
-        externalProductName: this.cleanString(item.QUERY_PRODUCT_NAME),
-        externalCategory: this.cleanString(item.QUERY_MCAT_NAME),
-        externalCity: this.cleanString(item.SENDER_CITY),
-        externalState: this.cleanString(item.SENDER_STATE),
-        externalCountryIso: this.cleanString(item.SENDER_COUNTRY_ISO),
-        externalRaw: item as unknown as object,
-      },
-    });
-    return true;
+    try {
+      await this.prisma.lead.create({
+        data: {
+          leadNumber,
+          title: this.deriveTitle(item),
+          description: null,
+          source: LeadSource.INDIAMART,
+          pipeline: LeadPipeline.SALES,
+          stage: LeadStage.LEAD,
+          status: LeadStatus.OPEN,
+          touchStatus: LeadTouchStatus.UNTOUCHED,
+          score: 50,
+          value: 0,
+          currency: 'INR',
+          contact: { connect: { id: contactId } },
+          assignedToUser: { connect: { id: ownerUserId } },
+          branch: { connect: { id: branchId } },
+          externalQueryId: uniqueQueryId,
+          externalQueryType: this.parseQueryType(item.QUERY_TYPE),
+          externalQueryTime: this.parseQueryTime(item.QUERY_TIME),
+          externalMessage: this.cleanString(item.QUERY_MESSAGE),
+          externalProductName: this.cleanString(item.QUERY_PRODUCT_NAME),
+          externalCategory: this.cleanString(item.QUERY_MCAT_NAME),
+          externalCity: this.cleanString(item.SENDER_CITY),
+          externalState: this.cleanString(item.SENDER_STATE),
+          externalCountryIso: this.cleanString(item.SENDER_COUNTRY_ISO),
+          externalRaw: item as unknown as object,
+        },
+      });
+      return true;
+    } catch (e: any) {
+      // A concurrent delivery of the same inquiry can insert this lead between
+      // our findUnique check above and this create, tripping the unique
+      // constraint on externalQueryId (P2002). That's a duplicate, not a
+      // failure — refresh the winning row's message and report it as such.
+      if (e?.code === 'P2002') {
+        const dup = await this.prisma.lead.findUnique({
+          where: { externalQueryId: uniqueQueryId },
+        });
+        if (dup) {
+          await this.prisma.lead.update({
+            where: { id: dup.id },
+            data: {
+              externalMessage:
+                this.cleanString(item.QUERY_MESSAGE) ?? dup.externalMessage,
+              externalRaw: item as unknown as object,
+            },
+          });
+        }
+        return false;
+      }
+      throw e;
+    }
   }
 
   private async ensureContact(
