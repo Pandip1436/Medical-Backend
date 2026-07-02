@@ -302,6 +302,7 @@ export class CustomersService {
         invoices: [],
         invoiceItems: [],
         payments: [],
+        refunds: [],
         activities: [],
         prescriptions: [],
         quotations: [],
@@ -313,7 +314,7 @@ export class CustomersService {
 
     // One batched query per child table. Each is independent so we run them
     // in parallel — completes in a single round-trip's worth of latency.
-    const [invoices, payments, activities, prescriptions, quotations, creditNotes] =
+    const [invoices, payments, refunds, activities, prescriptions, quotations, creditNotes] =
       await Promise.all([
         this.prisma.invoice.findMany({
           where: { customerId: { in: customerIds } },
@@ -321,6 +322,10 @@ export class CustomersService {
           orderBy: { date: 'asc' },
         }),
         this.prisma.payment.findMany({
+          where: { customerId: { in: customerIds } },
+          orderBy: { createdAt: 'asc' },
+        }),
+        this.prisma.refund.findMany({
           where: { customerId: { in: customerIds } },
           orderBy: { createdAt: 'asc' },
         }),
@@ -367,6 +372,7 @@ export class CustomersService {
       invoices: invoices.map(stripItems),
       invoiceItems,
       payments,
+      refunds,
       activities,
       prescriptions,
       quotations: quotations.map(stripItems),

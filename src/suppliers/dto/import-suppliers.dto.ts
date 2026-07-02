@@ -22,13 +22,8 @@ import {
 } from '@prisma/client';
 
 // Mirrors the customer-import DTO model: one workbook row → one supplier +
-// nested PO/GRN/DN/Activity collections. The frontend parses the multi-sheet
-// workbook into this shape; the backend stays Excel-agnostic.
-//
-// Note vs customer side: there is NO supplier-payment model (the supplier
-// "ledger" is computed from GRN debits + PurchaseReturn ADJUST credits). So
-// no payments sheet here — historical payments are absorbed by the supplier's
-// `opening_balance` written to Supplier.currentOutstanding verbatim.
+// nested PO/GRN/DN/Payment/Activity collections. The frontend parses the
+// multi-sheet workbook into this shape; the backend stays Excel-agnostic.
 export type ImportDuplicateHandling = 'UPDATE' | 'SKIP' | 'CREATE';
 
 // ── Purchase Order ────────────────────────────────────────────────────────
@@ -127,6 +122,23 @@ export class ImportDebitNoteDto {
   items?: ImportDebitNoteItemDto[];
 }
 
+// ── Payment ───────────────────────────────────────────────────────────────
+// A historical payment made to this supplier. Not allocated against any GRN
+// on import (that's a live collection workflow, not a historical replay) —
+// grnNumber, when given, just links the record for reference/audit, resolved
+// by looking up the parent GRN by (supplierId, grnNumber). null/omitted means
+// a lump-sum payment not tied to one specific GRN (mirrors SupplierPayment.grnId).
+export class ImportSupplierPaymentDto {
+  @IsOptional() @IsInt() sourceRow?: number;
+  @IsOptional() @IsString() paymentNumber?: string;
+  @IsOptional() @IsString() grnNumber?: string;
+  @IsOptional() @IsString() date?: string;
+  @IsNumber() amount!: number;
+  @IsOptional() @IsString() paymentMode?: string; // CASH | CHEQUE | NEFT_UPI | UPI | CARD
+  @IsOptional() @IsString() referenceNumber?: string;
+  @IsOptional() @IsString() notes?: string;
+}
+
 // ── Batch ─────────────────────────────────────────────────────────────────
 // A Batch is a stock-batch row tied to a Product + Supplier. Unlike the
 // other supplier-history entities, Batch requires a REAL Product.id (FK).
@@ -204,6 +216,12 @@ export class ImportSupplierDto {
   @IsOptional()
   @IsArray()
   @ValidateNested({ each: true })
+  @Type(() => ImportSupplierPaymentDto)
+  payments?: ImportSupplierPaymentDto[];
+
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
   @Type(() => ImportSupplierActivityDto)
   activities?: ImportSupplierActivityDto[];
 
@@ -238,6 +256,7 @@ export interface ImportRowError {
     | 'GRN Items'
     | 'Debit Notes'
     | 'Debit Note Items'
+    | 'Payments'
     | 'Activities'
     | 'Batches';
   row: number;
@@ -274,6 +293,7 @@ export interface ImportSummary {
   grnItems: { created: number };
   debitNotes: { created: number; skipped: number; failed: number };
   debitNoteItems: { created: number };
+  payments: { created: number; failed: number };
   activities: { created: number; failed: number };
   batches: { created: number; skipped: number; failed: number };
   openingBalanceApplied: number;

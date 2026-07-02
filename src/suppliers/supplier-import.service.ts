@@ -23,6 +23,7 @@ import {
   ImportRowWarning,
   ImportSummary,
   ImportSupplierDto,
+  ImportSupplierPaymentDto,
   ImportSuppliersDto,
 } from './dto/import-suppliers.dto';
 
@@ -58,6 +59,7 @@ function emptySummary(): ImportSummary {
     grnItems: { created: 0 },
     debitNotes: { created: 0, skipped: 0, failed: 0 },
     debitNoteItems: { created: 0 },
+    payments: { created: 0, failed: 0 },
     activities: { created: 0, failed: 0 },
     batches: { created: 0, skipped: 0, failed: 0 },
     openingBalanceApplied: 0,
@@ -99,6 +101,24 @@ export class SupplierImportService {
     private readonly prisma: PrismaService,
     private readonly numbering: DocumentNumberingService,
   ) {}
+
+  // Reserve a document number in its OWN committed transaction. Used when a
+  // user-provided number collides with an unrelated record elsewhere in the
+  // system (see the renumber-on-collision handling in createPurchaseOrder /
+  // createGrn / createDebitNote / createPayment). Calling nextNumber() inside
+  // the same transaction as the record insert doesn't work for this case:
+  // Postgres rolls back the WHOLE transaction — including the counter
+  // increment — when the insert fails, so a retry inside that transaction
+  // would regenerate the exact same (still-colliding) number forever. A
+  // separate, already-committed reservation guarantees forward progress.
+  private async reserveFreshNumber(
+    docType: Parameters<DocumentNumberingService['nextNumber']>[1],
+    branchId?: string | null,
+  ): Promise<string> {
+    return this.prisma.$transaction((tx) =>
+      this.numbering.nextNumber(tx, docType, branchId ?? null),
+    );
+  }
 
   // Single entry point for /preview and /commit. `dryRun` toggles whether
   // we actually write. Same diagnostic shape either way so the drawer can
@@ -283,6 +303,7 @@ export class SupplierImportService {
             row.purchaseOrders?.length ||
             row.grns?.length ||
             row.debitNotes?.length ||
+            row.payments?.length ||
             row.activities?.length ||
             row.batches?.length
           ) {
@@ -291,7 +312,7 @@ export class SupplierImportService {
               sheet: 'Suppliers',
               row: row.sourceRow ?? 0,
               supplierCode: row.supplierCode,
-              message: `Supplier is a duplicate and you chose SKIP — its ${row.purchaseOrders?.length ?? 0} POs, ${row.grns?.length ?? 0} GRNs, ${row.debitNotes?.length ?? 0} debit notes, ${row.activities?.length ?? 0} activities, ${row.batches?.length ?? 0} batches will also be skipped.`,
+              message: `Supplier is a duplicate and you chose SKIP — its ${row.purchaseOrders?.length ?? 0} POs, ${row.grns?.length ?? 0} GRNs, ${row.debitNotes?.length ?? 0} debit notes, ${row.payments?.length ?? 0} payments, ${row.activities?.length ?? 0} activities, ${row.batches?.length ?? 0} batches will also be skipped.`,
             });
           }
           continue;
@@ -316,6 +337,7 @@ export class SupplierImportService {
         (s, d) => s + (d.items?.length ?? 0),
         0,
       );
+      result.summary.payments.created += row.payments?.length ?? 0;
       result.summary.activities.created += row.activities?.length ?? 0;
       result.summary.batches.created += row.batches?.length ?? 0;
       if (typeof row.openingBalance === 'number' && row.openingBalance > 0) {
@@ -360,6 +382,19 @@ export class SupplierImportService {
             field: 'debit_note_no',
             message:
               'debit_note_no is blank — a new number will be auto-generated.',
+          });
+        }
+      }
+      for (const p of row.payments ?? []) {
+        if (!p.paymentNumber?.trim()) {
+          this.pushWarning(result, {
+            kind: 'coerced',
+            sheet: 'Payments',
+            row: p.sourceRow ?? 0,
+            supplierCode: row.supplierCode,
+            field: 'payment_number',
+            message:
+              'payment_number is blank — a new number will be auto-generated. Fill in the legacy payment reference to keep reconciliation working.',
           });
         }
       }
@@ -492,15 +527,42 @@ export class SupplierImportService {
     }
 
     // ── GRNs + items ──
+    // grnNumberRedirects tracks original -> actual grn_number for any GRN
+    // that got renumbered on a cross-branch collision (see createGrn). A
+    // debit note or payment later in this SAME row that references the
+    // original number needs to resolve to what was actually stored, not the
+    // number the workbook author originally wrote down.
+    const grnNumberRedirects = new Map<string, string>();
     for (const g of row.grns ?? []) {
-      await this.createGrn(g, row, supplierId, ctx, result);
+      await this.createGrn(g, row, supplierId, ctx, result, grnNumberRedirects);
     }
 
     // ── Debit Notes + items ──
     // Process after GRNs so a debit note that references a GRN imported in
     // the same workbook can resolve it.
     for (const d of row.debitNotes ?? []) {
-      await this.createDebitNote(d, row, supplierId, ctx, result);
+      await this.createDebitNote(
+        d,
+        row,
+        supplierId,
+        ctx,
+        result,
+        grnNumberRedirects,
+      );
+    }
+
+    // ── Payments ──
+    // Process after GRNs so a payment that references a GRN imported in the
+    // same workbook can resolve it.
+    for (const p of row.payments ?? []) {
+      await this.createPayment(
+        p,
+        row,
+        supplierId,
+        ctx,
+        result,
+        grnNumberRedirects,
+      );
     }
 
     // ── Activities ──
@@ -599,9 +661,17 @@ export class SupplierImportService {
     ctx: { userId: string; branchId?: string | null },
     result: ImportResult,
   ): Promise<void> {
-    const MAX_GENERATED_RETRIES = 5;
-    const userProvidedNumber = po.poNumber?.trim();
+    // 200, not 5: when a user-provided number collides with a DIFFERENT
+    // branch's document (common on cross-branch migration — see
+    // reserveFreshNumber), the freshly-reserved branch-local counter has to
+    // climb past every number the OTHER branch already used before landing
+    // on free ground. A branch with hundreds of historical documents needs a
+    // correspondingly large budget; each attempt is a cheap single-row
+    // reservation, so a generous cap costs little.
+    const MAX_GENERATED_RETRIES = 200;
+    let userProvidedNumber = po.poNumber?.trim();
     let lastErr: unknown = null;
+    let renumbered = false;
 
     for (let attempt = 0; attempt <= MAX_GENERATED_RETRIES; attempt++) {
       try {
@@ -666,16 +736,42 @@ export class SupplierImportService {
         const code = (err as { code?: string })?.code;
         if (code === 'P2002') {
           if (!userProvidedNumber) continue;
-          this.pushWarning(result, {
-            kind: 'duplicate',
-            sheet: 'Purchase Orders',
-            row: po.sourceRow ?? 0,
-            supplierCode: parent.supplierCode,
-            field: 'po_number',
-            message: `PO ${userProvidedNumber} already exists — leaving the existing record alone (no duplicate created).`,
+          const existing = await this.prisma.purchaseOrder.findFirst({
+            where: { supplierId, poNumber: userProvidedNumber },
+            select: { id: true },
           });
-          result.summary.purchaseOrders.skipped++;
-          return;
+          if (existing) {
+            this.pushWarning(result, {
+              kind: 'duplicate',
+              sheet: 'Purchase Orders',
+              row: po.sourceRow ?? 0,
+              supplierCode: parent.supplierCode,
+              field: 'po_number',
+              message: `PO ${userProvidedNumber} already exists — leaving the existing record alone (no duplicate created).`,
+            });
+            result.summary.purchaseOrders.skipped++;
+            return;
+          }
+          // po_number is globally unique in the schema but historical numbers
+          // are only unique within the source branch — this collides with an
+          // unrelated PO elsewhere in the system. Renumber instead of
+          // silently dropping the record.
+          if (!renumbered) {
+            this.pushWarning(result, {
+              kind: 'coerced',
+              sheet: 'Purchase Orders',
+              row: po.sourceRow ?? 0,
+              supplierCode: parent.supplierCode,
+              field: 'po_number',
+              message: `PO number "${userProvidedNumber}" is already used elsewhere in the system (different supplier/branch) — a new number was generated so this PO isn't lost.`,
+            });
+            renumbered = true;
+          }
+          userProvidedNumber = await this.reserveFreshNumber(
+            'PO',
+            ctx.branchId,
+          );
+          continue;
         }
         break;
       }
@@ -696,6 +792,7 @@ export class SupplierImportService {
     supplierId: string,
     ctx: { userId: string; branchId?: string | null },
     result: ImportResult,
+    grnNumberRedirects: Map<string, string>,
   ): Promise<void> {
     if (!g.supplierInvoiceNo?.trim()) {
       this.pushError(result, {
@@ -710,9 +807,51 @@ export class SupplierImportService {
       return;
     }
 
-    const MAX_GENERATED_RETRIES = 5;
-    const userProvidedNumber = g.grnNumber?.trim();
+    // Idempotency check by real-world identity, not grn_number: a re-import
+    // of the same workbook (e.g. retrying after a partial failure) must not
+    // create a second GRN for a bill we already recorded. grn_number is a
+    // poor dedup key here — a GRN that collided cross-branch on a prior run
+    // was renumbered (see below), so its stored grn_number no longer matches
+    // the sheet's original value. supplier_invoice_no is the supplier's own
+    // bill number and is never renumbered, so it's the reliable key.
+    const existingByInvoice = await this.prisma.gRN.findFirst({
+      where: { supplierId, supplierInvoiceNo: g.supplierInvoiceNo.trim() },
+      select: { id: true, grnNumber: true },
+    });
+    if (existingByInvoice) {
+      this.pushWarning(result, {
+        kind: 'duplicate',
+        sheet: 'GRNs',
+        row: g.sourceRow ?? 0,
+        supplierCode: parent.supplierCode,
+        field: 'supplier_invoice_no',
+        message: `A GRN for supplier invoice "${g.supplierInvoiceNo.trim()}" already exists for this supplier — leaving the existing record alone (no duplicate created).`,
+      });
+      result.summary.grns.skipped++;
+      // Even on skip, redirect debit notes / payments in this row that
+      // reference the sheet's original grn_number to the actual stored
+      // number — it may have been renumbered on the run that first created
+      // this GRN.
+      const sheetNumber = g.grnNumber?.trim();
+      if (sheetNumber && sheetNumber !== existingByInvoice.grnNumber) {
+        grnNumberRedirects.set(sheetNumber, existingByInvoice.grnNumber);
+      }
+      return;
+    }
+
+    // 200, not 5: when a user-provided number collides with a DIFFERENT
+    // branch's document (common on cross-branch migration — see
+    // reserveFreshNumber), the freshly-reserved branch-local counter has to
+    // climb past every number the OTHER branch already used before landing
+    // on free ground. A branch with hundreds of historical documents needs a
+    // correspondingly large budget; each attempt is a cheap single-row
+    // reservation, so a generous cap costs little.
+    const MAX_GENERATED_RETRIES = 200;
+    const originalNumber = g.grnNumber?.trim();
+    let userProvidedNumber = originalNumber;
     let lastErr: unknown = null;
+    let renumbered = false;
+    let actualGrnNumber = '';
 
     for (let attempt = 0; attempt <= MAX_GENERATED_RETRIES; attempt++) {
       try {
@@ -720,6 +859,7 @@ export class SupplierImportService {
           const grnNumber =
             userProvidedNumber ||
             (await this.numbering.nextNumber(tx, 'GRN', ctx.branchId ?? null));
+          actualGrnNumber = grnNumber;
 
           const supplier = await tx.supplier.findUnique({
             where: { id: supplierId },
@@ -755,47 +895,123 @@ export class SupplierImportService {
 
           let createdItems = 0;
           for (const item of g.items ?? []) {
-            await tx.gRNItem.create({
+            const productId = await this.resolveProductId(
+              tx,
+              item.productName,
+              ctx.branchId,
+            );
+            if (!productId && item.productName?.trim()) {
+              this.pushWarning(result, {
+                kind: 'missing-link',
+                sheet: 'GRN Items',
+                row: g.sourceRow ?? 0,
+                supplierCode: parent.supplierCode,
+                field: 'product_name',
+                message: `Product "${item.productName}" not found — this GRN still imports (for the ledger), but no stock batch was created and it won't appear in that product's history.`,
+              });
+            }
+
+            const receivedQty = Math.trunc(item.receivedQty ?? 0);
+            const freeQty = Math.trunc(item.freeQty ?? 0);
+            const mfgDate = parseDate(item.mfgDate) ?? null;
+            const expiryDate = parseDate(item.expiryDate) ?? new Date();
+            const purchaseRate = new Prisma.Decimal(item.purchaseRate ?? 0);
+            const mrp = new Prisma.Decimal(item.mrp ?? 0);
+
+            const grnItem = await tx.gRNItem.create({
               data: {
                 grn: { connect: { id: created.id } },
-                productId: '',
+                productId,
                 productName: item.productName ?? 'Imported item',
-                orderedQty: Math.trunc(
-                  item.orderedQty ?? item.receivedQty ?? 0,
-                ),
-                receivedQty: Math.trunc(item.receivedQty ?? 0),
-                freeQty: Math.trunc(item.freeQty ?? 0),
+                orderedQty: Math.trunc(item.orderedQty ?? receivedQty),
+                receivedQty,
+                freeQty,
                 batchNumber: item.batchNumber ?? '',
-                mfgDate: parseDate(item.mfgDate) ?? new Date(),
-                expiryDate: parseDate(item.expiryDate) ?? new Date(),
-                purchaseRate: new Prisma.Decimal(item.purchaseRate ?? 0),
-                mrp: new Prisma.Decimal(item.mrp ?? 0),
+                mfgDate,
+                expiryDate,
+                purchaseRate,
+                mrp,
                 damageQty: Math.trunc(item.damageQty ?? 0),
               },
             });
             createdItems++;
+
+            // Mirror the live GRN-receiving flow (grn.service.ts applyGrnItems)
+            // so an imported purchase becomes real, sellable stock — not just
+            // a financial record. Only when we resolved a real product; a GRN
+            // for an unmatched product still imports for the ledger, but with
+            // no stock movement (nothing to attach a batch to).
+            const addedStock = receivedQty + freeQty;
+            if (productId && addedStock > 0) {
+              await tx.batch.create({
+                data: {
+                  productId,
+                  batchNumber: item.batchNumber ?? '',
+                  mfgDate,
+                  expiryDate,
+                  quantity: addedStock,
+                  mrp,
+                  purchaseRate,
+                  supplierId,
+                  grnItemId: grnItem.id,
+                },
+              });
+              await tx.product.update({
+                where: { id: productId },
+                data: { totalStock: { increment: addedStock } },
+              });
+            }
           }
           return createdItems;
         });
 
         result.summary.grns.created++;
         result.summary.grnItems.created += itemCount;
+        if (originalNumber && actualGrnNumber !== originalNumber) {
+          grnNumberRedirects.set(originalNumber, actualGrnNumber);
+        }
         return;
       } catch (err) {
         lastErr = err;
         const code = (err as { code?: string })?.code;
         if (code === 'P2002') {
           if (!userProvidedNumber) continue;
-          this.pushWarning(result, {
-            kind: 'duplicate',
-            sheet: 'GRNs',
-            row: g.sourceRow ?? 0,
-            supplierCode: parent.supplierCode,
-            field: 'grn_number',
-            message: `GRN ${userProvidedNumber} already exists — leaving the existing record alone (no duplicate created).`,
+          const existing = await this.prisma.gRN.findFirst({
+            where: { supplierId, grnNumber: userProvidedNumber },
+            select: { id: true },
           });
-          result.summary.grns.skipped++;
-          return;
+          if (existing) {
+            this.pushWarning(result, {
+              kind: 'duplicate',
+              sheet: 'GRNs',
+              row: g.sourceRow ?? 0,
+              supplierCode: parent.supplierCode,
+              field: 'grn_number',
+              message: `GRN ${userProvidedNumber} already exists — leaving the existing record alone (no duplicate created).`,
+            });
+            result.summary.grns.skipped++;
+            return;
+          }
+          // grn_number is globally unique in the schema but historical numbers
+          // are only unique within the source branch — this collides with an
+          // unrelated GRN elsewhere in the system. Renumber instead of
+          // silently dropping the record.
+          if (!renumbered) {
+            this.pushWarning(result, {
+              kind: 'coerced',
+              sheet: 'GRNs',
+              row: g.sourceRow ?? 0,
+              supplierCode: parent.supplierCode,
+              field: 'grn_number',
+              message: `GRN number "${userProvidedNumber}" is already used elsewhere in the system (different supplier/branch) — a new number was generated so this GRN isn't lost.`,
+            });
+            renumbered = true;
+          }
+          userProvidedNumber = await this.reserveFreshNumber(
+            'GRN',
+            ctx.branchId,
+          );
+          continue;
         }
         break;
       }
@@ -819,12 +1035,17 @@ export class SupplierImportService {
     supplierId: string,
     ctx: { userId: string; branchId?: string | null },
     result: ImportResult,
+    grnNumberRedirects: Map<string, string>,
   ): Promise<void> {
     let grnId: string | null = null;
     const grnNumber = d.grnNumber?.trim();
     if (grnNumber) {
+      // The referenced GRN may have been renumbered earlier in this same
+      // import run (see createGrn's cross-branch renumbering) — resolve
+      // through the redirect map before falling back to the raw sheet value.
+      const resolvedGrnNumber = grnNumberRedirects.get(grnNumber) ?? grnNumber;
       const parentGrn = await this.prisma.gRN.findFirst({
-        where: { supplierId, grnNumber },
+        where: { supplierId, grnNumber: resolvedGrnNumber },
         select: { id: true },
       });
       if (!parentGrn) {
@@ -841,9 +1062,17 @@ export class SupplierImportService {
       grnId = parentGrn.id;
     }
 
-    const MAX_GENERATED_RETRIES = 5;
-    const userProvidedNumber = d.debitNoteNo?.trim();
+    // 200, not 5: when a user-provided number collides with a DIFFERENT
+    // branch's document (common on cross-branch migration — see
+    // reserveFreshNumber), the freshly-reserved branch-local counter has to
+    // climb past every number the OTHER branch already used before landing
+    // on free ground. A branch with hundreds of historical documents needs a
+    // correspondingly large budget; each attempt is a cheap single-row
+    // reservation, so a generous cap costs little.
+    const MAX_GENERATED_RETRIES = 200;
+    let userProvidedNumber = d.debitNoteNo?.trim();
     let lastErr: unknown = null;
+    let renumbered = false;
 
     for (let attempt = 0; attempt <= MAX_GENERATED_RETRIES; attempt++) {
       try {
@@ -893,10 +1122,25 @@ export class SupplierImportService {
 
           let createdItems = 0;
           for (const item of d.items ?? []) {
+            const productId = await this.resolveProductId(
+              tx,
+              item.productName,
+              ctx.branchId,
+            );
+            if (!productId && item.productName?.trim()) {
+              this.pushWarning(result, {
+                kind: 'missing-link',
+                sheet: 'Debit Note Items',
+                row: d.sourceRow ?? 0,
+                supplierCode: parent.supplierCode,
+                field: 'product_name',
+                message: `Product "${item.productName}" not found — this line won't appear in that product's history (the debit note itself still imports fine). No stock is adjusted on import either way.`,
+              });
+            }
             await tx.purchaseReturnItem.create({
               data: {
                 purchaseReturn: { connect: { id: created.id } },
-                productId: '',
+                productId,
                 productName: item.productName ?? 'Imported item',
                 batchId: '',
                 batchNumber: item.batchNumber ?? '',
@@ -920,16 +1164,42 @@ export class SupplierImportService {
         const code = (err as { code?: string })?.code;
         if (code === 'P2002') {
           if (!userProvidedNumber) continue;
-          this.pushWarning(result, {
-            kind: 'duplicate',
-            sheet: 'Debit Notes',
-            row: d.sourceRow ?? 0,
-            supplierCode: parent.supplierCode,
-            field: 'debit_note_no',
-            message: `Debit note ${userProvidedNumber} already exists — leaving the existing record alone (no duplicate created).`,
+          const existing = await this.prisma.purchaseReturn.findFirst({
+            where: { supplierId, debitNoteNo: userProvidedNumber },
+            select: { id: true },
           });
-          result.summary.debitNotes.skipped++;
-          return;
+          if (existing) {
+            this.pushWarning(result, {
+              kind: 'duplicate',
+              sheet: 'Debit Notes',
+              row: d.sourceRow ?? 0,
+              supplierCode: parent.supplierCode,
+              field: 'debit_note_no',
+              message: `Debit note ${userProvidedNumber} already exists — leaving the existing record alone (no duplicate created).`,
+            });
+            result.summary.debitNotes.skipped++;
+            return;
+          }
+          // debit_note_no is globally unique in the schema but historical
+          // numbers are only unique within the source branch — this collides
+          // with an unrelated debit note elsewhere in the system. Renumber
+          // instead of silently dropping the record.
+          if (!renumbered) {
+            this.pushWarning(result, {
+              kind: 'coerced',
+              sheet: 'Debit Notes',
+              row: d.sourceRow ?? 0,
+              supplierCode: parent.supplierCode,
+              field: 'debit_note_no',
+              message: `Debit note number "${userProvidedNumber}" is already used elsewhere in the system (different supplier/branch) — a new number was generated so this debit note isn't lost.`,
+            });
+            renumbered = true;
+          }
+          userProvidedNumber = await this.reserveFreshNumber(
+            'DN',
+            ctx.branchId,
+          );
+          continue;
         }
         break;
       }
@@ -941,6 +1211,151 @@ export class SupplierImportService {
       message: this.errMsg(lastErr, 'Failed to create debit note'),
     });
     result.summary.debitNotes.failed++;
+  }
+
+  // ── Payment creation helper ───────────────────────────────────────────────
+  // Same retry-on-generated-collision pattern as createPurchaseOrder/createGrn.
+  //
+  // Imported payments are historical records, not a live collection event —
+  // they don't decrement Supplier.currentOutstanding (that's set once via
+  // opening_balance, same reasoning as the customer-import side).
+  private async createPayment(
+    p: ImportSupplierPaymentDto,
+    parent: ImportSupplierDto,
+    supplierId: string,
+    ctx: { userId: string; branchId?: string | null },
+    result: ImportResult,
+    grnNumberRedirects: Map<string, string>,
+  ): Promise<void> {
+    const amount = Number(p.amount);
+    if (!(amount > 0)) {
+      this.pushError(result, {
+        sheet: 'Payments',
+        row: p.sourceRow ?? 0,
+        supplierCode: parent.supplierCode,
+        field: 'amount',
+        message: 'Payment amount must be greater than zero.',
+      });
+      result.summary.payments.failed++;
+      return;
+    }
+
+    let grnId: string | null = null;
+    const grnNumber = p.grnNumber?.trim();
+    if (grnNumber) {
+      // The referenced GRN may have been renumbered earlier in this same
+      // import run (see createGrn's cross-branch renumbering) — resolve
+      // through the redirect map before falling back to the raw sheet value.
+      const resolvedGrnNumber = grnNumberRedirects.get(grnNumber) ?? grnNumber;
+      const parentGrn = await this.prisma.gRN.findFirst({
+        where: { supplierId, grnNumber: resolvedGrnNumber },
+        select: { id: true },
+      });
+      if (!parentGrn) {
+        this.pushError(result, {
+          sheet: 'Payments',
+          row: p.sourceRow ?? 0,
+          supplierCode: parent.supplierCode,
+          field: 'grn_number',
+          message: `GRN "${grnNumber}" not found for this supplier. Import the parent GRN first, correct the grn_number, or leave blank for a lump-sum payment.`,
+        });
+        result.summary.payments.failed++;
+        return;
+      }
+      grnId = parentGrn.id;
+    }
+
+    // 200, not 5: when a user-provided number collides with a DIFFERENT
+    // branch's document (common on cross-branch migration — see
+    // reserveFreshNumber), the freshly-reserved branch-local counter has to
+    // climb past every number the OTHER branch already used before landing
+    // on free ground. A branch with hundreds of historical documents needs a
+    // correspondingly large budget; each attempt is a cheap single-row
+    // reservation, so a generous cap costs little.
+    const MAX_GENERATED_RETRIES = 200;
+    let userProvidedNumber = p.paymentNumber?.trim();
+    let lastErr: unknown = null;
+    let renumbered = false;
+
+    for (let attempt = 0; attempt <= MAX_GENERATED_RETRIES; attempt++) {
+      try {
+        await this.prisma.$transaction(async (tx) => {
+          const paymentNumber =
+            userProvidedNumber ||
+            (await this.numbering.nextNumber(
+              tx,
+              'SPAY',
+              ctx.branchId ?? null,
+            ));
+
+          await tx.supplierPayment.create({
+            data: {
+              paymentNumber,
+              supplier: { connect: { id: supplierId } },
+              ...(grnId ? { grn: { connect: { id: grnId } } } : {}),
+              amount: new Prisma.Decimal(amount),
+              paymentMode: p.paymentMode ?? 'CASH',
+              referenceNumber: p.referenceNumber ?? null,
+              notes: p.notes ?? null,
+              ...(ctx.branchId
+                ? { branch: { connect: { id: ctx.branchId } } }
+                : {}),
+            },
+          });
+        });
+        result.summary.payments.created++;
+        return;
+      } catch (err) {
+        lastErr = err;
+        const code = (err as { code?: string })?.code;
+        if (code === 'P2002') {
+          if (!userProvidedNumber) continue;
+          const existing = await this.prisma.supplierPayment.findFirst({
+            where: { supplierId, paymentNumber: userProvidedNumber },
+            select: { id: true },
+          });
+          if (existing) {
+            this.pushWarning(result, {
+              kind: 'duplicate',
+              sheet: 'Payments',
+              row: p.sourceRow ?? 0,
+              supplierCode: parent.supplierCode,
+              field: 'payment_number',
+              message: `Payment ${userProvidedNumber} already exists — leaving the existing record alone (no duplicate created).`,
+            });
+            return;
+          }
+          // payment_number is globally unique in the schema but historical
+          // numbers are only unique within the source branch — this collides
+          // with an unrelated payment elsewhere in the system. Renumber
+          // instead of silently dropping the record.
+          if (!renumbered) {
+            this.pushWarning(result, {
+              kind: 'coerced',
+              sheet: 'Payments',
+              row: p.sourceRow ?? 0,
+              supplierCode: parent.supplierCode,
+              field: 'payment_number',
+              message: `Payment number "${userProvidedNumber}" is already used elsewhere in the system (different supplier/branch) — a new number was generated so this payment isn't lost.`,
+            });
+            renumbered = true;
+          }
+          userProvidedNumber = await this.reserveFreshNumber(
+            'SPAY',
+            ctx.branchId,
+          );
+          continue;
+        }
+        break;
+      }
+    }
+    this.pushError(result, {
+      sheet: 'Payments',
+      row: p.sourceRow ?? 0,
+      supplierCode: parent.supplierCode,
+      message: this.errMsg(lastErr, 'Failed to create payment'),
+    });
+    result.summary.payments.failed++;
   }
 
   // ── Batch creation helper ────────────────────────────────────────────────
@@ -977,12 +1392,17 @@ export class SupplierImportService {
       return;
     }
 
-    // Resolve Product.id.
+    // Resolve Product.id. product_id is a raw live row id — trustworthy for
+    // a same-branch round-trip re-import, but an export from a DIFFERENT
+    // branch (e.g. cross-branch migration) can carry a product_id that
+    // exists but belongs to the wrong branch. Verify branch scope and fall
+    // back to a name-based lookup rather than silently attaching stock to
+    // another branch's product.
     let productId = b.productId?.trim();
     if (productId) {
       const exists = await this.prisma.product.findUnique({
         where: { id: productId },
-        select: { id: true },
+        select: { id: true, branchId: true },
       });
       if (!exists) {
         this.pushError(result, {
@@ -995,7 +1415,19 @@ export class SupplierImportService {
         result.summary.batches.failed++;
         return;
       }
-    } else {
+      if (ctx.branchId && exists.branchId && exists.branchId !== ctx.branchId) {
+        productId = undefined;
+        this.pushWarning(result, {
+          kind: 'missing-link',
+          sheet: 'Batches',
+          row: b.sourceRow ?? 0,
+          supplierCode: parent.supplierCode,
+          field: 'product_id',
+          message: `product_id "${b.productId}" belongs to a different branch — ignoring it and matching by product_name in this branch instead.`,
+        });
+      }
+    }
+    if (!productId) {
       const productName = b.productName?.trim();
       if (!productName) {
         this.pushError(result, {
@@ -1087,7 +1519,7 @@ export class SupplierImportService {
     row: ImportSupplierDto,
     result: ImportResult,
   ): Promise<void> {
-    const [po, grn, dn, act] = await Promise.all([
+    const [po, grn, dn, pay, act] = await Promise.all([
       this.prisma.purchaseOrder.updateMany({
         where: { supplierId, branchId: null },
         data: { branchId },
@@ -1100,12 +1532,16 @@ export class SupplierImportService {
         where: { supplierId, branchId: null },
         data: { branchId },
       }),
+      this.prisma.supplierPayment.updateMany({
+        where: { supplierId, branchId: null },
+        data: { branchId },
+      }),
       this.prisma.supplierActivity.updateMany({
         where: { supplierId, branchId: null },
         data: { branchId },
       }),
     ]);
-    const totalMoved = po.count + grn.count + dn.count + act.count;
+    const totalMoved = po.count + grn.count + dn.count + pay.count + act.count;
     if (totalMoved > 0) {
       this.pushWarning(result, {
         kind: 'coerced',
@@ -1113,7 +1549,7 @@ export class SupplierImportService {
         row: row.sourceRow ?? 0,
         supplierCode: row.supplierCode,
         field: 'branchId',
-        message: `Reclaimed ${po.count} orphan PO(s), ${grn.count} GRN(s), ${dn.count} debit note(s), ${act.count} activity(ies) onto your active branch.`,
+        message: `Reclaimed ${po.count} orphan PO(s), ${grn.count} GRN(s), ${dn.count} debit note(s), ${pay.count} payment(s), ${act.count} activity(ies) onto your active branch.`,
       });
     }
   }
@@ -1163,6 +1599,28 @@ export class SupplierImportService {
       data.bankDetails = row.bankDetails?.trim() || null;
     if (row.isActive !== undefined) data.isActive = row.isActive;
     return data;
+  }
+
+  // Best-effort link to a real Product by name (case-insensitive, scoped to
+  // branch or global) — same lookup pattern createBatch() below already uses.
+  // Returns '' (unchanged historical behaviour) when there's no match, so a
+  // typo'd/discontinued product name doesn't fail the whole row — it just
+  // won't show in that product's history.
+  private async resolveProductId(
+    tx: Prisma.TransactionClient,
+    productName: string | undefined,
+    branchId: string | null | undefined,
+  ): Promise<string> {
+    const name = productName?.trim();
+    if (!name) return '';
+    const candidate = await tx.product.findFirst({
+      where: {
+        name: { equals: name, mode: 'insensitive' },
+        ...(branchId ? { OR: [{ branchId }, { branchId: null }] } : {}),
+      },
+      select: { id: true },
+    });
+    return candidate?.id ?? '';
   }
 
   private actionForHandling(

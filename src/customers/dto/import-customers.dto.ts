@@ -88,6 +88,21 @@ export class ImportPaymentDto {
   @IsOptional() @IsString() notes?: string;
 }
 
+// A cash refund paid out to the customer, always tied to a REFUND-settled
+// credit note (Refund.creditNoteId is a required unique FK — mirrors the
+// live recordRefund flow). creditNoteNo resolves the parent by
+// (customerId, creditNoteNo), same pattern as debit_note's grn_number lookup
+// on the supplier side.
+export class ImportRefundDto {
+  @IsOptional() @IsInt() sourceRow?: number;
+  @IsOptional() @IsString() refundNumber?: string;
+  @IsString() creditNoteNo!: string;
+  @IsOptional() @IsString() date?: string;
+  @IsNumber() amount!: number;
+  @IsOptional() @IsString() paymentMode?: string; // CASH | CARD | UPI
+  @IsOptional() @IsString() notes?: string;
+}
+
 export class ImportActivityDto {
   @IsOptional() @IsInt() sourceRow?: number;
   @IsEnum(CustomerActivityType) type!: CustomerActivityType;
@@ -219,6 +234,12 @@ export class ImportCustomerDto {
   @IsOptional()
   @IsArray()
   @ValidateNested({ each: true })
+  @Type(() => ImportRefundDto)
+  refunds?: ImportRefundDto[];
+
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
   @Type(() => ImportActivityDto)
   activities?: ImportActivityDto[];
 
@@ -268,6 +289,7 @@ export interface ImportRowError {
     | 'Invoices'
     | 'Invoice Items'
     | 'Payments'
+    | 'Refunds'
     | 'Activities'
     | 'Prescriptions'
     | 'Quotations'
@@ -309,6 +331,7 @@ export interface ImportSummary {
   invoices: { created: number; skipped: number; failed: number };
   invoiceItems: { created: number };
   payments: { created: number; skipped: number; failed: number };
+  refunds: { created: number; failed: number };
   activities: { created: number; failed: number };
   prescriptions: { created: number; failed: number };
   quotations: { created: number; skipped: number; failed: number };

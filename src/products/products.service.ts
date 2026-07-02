@@ -591,7 +591,7 @@ export class ProductsService {
     return this.prisma.product.delete({ where: { id } });
   }
 
-  async importCsv(buffer: Buffer, branchId?: string): Promise<{ created: number; skipped: number; errors: string[] }> {
+  async importCsv(buffer: Buffer, branchId?: string): Promise<{ created: number; skipped: number; errors: string[]; warnings: string[] }> {
     const text = buffer.toString('utf-8');
     const lines = text.split(/\r?\n/).filter((l) => l.trim());
     if (lines.length < 2) throw new BadRequestException('CSV must have a header row and at least one data row');
@@ -672,7 +672,10 @@ export class ProductsService {
       }
     }
 
-    return { created, skipped, errors };
+    // Note: this legacy importer never sets totalStock (not in its accepted
+    // column set), so it can't create the phantom-stock issue the structured
+    // JSON import can — new rows always start at the schema default of 0.
+    return { created, skipped, errors, warnings: [] };
   }
 
   async adjustBatchStock(

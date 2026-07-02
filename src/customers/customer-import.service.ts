@@ -16,6 +16,7 @@ import {
   ImportDuplicateMatch,
   ImportInvoiceDto,
   ImportPaymentDto,
+  ImportRefundDto,
   ImportQuotationDto,
   ImportResult,
   ImportRowError,
@@ -66,6 +67,7 @@ function emptySummary(): ImportSummary {
     invoices: { created: 0, skipped: 0, failed: 0 },
     invoiceItems: { created: 0 },
     payments: { created: 0, skipped: 0, failed: 0 },
+    refunds: { created: 0, failed: 0 },
     activities: { created: 0, failed: 0 },
     prescriptions: { created: 0, failed: 0 },
     quotations: { created: 0, skipped: 0, failed: 0 },
@@ -125,6 +127,25 @@ export class CustomerImportService {
     private readonly prisma: PrismaService,
     private readonly numbering: DocumentNumberingService,
   ) {}
+
+  // Reserve a document number in its OWN committed transaction. Used when a
+  // user-provided number collides with an unrelated record elsewhere in the
+  // system (see the renumber-on-collision handling in createInvoice /
+  // createPayment / createRefund / createQuotation / createCreditNote).
+  // Calling nextNumber() inside the same transaction as the record insert
+  // doesn't work for this case: Postgres rolls back the WHOLE transaction —
+  // including the counter increment — when the insert fails, so a retry
+  // inside that transaction would regenerate the exact same (still-
+  // colliding) number forever. A separate, already-committed reservation
+  // guarantees forward progress.
+  private async reserveFreshNumber(
+    docType: Parameters<DocumentNumberingService['nextNumber']>[1],
+    branchId?: string | null,
+  ): Promise<string> {
+    return this.prisma.$transaction((tx) =>
+      this.numbering.nextNumber(tx, docType, branchId ?? null),
+    );
+  }
 
   // Single entry point for both /preview and /commit. `dryRun` toggles whether
   // we open a transaction and roll back, vs. write for real. Either way we
@@ -592,8 +613,20 @@ export class CustomerImportService {
     }
 
     // ── Invoices + items ──
+    // invoiceNumberRedirects tracks original -> actual invoice_number for
+    // any invoice that got renumbered on a cross-branch collision (see
+    // createInvoice). A credit note later in this SAME row that references
+    // the original number needs to resolve to what was actually stored.
+    const invoiceNumberRedirects = new Map<string, string>();
     for (const inv of row.invoices ?? []) {
-      await this.createInvoice(inv, row, customerId, ctx, result);
+      await this.createInvoice(
+        inv,
+        row,
+        customerId,
+        ctx,
+        result,
+        invoiceNumberRedirects,
+      );
     }
 
     // ── Payments ──
@@ -739,8 +772,35 @@ export class CustomerImportService {
     // looked up by invoice_number scoped to this customer. We do that lookup
     // inside the helper so a typo in the workbook surfaces as a clear "couldn't
     // find that invoice" error instead of a generic FK violation.
+    // creditNoteNoRedirects tracks original -> actual credit_note_no for any
+    // credit note that got renumbered on a cross-branch collision — a refund
+    // later in this row referencing the original number needs to resolve to
+    // what was actually stored.
+    const creditNoteNoRedirects = new Map<string, string>();
     for (const cn of row.creditNotes ?? []) {
-      await this.createCreditNote(cn, row, customerId, ctx, result);
+      await this.createCreditNote(
+        cn,
+        row,
+        customerId,
+        ctx,
+        result,
+        invoiceNumberRedirects,
+        creditNoteNoRedirects,
+      );
+    }
+
+    // ── Refunds ──
+    // Process after credit notes so a refund referencing one imported in the
+    // same workbook can resolve it.
+    for (const r of row.refunds ?? []) {
+      await this.createRefund(
+        r,
+        row,
+        customerId,
+        ctx,
+        result,
+        creditNoteNoRedirects,
+      );
     }
   }
 
@@ -766,11 +826,22 @@ export class CustomerImportService {
     customerId: string,
     ctx: { userId: string; branchId?: string | null },
     result: ImportResult,
+    invoiceNumberRedirects: Map<string, string>,
   ): Promise<void> {
-    const MAX_GENERATED_RETRIES = 5;
-    const userProvidedNumber = inv.invoiceNumber?.trim();
+    // 200, not 5: when a user-provided number collides with a DIFFERENT
+    // branch's document (common on cross-branch migration — see
+    // reserveFreshNumber), the freshly-reserved branch-local counter has to
+    // climb past every number the OTHER branch already used before landing
+    // on free ground. A branch with hundreds of historical documents needs a
+    // correspondingly large budget; each attempt is a cheap single-row
+    // reservation, so a generous cap costs little.
+    const MAX_GENERATED_RETRIES = 200;
+    const originalNumber = inv.invoiceNumber?.trim();
+    let userProvidedNumber = originalNumber;
     let lastErr: unknown = null;
     let itemCount = 0;
+    let renumbered = false;
+    let actualInvoiceNumber = '';
 
     // Historical imports almost always carry an original invoice number from
     // the source system — that's what's printed on the customer's bill copy.
@@ -795,6 +866,7 @@ export class CustomerImportService {
           const invoiceNumber =
             userProvidedNumber ||
             (await this.numbering.nextNumber(tx, 'INV', ctx.branchId ?? null));
+          actualInvoiceNumber = invoiceNumber;
 
           const billingType =
             inv.billingType?.toUpperCase() === 'WHOLESALE'
@@ -849,10 +921,25 @@ export class CustomerImportService {
           // data where the line-level breakdown is no longer available.
           let createdItems = 0;
           for (const item of inv.items ?? []) {
+            const productId = await this.resolveProductId(
+              tx,
+              item.productName,
+              ctx.branchId,
+            );
+            if (!productId && item.productName?.trim()) {
+              this.pushWarning(result, {
+                kind: 'missing-link',
+                sheet: 'Invoice Items',
+                row: inv.sourceRow ?? 0,
+                customerCode: parent.customerCode,
+                field: 'product_name',
+                message: `Product "${item.productName}" not found — this line won't appear in that product's history (the invoice itself still imports fine).`,
+              });
+            }
             await tx.invoiceItem.create({
               data: {
                 invoice: { connect: { id: created.id } },
-                productId: '', // historical import — we don't link to live Product
+                productId,
                 productName: item.productName ?? 'Imported item',
                 batchId: '',
                 batchNumber: item.batchNumber ?? '',
@@ -873,6 +960,9 @@ export class CustomerImportService {
         // Success — record counts and exit retry loop.
         result.summary.invoices.created++;
         result.summary.invoiceItems.created += itemCount;
+        if (originalNumber && actualInvoiceNumber !== originalNumber) {
+          invoiceNumberRedirects.set(originalNumber, actualInvoiceNumber);
+        }
         return;
       } catch (err) {
         lastErr = err;
@@ -886,16 +976,42 @@ export class CustomerImportService {
           if (!userProvidedNumber) {
             continue;
           }
-          this.pushWarning(result, {
-            kind: 'duplicate',
-            sheet: 'Invoices',
-            row: inv.sourceRow ?? 0,
-            customerCode: parent.customerCode,
-            field: 'invoice_number',
-            message: `Invoice ${userProvidedNumber} already exists — leaving the existing record alone (no duplicate created).`,
+          const existing = await this.prisma.invoice.findFirst({
+            where: { customerId, invoiceNumber: userProvidedNumber },
+            select: { id: true },
           });
-          result.summary.invoices.skipped++;
-          return;
+          if (existing) {
+            this.pushWarning(result, {
+              kind: 'duplicate',
+              sheet: 'Invoices',
+              row: inv.sourceRow ?? 0,
+              customerCode: parent.customerCode,
+              field: 'invoice_number',
+              message: `Invoice ${userProvidedNumber} already exists — leaving the existing record alone (no duplicate created).`,
+            });
+            result.summary.invoices.skipped++;
+            return;
+          }
+          // invoice_number is globally unique in the schema but historical
+          // numbers are only unique within the source branch — this collides
+          // with an unrelated invoice elsewhere in the system. Renumber
+          // instead of silently dropping the record.
+          if (!renumbered) {
+            this.pushWarning(result, {
+              kind: 'coerced',
+              sheet: 'Invoices',
+              row: inv.sourceRow ?? 0,
+              customerCode: parent.customerCode,
+              field: 'invoice_number',
+              message: `Invoice number "${userProvidedNumber}" is already used elsewhere in the system (different customer/branch) — a new number was generated so this invoice isn't lost.`,
+            });
+            renumbered = true;
+          }
+          userProvidedNumber = await this.reserveFreshNumber(
+            'INV',
+            ctx.branchId,
+          );
+          continue;
         }
         break;
       }
@@ -937,9 +1053,17 @@ export class CustomerImportService {
       return;
     }
 
-    const MAX_GENERATED_RETRIES = 5;
-    const userProvidedReceipt = pay.receiptNumber?.trim();
+    // 200, not 5: when a user-provided number collides with a DIFFERENT
+    // branch's document (common on cross-branch migration — see
+    // reserveFreshNumber), the freshly-reserved branch-local counter has to
+    // climb past every number the OTHER branch already used before landing
+    // on free ground. A branch with hundreds of historical documents needs a
+    // correspondingly large budget; each attempt is a cheap single-row
+    // reservation, so a generous cap costs little.
+    const MAX_GENERATED_RETRIES = 200;
+    let userProvidedReceipt = pay.receiptNumber?.trim();
     let lastErr: unknown = null;
+    let renumbered = false;
 
     if (!userProvidedReceipt) {
       this.pushWarning(result, {
@@ -985,16 +1109,42 @@ export class CustomerImportService {
           if (!userProvidedReceipt) {
             continue;
           }
-          this.pushWarning(result, {
-            kind: 'duplicate',
-            sheet: 'Payments',
-            row: pay.sourceRow ?? 0,
-            customerCode: parent.customerCode,
-            field: 'receipt_number',
-            message: `Receipt ${userProvidedReceipt} already exists — leaving the existing payment alone (no duplicate created).`,
+          const existing = await this.prisma.payment.findFirst({
+            where: { customerId, receiptNumber: userProvidedReceipt },
+            select: { id: true },
           });
-          result.summary.payments.skipped++;
-          return;
+          if (existing) {
+            this.pushWarning(result, {
+              kind: 'duplicate',
+              sheet: 'Payments',
+              row: pay.sourceRow ?? 0,
+              customerCode: parent.customerCode,
+              field: 'receipt_number',
+              message: `Receipt ${userProvidedReceipt} already exists — leaving the existing payment alone (no duplicate created).`,
+            });
+            result.summary.payments.skipped++;
+            return;
+          }
+          // receipt_number is globally unique in the schema but historical
+          // numbers are only unique within the source branch — this collides
+          // with an unrelated payment elsewhere in the system. Renumber
+          // instead of silently dropping the record.
+          if (!renumbered) {
+            this.pushWarning(result, {
+              kind: 'coerced',
+              sheet: 'Payments',
+              row: pay.sourceRow ?? 0,
+              customerCode: parent.customerCode,
+              field: 'receipt_number',
+              message: `Receipt number "${userProvidedReceipt}" is already used elsewhere in the system (different customer/branch) — a new number was generated so this payment isn't lost.`,
+            });
+            renumbered = true;
+          }
+          userProvidedReceipt = await this.reserveFreshNumber(
+            'RCPT',
+            ctx.branchId,
+          );
+          continue;
         }
         break;
       }
@@ -1007,6 +1157,158 @@ export class CustomerImportService {
       message: this.errMsg(lastErr, 'Failed to create payment'),
     });
     result.summary.payments.failed++;
+  }
+
+  // ── Refund creation helper ────────────────────────────────────────────────
+  // A refund always belongs to exactly one credit note (Refund.creditNoteId is
+  // a required unique FK — mirrors the live approve-credit-note flow in
+  // credit-notes.service.ts, which uses the same 'REF' numbering prefix).
+  // Doesn't touch currentOutstanding — same historical-record reasoning as
+  // createPayment().
+  private async createRefund(
+    r: ImportRefundDto,
+    parent: ImportCustomerDto,
+    customerId: string,
+    ctx: { userId: string; branchId?: string | null },
+    result: ImportResult,
+    creditNoteNoRedirects: Map<string, string>,
+  ): Promise<void> {
+    const amount = toNumber(r.amount);
+    if (amount <= 0) {
+      this.pushError(result, {
+        sheet: 'Refunds',
+        row: r.sourceRow ?? 0,
+        customerCode: parent.customerCode,
+        field: 'amount',
+        message: 'Refund amount must be greater than zero.',
+      });
+      result.summary.refunds.failed++;
+      return;
+    }
+
+    const creditNoteNo = r.creditNoteNo?.trim();
+    // The referenced credit note may have been renumbered earlier in this
+    // same import run (see createCreditNote's cross-branch renumbering) —
+    // resolve through the redirect map before falling back to the raw sheet
+    // value.
+    const resolvedCreditNoteNo = creditNoteNo
+      ? (creditNoteNoRedirects.get(creditNoteNo) ?? creditNoteNo)
+      : undefined;
+    const parentCreditNote = resolvedCreditNoteNo
+      ? await this.prisma.creditNote.findFirst({
+          where: { customerId, creditNoteNo: resolvedCreditNoteNo },
+          select: { id: true, invoiceId: true },
+        })
+      : null;
+    if (!parentCreditNote) {
+      this.pushError(result, {
+        sheet: 'Refunds',
+        row: r.sourceRow ?? 0,
+        customerCode: parent.customerCode,
+        field: 'credit_note_no',
+        message: `Credit note "${creditNoteNo}" not found for this customer. Import the parent credit note first, or correct credit_note_no.`,
+      });
+      result.summary.refunds.failed++;
+      return;
+    }
+
+    // 200, not 5: when a user-provided number collides with a DIFFERENT
+    // branch's document (common on cross-branch migration — see
+    // reserveFreshNumber), the freshly-reserved branch-local counter has to
+    // climb past every number the OTHER branch already used before landing
+    // on free ground. A branch with hundreds of historical documents needs a
+    // correspondingly large budget; each attempt is a cheap single-row
+    // reservation, so a generous cap costs little.
+    const MAX_GENERATED_RETRIES = 200;
+    let userProvidedNumber = r.refundNumber?.trim();
+    let lastErr: unknown = null;
+    let renumbered = false;
+
+    for (let attempt = 0; attempt <= MAX_GENERATED_RETRIES; attempt++) {
+      try {
+        await this.prisma.$transaction(async (tx) => {
+          const refundNumber =
+            userProvidedNumber ||
+            (await this.numbering.nextNumber(tx, 'REF', ctx.branchId ?? null));
+
+          await tx.refund.create({
+            data: {
+              refundNumber,
+              creditNote: { connect: { id: parentCreditNote.id } },
+              customer: { connect: { id: customerId } },
+              ...(parentCreditNote.invoiceId
+                ? { invoice: { connect: { id: parentCreditNote.invoiceId } } }
+                : {}),
+              amount: new Prisma.Decimal(amount),
+              paymentMode: this.coercePaymentMode(r.paymentMode),
+              notes: r.notes ?? null,
+              createdById: ctx.userId,
+              createdAt: parseDate(r.date) ?? new Date(),
+              ...(ctx.branchId
+                ? { branch: { connect: { id: ctx.branchId } } }
+                : {}),
+            },
+          });
+        });
+        result.summary.refunds.created++;
+        return;
+      } catch (err) {
+        lastErr = err;
+        const code = (err as { code?: string })?.code;
+        if (code === 'P2002') {
+          if (!userProvidedNumber) continue;
+          const existing = await this.prisma.refund.findFirst({
+            where: {
+              OR: [
+                { customerId, refundNumber: userProvidedNumber },
+                { creditNoteId: parentCreditNote.id },
+              ],
+            },
+            select: { id: true },
+          });
+          if (existing) {
+            this.pushWarning(result, {
+              kind: 'duplicate',
+              sheet: 'Refunds',
+              row: r.sourceRow ?? 0,
+              customerCode: parent.customerCode,
+              field: 'refund_number',
+              message: `Refund ${userProvidedNumber} (or this credit note's refund) already exists — leaving the existing record alone (no duplicate created).`,
+            });
+            return;
+          }
+          // refund_number is globally unique in the schema but historical
+          // numbers are only unique within the source branch — this collides
+          // with an unrelated refund elsewhere in the system. Renumber
+          // instead of silently dropping the record.
+          if (!renumbered) {
+            this.pushWarning(result, {
+              kind: 'coerced',
+              sheet: 'Refunds',
+              row: r.sourceRow ?? 0,
+              customerCode: parent.customerCode,
+              field: 'refund_number',
+              message: `Refund number "${userProvidedNumber}" is already used elsewhere in the system (different customer/branch) — a new number was generated so this refund isn't lost.`,
+            });
+            renumbered = true;
+          }
+          userProvidedNumber = await this.reserveFreshNumber(
+            'REF',
+            ctx.branchId,
+          );
+          continue;
+        }
+        break;
+      }
+    }
+
+    this.pushError(result, {
+      sheet: 'Refunds',
+      row: r.sourceRow ?? 0,
+      customerCode: parent.customerCode,
+      message: this.errMsg(lastErr, 'Failed to create refund'),
+    });
+    result.summary.refunds.failed++;
   }
 
   // ── Quotation creation helper ────────────────────────────────────────────
@@ -1024,10 +1326,18 @@ export class CustomerImportService {
     ctx: { userId: string; branchId?: string | null },
     result: ImportResult,
   ): Promise<void> {
-    const MAX_GENERATED_RETRIES = 5;
-    const userProvidedNumber = q.quotationNumber?.trim();
+    // 200, not 5: when a user-provided number collides with a DIFFERENT
+    // branch's document (common on cross-branch migration — see
+    // reserveFreshNumber), the freshly-reserved branch-local counter has to
+    // climb past every number the OTHER branch already used before landing
+    // on free ground. A branch with hundreds of historical documents needs a
+    // correspondingly large budget; each attempt is a cheap single-row
+    // reservation, so a generous cap costs little.
+    const MAX_GENERATED_RETRIES = 200;
+    let userProvidedNumber = q.quotationNumber?.trim();
     let lastErr: unknown = null;
     let itemCount = 0;
+    let renumbered = false;
 
     if (!userProvidedNumber) {
       this.pushWarning(result, {
@@ -1117,16 +1427,39 @@ export class CustomerImportService {
           if (!userProvidedNumber) {
             continue;
           }
-          this.pushWarning(result, {
-            kind: 'duplicate',
-            sheet: 'Quotations',
-            row: q.sourceRow ?? 0,
-            customerCode: parent.customerCode,
-            field: 'quotation_number',
-            message: `Quotation ${userProvidedNumber} already exists — leaving the existing record alone (no duplicate created).`,
+          const existing = await this.prisma.quotation.findFirst({
+            where: { customerId, quotationNumber: userProvidedNumber },
+            select: { id: true },
           });
-          result.summary.quotations.skipped++;
-          return;
+          if (existing) {
+            this.pushWarning(result, {
+              kind: 'duplicate',
+              sheet: 'Quotations',
+              row: q.sourceRow ?? 0,
+              customerCode: parent.customerCode,
+              field: 'quotation_number',
+              message: `Quotation ${userProvidedNumber} already exists — leaving the existing record alone (no duplicate created).`,
+            });
+            result.summary.quotations.skipped++;
+            return;
+          }
+          // quotation_number is globally unique in the schema but historical
+          // numbers are only unique within the source branch — this collides
+          // with an unrelated quotation elsewhere in the system. Renumber
+          // instead of silently dropping the record.
+          if (!renumbered) {
+            this.pushWarning(result, {
+              kind: 'coerced',
+              sheet: 'Quotations',
+              row: q.sourceRow ?? 0,
+              customerCode: parent.customerCode,
+              field: 'quotation_number',
+              message: `Quotation number "${userProvidedNumber}" is already used elsewhere in the system (different customer/branch) — a new number was generated so this quotation isn't lost.`,
+            });
+            renumbered = true;
+          }
+          userProvidedNumber = undefined;
+          continue;
         }
         break;
       }
@@ -1156,6 +1489,8 @@ export class CustomerImportService {
     customerId: string,
     ctx: { userId: string; branchId?: string | null },
     result: ImportResult,
+    invoiceNumberRedirects: Map<string, string>,
+    creditNoteNoRedirects: Map<string, string>,
   ): Promise<void> {
     const invoiceNumber = cn.invoiceNumber?.trim();
     if (!invoiceNumber) {
@@ -1171,8 +1506,13 @@ export class CustomerImportService {
       return;
     }
 
+    // The referenced invoice may have been renumbered earlier in this same
+    // import run (see createInvoice's cross-branch renumbering) — resolve
+    // through the redirect map before falling back to the raw sheet value.
+    const resolvedInvoiceNumber =
+      invoiceNumberRedirects.get(invoiceNumber) ?? invoiceNumber;
     const parentInvoice = await this.prisma.invoice.findFirst({
-      where: { customerId, invoiceNumber },
+      where: { customerId, invoiceNumber: resolvedInvoiceNumber },
       select: { id: true, invoiceNumber: true },
     });
     if (!parentInvoice) {
@@ -1187,10 +1527,20 @@ export class CustomerImportService {
       return;
     }
 
-    const MAX_GENERATED_RETRIES = 5;
-    const userProvidedNumber = cn.creditNoteNo?.trim();
+    // 200, not 5: when a user-provided number collides with a DIFFERENT
+    // branch's document (common on cross-branch migration — see
+    // reserveFreshNumber), the freshly-reserved branch-local counter has to
+    // climb past every number the OTHER branch already used before landing
+    // on free ground. A branch with hundreds of historical documents needs a
+    // correspondingly large budget; each attempt is a cheap single-row
+    // reservation, so a generous cap costs little.
+    const MAX_GENERATED_RETRIES = 200;
+    const originalNumber = cn.creditNoteNo?.trim();
+    let userProvidedNumber = originalNumber;
     let lastErr: unknown = null;
     let itemCount = 0;
+    let renumbered = false;
+    let actualCreditNoteNo = '';
 
     if (!userProvidedNumber) {
       this.pushWarning(result, {
@@ -1210,6 +1560,7 @@ export class CustomerImportService {
           const creditNoteNo =
             userProvidedNumber ||
             (await this.numbering.nextNumber(tx, 'CN', ctx.branchId ?? null));
+          actualCreditNoteNo = creditNoteNo;
 
           const rawMode = (cn.settlementMode ?? '').toUpperCase().trim();
           const settlementMode: 'REFUND' | 'CREDIT' | 'REPLACEMENT' =
@@ -1248,10 +1599,25 @@ export class CustomerImportService {
 
           let createdItems = 0;
           for (const item of cn.items ?? []) {
+            const productId = await this.resolveProductId(
+              tx,
+              item.productName,
+              ctx.branchId,
+            );
+            if (!productId && item.productName?.trim()) {
+              this.pushWarning(result, {
+                kind: 'missing-link',
+                sheet: 'Credit Note Items',
+                row: cn.sourceRow ?? 0,
+                customerCode: parent.customerCode,
+                field: 'product_name',
+                message: `Product "${item.productName}" not found — this line won't appear in that product's history (the credit note itself still imports fine).`,
+              });
+            }
             await tx.creditNoteItem.create({
               data: {
                 creditNote: { connect: { id: created.id } },
-                productId: '',
+                productId,
                 productName: item.productName ?? 'Imported item',
                 batchId: '',
                 batchNumber: item.batchNumber ?? '',
@@ -1269,6 +1635,9 @@ export class CustomerImportService {
 
         result.summary.creditNotes.created++;
         result.summary.creditNoteItems.created += itemCount;
+        if (originalNumber && actualCreditNoteNo !== originalNumber) {
+          creditNoteNoRedirects.set(originalNumber, actualCreditNoteNo);
+        }
         return;
       } catch (err) {
         lastErr = err;
@@ -1277,16 +1646,42 @@ export class CustomerImportService {
           if (!userProvidedNumber) {
             continue;
           }
-          this.pushWarning(result, {
-            kind: 'duplicate',
-            sheet: 'Credit Notes',
-            row: cn.sourceRow ?? 0,
-            customerCode: parent.customerCode,
-            field: 'credit_note_no',
-            message: `Credit note ${userProvidedNumber} already exists — leaving the existing record alone (no duplicate created).`,
+          const existing = await this.prisma.creditNote.findFirst({
+            where: { customerId, creditNoteNo: userProvidedNumber },
+            select: { id: true },
           });
-          result.summary.creditNotes.skipped++;
-          return;
+          if (existing) {
+            this.pushWarning(result, {
+              kind: 'duplicate',
+              sheet: 'Credit Notes',
+              row: cn.sourceRow ?? 0,
+              customerCode: parent.customerCode,
+              field: 'credit_note_no',
+              message: `Credit note ${userProvidedNumber} already exists — leaving the existing record alone (no duplicate created).`,
+            });
+            result.summary.creditNotes.skipped++;
+            return;
+          }
+          // credit_note_no is globally unique in the schema but historical
+          // numbers are only unique within the source branch — this collides
+          // with an unrelated credit note elsewhere in the system. Renumber
+          // instead of silently dropping the record.
+          if (!renumbered) {
+            this.pushWarning(result, {
+              kind: 'coerced',
+              sheet: 'Credit Notes',
+              row: cn.sourceRow ?? 0,
+              customerCode: parent.customerCode,
+              field: 'credit_note_no',
+              message: `Credit note number "${userProvidedNumber}" is already used elsewhere in the system (different customer/branch) — a new number was generated so this credit note isn't lost.`,
+            });
+            renumbered = true;
+          }
+          userProvidedNumber = await this.reserveFreshNumber(
+            'CN',
+            ctx.branchId,
+          );
+          continue;
         }
         break;
       }
@@ -1426,6 +1821,28 @@ export class CustomerImportService {
       typeof v === 'string' &&
       (Object.values(CustomerType) as string[]).includes(v)
     );
+  }
+
+  // Best-effort link to a real Product by name (case-insensitive, scoped to
+  // branch or global) — same lookup pattern supplier-import.service.ts's
+  // createBatch() already uses. Returns '' (unchanged historical behaviour)
+  // when there's no match, so a typo'd/discontinued product name doesn't
+  // fail the whole row — it just won't show in that product's history.
+  private async resolveProductId(
+    tx: Prisma.TransactionClient,
+    productName: string | undefined,
+    branchId: string | null | undefined,
+  ): Promise<string> {
+    const name = productName?.trim();
+    if (!name) return '';
+    const candidate = await tx.product.findFirst({
+      where: {
+        name: { equals: name, mode: 'insensitive' },
+        ...(branchId ? { OR: [{ branchId }, { branchId: null }] } : {}),
+      },
+      select: { id: true },
+    });
+    return candidate?.id ?? '';
   }
 
   // Schema enum is CASH | CARD | UPI | CREDIT | SPLIT. The workbook may use

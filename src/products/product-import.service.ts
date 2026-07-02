@@ -111,6 +111,11 @@ export class ProductImportService {
       if (e.barcode) existingByBarcode.set(e.barcode.trim(), e);
     }
 
+    const crossBranchByName = await this.findCrossBranchDuplicates(
+      nameKeys,
+      ctx.branchId,
+    );
+
     for (const p of validRows) {
       const byName = existingByName.get(nameKey(p.name));
       const byBarcode = p.barcode
@@ -135,6 +140,7 @@ export class ProductImportService {
         validRows,
         existingByName,
         existingByBarcode,
+        crossBranchByName,
         dto.duplicateHandling,
         result,
       );
@@ -158,6 +164,7 @@ export class ProductImportService {
         existingByName,
         existingByBarcode,
         categoryByName,
+        crossBranchByName,
         dto.duplicateHandling,
         ctx,
         result,
@@ -284,6 +291,41 @@ export class ProductImportService {
     });
   }
 
+  // Same-named products that exist in OTHER branches (not the import's target
+  // branch, not global). Purely informational — never blocks or redirects the
+  // import — used to warn when a row would create a phantom-stock duplicate:
+  // a fresh product row with totalStock copied in but zero real batches,
+  // because the branch legitimately needs its own Product+Batch rows (Batch
+  // has no branchId of its own — scoping flows through Product.branchId).
+  private async findCrossBranchDuplicates(
+    nameKeys: string[],
+    branchId?: string | null,
+  ): Promise<Map<string, { branchName: string }>> {
+    const out = new Map<string, { branchName: string }>();
+    if (!nameKeys.length || !branchId) return out;
+
+    const rows = await this.prisma.product.findMany({
+      where: {
+        AND: [
+          {
+            OR: nameKeys.map((n) => ({
+              name: { equals: n, mode: 'insensitive' as const },
+            })),
+          },
+          { NOT: [{ branchId }, { branchId: null }] },
+        ],
+      },
+      select: { name: true, branch: { select: { name: true } } },
+    });
+    for (const r of rows) {
+      const key = nameKey(r.name);
+      if (!out.has(key)) {
+        out.set(key, { branchName: r.branch?.name ?? 'another branch' });
+      }
+    }
+    return out;
+  }
+
   // ── Phase 3a: dry-run simulation ──────────────────────────────────────────
   private simulate(
     rows: ImportProductDto[],
@@ -295,6 +337,7 @@ export class ProductImportService {
       string,
       { id: string; name: string; barcode: string | null }
     >,
+    crossBranchByName: Map<string, { branchName: string }>,
     handling: ImportDuplicateHandling,
     result: ImportResult,
   ) {
@@ -346,16 +389,47 @@ export class ProductImportService {
           message: `Missing values for ${missing.join(', ')} — safe defaults will be applied (clean up via the product form post-import).`,
         });
       }
-      if (typeof row.totalStock === 'number' && row.totalStock > 0) {
+      // Price/tax fields silently default to 0 when blank (row.mrp === undefined,
+      // as opposed to a deliberately-entered 0) — unlike the cosmetic defaults
+      // above, a ₹0 MRP or GST rate is a real pricing error, so it gets its own
+      // louder warning rather than being folded into the generic "missing" list.
+      const missingPricing: string[] = [];
+      if (row.mrp === undefined) missingPricing.push('mrp');
+      if (row.sellingRate === undefined) missingPricing.push('selling_rate');
+      if (row.gstRate === undefined) missingPricing.push('gst_rate');
+      if (missingPricing.length) {
         this.pushWarning(result, {
           kind: 'coerced',
           sheet: 'Products',
           row: row.sourceRow ?? 0,
           productCode: row.productCode,
-          field: 'total_stock',
-          message:
-            "total_stock is a denormalised field — the canonical source of stock is Batches (created via GRN). The imported number will be visible immediately but won't match batch quantities until you load actual GRNs.",
+          message: `Missing ${missingPricing.join(', ')} — this product will import priced at ₹0 (or copy mrp/purchase_rate where applicable). Fix the price before this product is sold, or it will bill at zero.`,
         });
+      }
+      if (typeof row.totalStock === 'number' && row.totalStock > 0) {
+        const crossBranch = !isDup
+          ? crossBranchByName.get(nameKey(row.name))
+          : undefined;
+        if (crossBranch) {
+          this.pushWarning(result, {
+            kind: 'coerced',
+            sheet: 'Products',
+            row: row.sourceRow ?? 0,
+            productCode: row.productCode,
+            field: 'total_stock',
+            message: `A product named "${row.name}" already exists in ${crossBranch.branchName} with real transaction history. This creates a SEPARATE record for this branch, starting with ZERO batches — total_stock will show ${row.totalStock} but nothing is actually in stock here until a GRN is received.`,
+          });
+        } else {
+          this.pushWarning(result, {
+            kind: 'coerced',
+            sheet: 'Products',
+            row: row.sourceRow ?? 0,
+            productCode: row.productCode,
+            field: 'total_stock',
+            message:
+              "total_stock is a denormalised field — the canonical source of stock is Batches (created via GRN). The imported number will be visible immediately but won't match batch quantities until you load actual GRNs.",
+          });
+        }
       }
       const catName = row.categoryName?.trim();
       if (catName) newCategoryNames.add(catName.toLowerCase());
@@ -467,6 +541,7 @@ export class ProductImportService {
       }
     >,
     categoryByName: Map<string, string>,
+    crossBranchByName: Map<string, { branchName: string }>,
     handling: ImportDuplicateHandling,
     ctx: { userId: string; branchId?: string | null },
     result: ImportResult,
@@ -546,6 +621,17 @@ export class ProductImportService {
       result.summary.products.created++;
       if (typeof row.totalStock === 'number' && row.totalStock > 0) {
         result.summary.openingStockApplied += row.totalStock;
+        const crossBranch = crossBranchByName.get(nameKey(row.name));
+        if (crossBranch) {
+          this.pushWarning(result, {
+            kind: 'coerced',
+            sheet: 'Products',
+            row: row.sourceRow ?? 0,
+            productCode: row.productCode,
+            field: 'total_stock',
+            message: `A product named "${row.name}" already exists in ${crossBranch.branchName} with real transaction history. This created a SEPARATE record for this branch, starting with ZERO batches — total_stock shows ${row.totalStock} but nothing is actually in stock here until a GRN is received.`,
+          });
+        }
       }
     } catch (err) {
       // P2002 here means barcode collision with a different branch's row

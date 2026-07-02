@@ -847,6 +847,7 @@ export class SuppliersService {
         grnItems: [],
         debitNotes: [],
         debitNoteItems: [],
+        payments: [],
         activities: [],
         batches: [],
       };
@@ -854,7 +855,7 @@ export class SuppliersService {
 
     // Parallel batched queries, one per child entity. Same pattern as the
     // customers exportData method.
-    const [purchaseOrders, grns, debitNotes, activities, batches] =
+    const [purchaseOrders, grns, debitNotes, payments, activities, batches] =
       await Promise.all([
         this.prisma.purchaseOrder.findMany({
           where: { supplierId: { in: supplierIds } },
@@ -870,6 +871,10 @@ export class SuppliersService {
           where: { supplierId: { in: supplierIds } },
           include: { items: true },
           orderBy: { date: 'asc' },
+        }),
+        this.prisma.supplierPayment.findMany({
+          where: { supplierId: { in: supplierIds } },
+          orderBy: { createdAt: 'asc' },
         }),
         this.prisma.supplierActivity.findMany({
           where: { supplierId: { in: supplierIds } },
@@ -906,6 +911,7 @@ export class SuppliersService {
       grnItems,
       debitNotes: debitNotes.map(stripItems),
       debitNoteItems,
+      payments,
       activities,
       batches,
     };
