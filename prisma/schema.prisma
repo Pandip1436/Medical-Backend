@@ -115,6 +115,7 @@ enum Role {
   INVENTORY_MANAGER
   ACCOUNTANT
   SALESPERSON
+  DELIVERY
 }
 
 // ── Customers ─────────────────────────────────────────────────

@@ -9,6 +9,7 @@ export const ROLE_PRECEDENCE: Role[] = [
   Role.INVENTORY_MANAGER,
   Role.ACCOUNTANT,
   Role.SALESPERSON,
+  Role.DELIVERY,
 ];
 
 /** Returns the highest-precedence role from a set, falling back to PHARMACIST. */

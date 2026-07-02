@@ -32,7 +32,7 @@ export class DeliveryController {
   constructor(private readonly deliveryService: DeliveryService) {}
 
   @Post()
-  @Roles('ADMIN', 'PHARMACIST', 'ACCOUNTANT')
+  @Roles('ADMIN', 'PHARMACIST', 'ACCOUNTANT', 'DELIVERY')
   @ApiOperation({
     summary:
       'Enable courier tracking for an invoice (Courier toggle). Snapshots customer + order details. Idempotent per invoice.',
@@ -46,7 +46,7 @@ export class DeliveryController {
   }
 
   @Get()
-  @Roles('ADMIN', 'PHARMACIST', 'ACCOUNTANT')
+  @Roles('ADMIN', 'PHARMACIST', 'ACCOUNTANT', 'DELIVERY')
   @ApiOperation({ summary: 'List / search delivery tracking records' })
   @ApiQuery({ name: 'q', required: false })
   @ApiQuery({
@@ -86,7 +86,7 @@ export class DeliveryController {
   }
 
   @Post('check-all')
-  @Roles('ADMIN', 'PHARMACIST', 'ACCOUNTANT')
+  @Roles('ADMIN', 'PHARMACIST', 'ACCOUNTANT', 'DELIVERY')
   @ApiOperation({
     summary:
       'Bulk-check tracking status for every active shipment (has a tracking ID, not yet Delivered/Returned) in one click. Returns a sync summary.',
@@ -96,7 +96,7 @@ export class DeliveryController {
   }
 
   @Get('invoice/:invoiceId')
-  @Roles('ADMIN', 'PHARMACIST', 'ACCOUNTANT')
+  @Roles('ADMIN', 'PHARMACIST', 'ACCOUNTANT', 'DELIVERY')
   @ApiOperation({
     summary:
       'Get the delivery record for an invoice (null if courier tracking is not enabled).',
@@ -106,14 +106,14 @@ export class DeliveryController {
   }
 
   @Get(':id')
-  @Roles('ADMIN', 'PHARMACIST', 'ACCOUNTANT')
+  @Roles('ADMIN', 'PHARMACIST', 'ACCOUNTANT', 'DELIVERY')
   @ApiOperation({ summary: 'Get a delivery tracking record by ID' })
   findOne(@Param('id') id: string, @Request() req: any) {
     return this.deliveryService.findOne(id, req.user.branchId);
   }
 
   @Patch(':id')
-  @Roles('ADMIN', 'PHARMACIST', 'ACCOUNTANT')
+  @Roles('ADMIN', 'PHARMACIST', 'ACCOUNTANT', 'DELIVERY')
   @ApiOperation({
     summary:
       'Update courier details (name, tracking id, dispatch date, status) and OCR metadata.',
@@ -127,7 +127,7 @@ export class DeliveryController {
   }
 
   @Post(':id/events')
-  @Roles('ADMIN', 'PHARMACIST', 'ACCOUNTANT')
+  @Roles('ADMIN', 'PHARMACIST', 'ACCOUNTANT', 'DELIVERY')
   @ApiOperation({
     summary: 'Append a status update to the delivery timeline.',
   })
@@ -140,7 +140,7 @@ export class DeliveryController {
   }
 
   @Post(':id/clear-timeline')
-  @Roles('ADMIN', 'PHARMACIST', 'ACCOUNTANT')
+  @Roles('ADMIN', 'PHARMACIST', 'ACCOUNTANT', 'DELIVERY')
   @ApiOperation({
     summary:
       'Clear the delivery timeline and reset the shipment to a fresh Booked state (for re-syncing).',
@@ -150,7 +150,7 @@ export class DeliveryController {
   }
 
   @Post(':id/check-status')
-  @Roles('ADMIN', 'PHARMACIST', 'ACCOUNTANT')
+  @Roles('ADMIN', 'PHARMACIST', 'ACCOUNTANT', 'DELIVERY')
   @ApiOperation({
     summary:
       'Validate the tracking ID and return the delivery timeline + latest status.',
