@@ -162,9 +162,24 @@ export class CustomersService {
       createdFrom?: string;
       createdTo?: string;
       isActive?: boolean;
+      paymentStatus?: 'PAID' | 'PARTIAL' | 'UNPAID';
     },
   ) {
     const where = this.buildCustomerWhere(branchId, { ...filters, q: query });
+
+    // Payment-status folder (Paid / Partial / Unpaid). Derived from each
+    // customer's real-invoice totals — a column-to-column relationship Prisma
+    // can't express — so resolve the matching ids first, then restrict + paginate.
+    if (filters?.paymentStatus) {
+      const buckets = await this.customerPaymentStatusIds(where);
+      const ids =
+        filters.paymentStatus === 'PAID'
+          ? buckets.paid
+          : filters.paymentStatus === 'PARTIAL'
+            ? buckets.partial
+            : buckets.unpaid;
+      where.id = { in: ids };
+    }
 
     const paginated = typeof skip === 'number' && typeof take === 'number';
     // Clamp take to a sane max so a rogue caller can't request the universe.
@@ -471,13 +486,68 @@ export class CustomersService {
         _sum: { grandTotal: true, amountPaid: true },
       }),
     ]);
+    // Payment-status folder counts (Paid / Partial / Unpaid) over the same
+    // filtered set — powers the accurate tab badges.
+    const buckets = await this.customerPaymentStatusIds(where);
+
     return {
       total,
       withOutstanding: live.withOutstanding,
       totalOutstanding: live.totalOutstanding,
       totalAmount: Number(billed._sum.grandTotal ?? 0),
       paidAmount: Number(billed._sum.amountPaid ?? 0),
+      paidCount: buckets.paid.length,
+      partialCount: buckets.partial.length,
+      unpaidCount: buckets.unpaid.length,
     };
+  }
+
+  // Classify every customer matching `where` into Paid / Partial / Unpaid by
+  // their real-invoice totals. "Paid" requires ≥1 real invoice with the whole
+  // balance cleared; customers who never purchased are in none of the buckets.
+  // Used by both the list filter and the summary counts.
+  private async customerPaymentStatusIds(
+    where: any,
+  ): Promise<{ paid: string[]; partial: string[]; unpaid: string[] }> {
+    const custs = await this.prisma.customer.findMany({ where, select: { id: true } });
+    const ids = custs.map((c) => c.id);
+    const out = { paid: [] as string[], partial: [] as string[], unpaid: [] as string[] };
+    if (!ids.length) return out;
+
+    const [billedAgg, outAgg] = await Promise.all([
+      this.prisma.invoice.groupBy({
+        by: ['customerId'],
+        where: { customerId: { in: ids }, status: { notIn: ['DRAFT', 'CANCELLED'] } },
+        _sum: { grandTotal: true, amountPaid: true },
+      }),
+      this.prisma.invoice.groupBy({
+        by: ['customerId'],
+        where: { customerId: { in: ids }, status: { in: ['UNPAID', 'PARTIAL'] } },
+        _sum: { grandTotal: true, amountPaid: true },
+      }),
+    ]);
+    const billed = new Map(
+      billedAgg.map((a) => [
+        a.customerId,
+        { total: Number(a._sum.grandTotal ?? 0), paid: Number(a._sum.amountPaid ?? 0) },
+      ]),
+    );
+    const outstandingMap = new Map(
+      outAgg.map((a) => [
+        a.customerId,
+        Math.max(0, Number(a._sum.grandTotal ?? 0) - Number(a._sum.amountPaid ?? 0)),
+      ]),
+    );
+
+    for (const id of ids) {
+      const b = billed.get(id);
+      if (!b || b.total <= 0) continue; // never purchased → no folder
+      const outstanding = outstandingMap.get(id) ?? 0;
+      if (outstanding <= 0.01) out.paid.push(id);
+      else if (b.paid > 0) out.partial.push(id);
+      else out.unpaid.push(id);
+    }
+    return out;
   }
 
   // Shared customer WHERE builder so findAll(), exportData() and summary()

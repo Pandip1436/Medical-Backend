@@ -77,6 +77,7 @@ export class SuppliersController {
   @ApiQuery({ name: 'hasGstin', required: false, type: Boolean })
   @ApiQuery({ name: 'outstandingMin', required: false, type: Number })
   @ApiQuery({ name: 'outstandingMax', required: false, type: Number })
+  @ApiQuery({ name: 'paymentStatus', required: false, enum: ['PAID', 'PARTIAL', 'UNPAID'] })
   findAll(
     @Request() req: AuthenticatedRequest,
     @Query('q') q?: string,
@@ -88,6 +89,7 @@ export class SuppliersController {
     @Query('hasGstin') hasGstin?: string,
     @Query('outstandingMin') outstandingMin?: string,
     @Query('outstandingMax') outstandingMax?: string,
+    @Query('paymentStatus') paymentStatus?: string,
   ) {
     const effectiveBranchId = req.user.branchId ?? branchId ?? undefined;
     const skipNum = skip !== undefined ? Number(skip) : undefined;
@@ -107,6 +109,12 @@ export class SuppliersController {
       hasGstin: parseBool(hasGstin),
       outstandingMin: parseNum(outstandingMin),
       outstandingMax: parseNum(outstandingMax),
+      paymentStatus:
+        paymentStatus === 'PAID' ||
+        paymentStatus === 'PARTIAL' ||
+        paymentStatus === 'UNPAID'
+          ? (paymentStatus as 'PAID' | 'PARTIAL' | 'UNPAID')
+          : undefined,
     };
 
     return this.suppliersService.findAll(

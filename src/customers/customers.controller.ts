@@ -94,6 +94,7 @@ export class CustomersController {
     @Query('createdFrom') createdFrom?: string,
     @Query('createdTo') createdTo?: string,
     @Query('active') active?: string,
+    @Query('paymentStatus') paymentStatus?: string,
   ) {
     const effectiveBranchId = req.user.branchId ?? branchId ?? undefined;
     const skipNum = skip !== undefined ? Number(skip) : undefined;
@@ -126,6 +127,12 @@ export class CustomersController {
           : undefined,
         isActive:
           active === 'true' ? true : active === 'false' ? false : undefined,
+        paymentStatus:
+          paymentStatus === 'PAID' ||
+          paymentStatus === 'PARTIAL' ||
+          paymentStatus === 'UNPAID'
+            ? paymentStatus
+            : undefined,
       },
     );
   }

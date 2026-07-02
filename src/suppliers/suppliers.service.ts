@@ -185,6 +185,7 @@ export class SuppliersService {
       hasGstin?: boolean;
       outstandingMin?: number;
       outstandingMax?: number;
+      paymentStatus?: 'PAID' | 'PARTIAL' | 'UNPAID';
     },
   ) {
     const conditions: Prisma.SupplierWhereInput[] = [];
@@ -234,6 +235,24 @@ export class SuppliersService {
         if (typeof filters.outstandingMax === 'number') outstanding.lte = filters.outstandingMax;
         conditions.push({ currentOutstanding: outstanding });
       }
+    }
+
+    // Payment-status folder (Paid / Partial / Unpaid) is derived from live GRN
+    // aggregates, not a column, so we resolve the matching supplier ids first
+    // (over the pre-status where) and then constrain the id set. This keeps the
+    // filter server-side so the tab counts and pagination reflect ALL matches,
+    // not just the loaded pages.
+    if (filters?.paymentStatus) {
+      const preStatusWhere: Prisma.SupplierWhereInput =
+        conditions.length > 0 ? { AND: [...conditions] } : {};
+      const buckets = await this.supplierPaymentStatusIds(preStatusWhere, branchId);
+      const ids =
+        filters.paymentStatus === 'PAID'
+          ? buckets.paid
+          : filters.paymentStatus === 'PARTIAL'
+            ? buckets.partial
+            : buckets.unpaid;
+      conditions.push({ id: { in: ids } });
     }
 
     const where: Prisma.SupplierWhereInput =
@@ -319,6 +338,62 @@ export class SuppliersService {
     }));
   }
 
+  // Classifies every supplier matching `where` into Paid / Partial / Unpaid
+  // folders using the same live-GRN basis as withLiveOutstanding(). Suppliers
+  // that have never been billed (no real GRN / zero invoiced) are excluded from
+  // all three buckets — they belong to "All" only. Returns the supplier ids per
+  // bucket so both findAll (filtering) and summary (counts) share one source.
+  private async supplierPaymentStatusIds(
+    where: Prisma.SupplierWhereInput,
+    branchId?: string,
+  ): Promise<{ paid: string[]; partial: string[]; unpaid: string[] }> {
+    const buckets = { paid: [] as string[], partial: [] as string[], unpaid: [] as string[] };
+    const suppliers = await this.prisma.supplier.findMany({
+      where,
+      select: { id: true },
+    });
+    const ids = suppliers.map((s) => s.id);
+    if (ids.length === 0) return buckets;
+
+    const grns = await this.prisma.gRN.findMany({
+      where: {
+        supplierId: { in: ids },
+        isReplacement: false,
+        ...(branchId && branchId !== 'all' ? { branchId } : {}),
+      },
+      select: {
+        supplierId: true,
+        supplierInvoiceAmount: true,
+        amountPaid: true,
+        paymentStatus: true,
+      },
+    });
+    const totalMap = new Map<string, number>();
+    const paidMap = new Map<string, number>();
+    const outMap = new Map<string, number>();
+    for (const g of grns) {
+      const inv = Number(g.supplierInvoiceAmount);
+      const paid = Number(g.amountPaid);
+      totalMap.set(g.supplierId, (totalMap.get(g.supplierId) ?? 0) + inv);
+      paidMap.set(g.supplierId, (paidMap.get(g.supplierId) ?? 0) + paid);
+      if (g.paymentStatus === 'UNPAID' || g.paymentStatus === 'PARTIAL') {
+        const due = inv - paid;
+        if (due > 0.01)
+          outMap.set(g.supplierId, (outMap.get(g.supplierId) ?? 0) + due);
+      }
+    }
+
+    for (const id of ids) {
+      const billed = totalMap.get(id) ?? 0;
+      if (billed <= 0) continue; // never purchased → not in any payment folder
+      const outstanding = outMap.get(id) ?? 0;
+      if (outstanding <= 0.01) buckets.paid.push(id);
+      else if ((paidMap.get(id) ?? 0) > 0) buckets.partial.push(id);
+      else buckets.unpaid.push(id);
+    }
+    return buckets;
+  }
+
   // Directory-wide KPIs for the Suppliers page stat cards. Both figures come
   // from GRNs (the system of record for what was purchased and what's still
   // owed), excluding replacement GRNs (₹0 money-neutral receipts).
@@ -402,12 +477,20 @@ export class SuppliersService {
       Number(pending._sum.supplierInvoiceAmount ?? 0) -
         Number(pending._sum.amountPaid ?? 0),
     );
+
+    // Payment-status folder counts over the SAME filtered set, so the tabs show
+    // true totals across all pages (not just the loaded ones).
+    const buckets = await this.supplierPaymentStatusIds(where, branchId);
+
     return {
       totalCount,
       activeCount,
       inactiveCount,
       totalPurchases,
       pendingPayments,
+      paidCount: buckets.paid.length,
+      partialCount: buckets.partial.length,
+      unpaidCount: buckets.unpaid.length,
     };
   }
 
