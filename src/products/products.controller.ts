@@ -91,6 +91,7 @@ export class ProductsController {
     @Query('take') take?: string,
     @Query('branchId') branchId?: string,
     @Query('status') status?: string,
+    @Query('stockFilter') stockFilter?: string,
   ) {
     const effectiveBranchId = resolveBranchScope(req.user);
     return this.productsService.findAll({
@@ -98,6 +99,7 @@ export class ProductsController {
       categoryId,
       schedule,
       status,
+      stockFilter,
       skip: skip !== undefined ? Number(skip) : undefined,
       take: take !== undefined ? Number(take) : undefined,
       branchId: effectiveBranchId,

@@ -270,8 +270,13 @@ export class ProductsService {
     branchId?: string;
     includeInactive?: boolean;
     status?: string;
+    // Stock-status folder: 'in_stock' | 'low_stock' | 'out_of_stock'. Filters
+    // on the denormalised totalStock column so the paginated list matches the
+    // headline counts (previously the list was filtered client-side per page,
+    // so "In Stock 5" could show only 4 when the 5th sat on a later page).
+    stockFilter?: string;
   } = {}) {
-    const { query, categoryId, schedule, skip = 0, take, branchId, includeInactive, status } = opts;
+    const { query, categoryId, schedule, skip = 0, take, branchId, includeInactive, status, stockFilter } = opts;
 
     const where: any = {};
     if (status === 'active') where.isActive = true;
@@ -289,6 +294,24 @@ export class ProductsService {
     }
     if (categoryId) where.categoryId = categoryId;
     if (schedule) where.schedule = schedule;
+
+    if (stockFilter === 'in_stock') {
+      where.totalStock = { gt: 0 };
+    } else if (stockFilter === 'out_of_stock') {
+      where.totalStock = { lte: 0 };
+    } else if (stockFilter === 'low_stock') {
+      // low_stock = totalStock > 0 AND totalStock < minStock — a column-to-column
+      // comparison Prisma can't express, so resolve the matching ids under the
+      // rest of the filters first, then restrict to them.
+      const rows = await this.prisma.product.findMany({
+        where,
+        select: { id: true, totalStock: true, minStock: true },
+      });
+      const ids = rows
+        .filter((p) => p.totalStock > 0 && p.totalStock < p.minStock)
+        .map((p) => p.id);
+      where.id = { in: ids };
+    }
 
     const include = { batches: true, category: true };
 
