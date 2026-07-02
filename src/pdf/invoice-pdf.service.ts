@@ -162,9 +162,12 @@ export class InvoicePdfService implements OnModuleDestroy {
   }
 
   private registerHelpers() {
-    // ₹ with Indian digit grouping, always 2 dp.
+    // Indian digit grouping, always 2 dp. We prefix "Rs." (not the ₹ glyph):
+    // the headless-Chromium fonts available in the PDF environment don't all
+    // carry U+20B9, so ₹ rendered as a broken box before every amount. "Rs."
+    // is ASCII and renders identically everywhere.
     Handlebars.registerHelper('money', (n: unknown) =>
-      '₹ ' +
+      'Rs. ' +
       Number(n ?? 0).toLocaleString('en-IN', {
         minimumFractionDigits: 2,
         maximumFractionDigits: 2,
