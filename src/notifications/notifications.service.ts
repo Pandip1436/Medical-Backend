@@ -500,13 +500,19 @@ export class NotificationsService {
     const endOfToday = new Date(year, today.getMonth(), todayDay, 23, 59, 59, 999);
     const reminders = await this.prisma.customerReminder.findMany({
       where: {
+        isActive: true,
         OR: [
           { dayOfMonth: todayDay },
           { followUpDate: { gte: startOfToday, lte: endOfToday } },
         ],
       },
-      include: { customer: { select: { name: true, phone: true } } },
+      include: {
+        customer: { select: { name: true, phone: true } },
+        products: { select: { productId: true } },
+      },
     });
+
+    const startOfMonth = new Date(year, today.getMonth(), 1);
 
     let created = 0;
     for (const r of reminders) {
@@ -514,6 +520,23 @@ export class NotificationsService {
         !!r.followUpDate &&
         r.followUpDate >= startOfToday &&
         r.followUpDate <= endOfToday;
+
+      // Customer already repurchased one of this reminder's linked products
+      // this month — they've restocked, so skip the nudge (and, since no
+      // notification is created, the auto-WhatsApp send never fires either).
+      if (r.products.length) {
+        const alreadyBought = await this.prisma.invoiceItem.count({
+          where: {
+            productId: { in: r.products.map((p) => p.productId) },
+            invoice: {
+              customerId: r.customerId,
+              status: { notIn: ['DRAFT', 'CANCELLED'] },
+              date: { gte: startOfMonth, lte: today },
+            },
+          },
+        });
+        if (alreadyBought > 0) continue;
+      }
 
       // A deliberate one-off follow-up takes precedence over the generic
       // monthly nudge for that day, so we don't double-notify the same reminder.

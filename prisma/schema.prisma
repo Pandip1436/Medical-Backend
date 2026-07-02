@@ -254,6 +254,7 @@ model Product {
   // Null = master price has never been set from a dated GRN.
   lastPriceUpdate  DateTime?
   createdAt        DateTime         @default(now())
+  reminderLinks    ReminderProduct[]
 
   @@unique([barcode, branchId])
 }
@@ -1125,11 +1126,17 @@ model CustomerReminder {
   // it overrides the monthly dayOfMonth schedule until the next contact is logged.
   // null = plain monthly cycle.
   followUpDate DateTime?
+  // Soft-stop: false means the customer no longer wants to be reminded/contacted
+  // (e.g. cancelled future orders). Distinct from deleting the reminder — history
+  // and the record stay around and this can be flipped back on. Excluded from
+  // due-today checks and the auto-WhatsApp scheduler while false.
+  isActive     Boolean          @default(true)
   branchId     String?
   branch       Branch?          @relation(fields: [branchId], references: [id])
   createdAt    DateTime         @default(now())
   updatedAt    DateTime         @updatedAt
   contacts     ReminderContact[]
+  products     ReminderProduct[]
 }
 
 model ReminderContact {
@@ -1144,6 +1151,25 @@ model ReminderContact {
   followUpDate DateTime?
 }
 
+// Links a CustomerReminder to the specific product(s) (medicines) the
+// customer regularly buys, so the auto-WhatsApp message can name them and
+// the notification scheduler can check whether the customer already
+// repurchased before the reminder fires.
+model ReminderProduct {
+  id          String           @id @default(cuid())
+  reminderId  String
+  reminder    CustomerReminder @relation(fields: [reminderId], references: [id], onDelete: Cascade)
+  productId   String
+  product     Product          @relation(fields: [productId], references: [id], onDelete: Cascade)
+  // Snapshot of the product name at link time, so a later product rename
+  // doesn't retroactively change the wording of past sent messages.
+  productName String
+  addedAt     DateTime         @default(now())
+
+  @@unique([reminderId, productId])
+  @@index([reminderId])
+}
+
 enum ReminderContactStatus {
   TALKED
   NOT_RESPONDED
@@ -1154,6 +1180,9 @@ enum ReminderContactStatus {
   // monthly WhatsApp to the customer. Staff sees the entry in the
   // RemindersPage contact log so they know not to also call.
   WHATSAPP_AUTO_SENT
+  // Staff stopped this reminder (e.g. customer cancelled future orders).
+  // Logged alongside CustomerReminder.isActive being flipped to false.
+  STOPPED
 }
 
 // ── Approval Requests ─────────────────────────────────────────

@@ -42,6 +42,7 @@ export class RemindersService {
       include: {
         customer: { select: { id: true, name: true, phone: true, type: true, email: true, address: true } },
         contacts: { orderBy: { contactedAt: 'desc' }, take: 1 },
+        products: { select: { productId: true, productName: true } },
       },
       orderBy: { dayOfMonth: 'asc' },
     })
@@ -50,16 +51,30 @@ export class RemindersService {
   async findDueToday(branchId?: string) {
     const today = new Date().getDate()
     return this.prisma.customerReminder.findMany({
-      where: { dayOfMonth: today, ...(branchId ? { branchId } : {}) },
+      where: { dayOfMonth: today, isActive: true, ...(branchId ? { branchId } : {}) },
       include: {
         customer: { select: { id: true, name: true, phone: true, type: true, email: true, address: true } },
         contacts: { orderBy: { contactedAt: 'desc' }, take: 1 },
+        products: { select: { productId: true, productName: true } },
       },
     })
   }
 
+  // Fetch the requested products and snapshot their current names into
+  // ReminderProduct rows, so a later product rename doesn't retroactively
+  // change the wording of messages already sent.
+  private async buildProductLinks(productIds: string[] | undefined) {
+    if (!productIds?.length) return []
+    const products = await this.prisma.product.findMany({
+      where: { id: { in: productIds } },
+      select: { id: true, name: true },
+    })
+    return products.map((p) => ({ productId: p.id, productName: p.name }))
+  }
+
   async create(dto: CreateReminderDto) {
     this.validateDayOfMonth(dto.dayOfMonth)
+    const productLinks = await this.buildProductLinks(dto.productIds)
     return this.prisma.customerReminder.create({
       data: {
         customerId: dto.customerId,
@@ -67,10 +82,12 @@ export class RemindersService {
         title: dto.title,
         notes: dto.notes,
         branchId: dto.branchId,
+        products: productLinks.length ? { create: productLinks } : undefined,
       },
       include: {
         customer: { select: { id: true, name: true, phone: true, type: true, email: true, address: true } },
         contacts: true,
+        products: { select: { productId: true, productName: true } },
       },
     })
   }
@@ -129,19 +146,40 @@ export class RemindersService {
     }
     // followUpDate arrives as an ISO string (set) or explicit null (clear);
     // Prisma needs a Date | null, so coerce it before the write.
-    const { followUpDate, ...rest } = dto
+    // productIds, when provided, replaces the full linked-product set rather
+    // than merging — handled separately below via a transaction.
+    const { followUpDate, productIds, ...rest } = dto
     const data: any = { ...rest }
     if (followUpDate !== undefined) {
       data.followUpDate = followUpDate ? new Date(followUpDate) : null
     }
-    return this.prisma.customerReminder.update({
-      where: { id },
-      data,
-      include: {
-        customer: { select: { id: true, name: true, phone: true, type: true, email: true, address: true } },
-        contacts: { orderBy: { contactedAt: 'desc' }, take: 1 },
-      },
-    })
+
+    if (productIds === undefined) {
+      return this.prisma.customerReminder.update({
+        where: { id },
+        data,
+        include: {
+          customer: { select: { id: true, name: true, phone: true, type: true, email: true, address: true } },
+          contacts: { orderBy: { contactedAt: 'desc' }, take: 1 },
+          products: { select: { productId: true, productName: true } },
+        },
+      })
+    }
+
+    const productLinks = await this.buildProductLinks(productIds)
+    const [, reminder] = await this.prisma.$transaction([
+      this.prisma.reminderProduct.deleteMany({ where: { reminderId: id } }),
+      this.prisma.customerReminder.update({
+        where: { id },
+        data: { ...data, products: productLinks.length ? { create: productLinks } : undefined },
+        include: {
+          customer: { select: { id: true, name: true, phone: true, type: true, email: true, address: true } },
+          contacts: { orderBy: { contactedAt: 'desc' }, take: 1 },
+          products: { select: { productId: true, productName: true } },
+        },
+      }),
+    ])
+    return reminder
   }
 
   async remove(id: string, branchId?: string) {

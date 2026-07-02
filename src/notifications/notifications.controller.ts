@@ -183,6 +183,16 @@ export class NotificationsController {
     return this.service.generatePaymentDueAlerts(branchId);
   }
 
+  // Manual trigger for the customer-reminder due-today check (normally runs
+  // on server boot + every 24h via NotificationsScheduler). Useful to test
+  // the auto-WhatsApp flow without restarting the backend. Ignores
+  // branchId — generateReminderAlerts() checks all branches at once.
+  @Post('generate/reminders')
+  @Roles('ADMIN')
+  generateReminders() {
+    return this.service.generateReminderAlerts();
+  }
+
   @Post('generate/all')
   @Roles('ADMIN')
   async generateAll(
@@ -190,12 +200,13 @@ export class NotificationsController {
     @Query('branchId') queryBranchId?: string,
   ) {
     const branchId = req.user.branchId ?? queryBranchId ?? undefined;
-    const [lowStock, expiry, paymentDue, supplierDue] = await Promise.all([
+    const [lowStock, expiry, paymentDue, supplierDue, reminders] = await Promise.all([
       this.service.generateLowStockAlerts(branchId),
       this.service.generateExpiryAlerts(branchId),
       this.service.generatePaymentDueAlerts(branchId),
       this.service.generateSupplierPaymentDueAlerts(branchId),
+      this.service.generateReminderAlerts(),
     ]);
-    return { lowStock, expiry, paymentDue, supplierDue };
+    return { lowStock, expiry, paymentDue, supplierDue, reminders };
   }
 }

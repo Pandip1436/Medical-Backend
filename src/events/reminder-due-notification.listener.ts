@@ -64,10 +64,18 @@ export class ReminderDueNotificationListener {
           },
         },
         branch: { select: { name: true } },
+        products: { select: { productName: true } },
       },
     });
     if (!reminder) {
       // Not a reminder-driven SYSTEM notification — ignore quietly.
+      return;
+    }
+    if (!reminder.isActive) {
+      // Belt-and-braces: generateReminderAlerts() already filters to active
+      // reminders, but a stop could've landed between alert generation and
+      // this listener running (e.g. a queued/retried event).
+      this.logger.debug(`reminder ${reminder.id} is stopped — skip send`);
       return;
     }
     if (!reminder.customer) {
@@ -108,10 +116,17 @@ export class ReminderDueNotificationListener {
     }
 
     const customerFirstName = (reminder.customer.name ?? 'Customer').trim().split(/\s+/)[0];
+    // Name the specific medicines when the reminder has linked products;
+    // otherwise fall back to the reminder's free-text title (e.g. the
+    // generic "Payment follow-up" reminders created by bulk-create have no
+    // products). Reuses the existing approved template's 3rd text slot
+    // rather than requiring a new Meta-approved template variant.
+    const productList = reminder.products.map((p) => p.productName).join(', ');
+    const reminderTitle = productList || reminder.title;
     const vars: CustomerSaleReminderVars = {
       customerFirstName,
       pharmacyName: reminder.branch?.name ?? 'your pharmacy',
-      reminderTitle: reminder.title,
+      reminderTitle,
     };
 
     try {
@@ -120,7 +135,7 @@ export class ReminderDueNotificationListener {
         template: customerSaleReminderTemplate(vars),
         templateName: 'customer_sale_reminder',
         templateVars: vars,
-        bodySnapshot: `Monthly reminder: ${reminder.title}`,
+        bodySnapshot: `Monthly reminder: ${reminderTitle}`,
         relatedEntityType: 'customer_sale_reminder',
         relatedEntityId: reminder.id,
         branchId: reminder.branchId ?? null,
