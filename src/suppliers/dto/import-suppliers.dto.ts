@@ -75,6 +75,9 @@ export class ImportGrnDto {
   @IsString() supplierInvoiceNo!: string;
   @IsOptional() @IsString() supplierInvoiceDate?: string;
   @IsOptional() @IsNumber() supplierInvoiceAmount?: number;
+  // Amount already paid against this GRN — round-trips the supplier's paid /
+  // outstanding balance on re-import. Drives amountPaid + paymentStatus.
+  @IsOptional() @IsNumber() amountPaid?: number;
   @IsOptional() @IsNumber() totalAmount?: number;
   @IsOptional() @IsEnum(GRNStatus) status?: GRNStatus;
   @IsOptional() @IsBoolean() isReplacement?: boolean;

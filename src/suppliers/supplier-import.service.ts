@@ -1,6 +1,7 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import {
   GRNStatus,
+  GrnPaymentStatus,
   PaymentTerms,
   POStatus,
   Prisma,
@@ -871,6 +872,21 @@ export class SupplierImportService {
               ? g.status
               : GRNStatus.VERIFIED;
 
+          // Round-trip the paid side: clamp amount_paid to [0, invoice] and
+          // derive the GRN's payment status from it, so the supplier's Paid /
+          // Outstanding read back exactly as exported (the live read sums
+          // GRN.amountPaid). Replacement GRNs are money-neutral → stay unpaid.
+          const invoiceAmount = Number(g.supplierInvoiceAmount ?? g.totalAmount ?? 0);
+          const amountPaid = g.isReplacement
+            ? 0
+            : Math.min(Math.max(Number(g.amountPaid ?? 0), 0), invoiceAmount);
+          const paymentStatus: GrnPaymentStatus =
+            invoiceAmount <= 0 || amountPaid >= invoiceAmount - 0.01
+              ? GrnPaymentStatus.PAID
+              : amountPaid <= 0.01
+                ? GrnPaymentStatus.UNPAID
+                : GrnPaymentStatus.PARTIAL;
+
           const created = await tx.gRN.create({
             data: {
               grnNumber,
@@ -883,6 +899,8 @@ export class SupplierImportService {
               supplierInvoiceAmount: new Prisma.Decimal(
                 g.supplierInvoiceAmount ?? g.totalAmount ?? 0,
               ),
+              amountPaid: new Prisma.Decimal(amountPaid),
+              paymentStatus,
               totalAmount: new Prisma.Decimal(g.totalAmount ?? 0),
               status,
               isReplacement: g.isReplacement ?? false,
