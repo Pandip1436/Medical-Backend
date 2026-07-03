@@ -458,7 +458,7 @@ model Doctor {
 // ── Invoices ──────────────────────────────────────────────────
 model Invoice {
   id              String        @id @default(cuid())
-  invoiceNumber   String        @unique
+  invoiceNumber   String
   date            DateTime      @default(now())
   type            InvoiceType
   billingType     BillingType
@@ -502,6 +502,7 @@ model Invoice {
   delivery        DeliveryTracking?
 
   @@index([leadId])  // declared to match the index created in 20260518100000_add_lead_module
+  @@unique([invoiceNumber, branchId])
 }
 
 model InvoiceEditAudit {
@@ -635,7 +636,7 @@ enum DeliveryStatus {
 // ── Purchase Orders ───────────────────────────────────────────
 model PurchaseOrder {
   id               String              @id @default(cuid())
-  poNumber         String              @unique
+  poNumber         String
   date             DateTime            @default(now())
   branchId         String?
   branch           Branch?             @relation(fields: [branchId], references: [id])
@@ -647,6 +648,8 @@ model PurchaseOrder {
   status           POStatus
   expectedDelivery DateTime?
   createdBy        String              // Simplifying for this relation, could link to User
+
+  @@unique([poNumber, branchId])
 }
 
 model PurchaseOrderItem {
@@ -675,7 +678,7 @@ enum POStatus {
 // ── GRN ───────────────────────────────────────────────────────
 model GRN {
   id                    String    @id @default(cuid())
-  grnNumber             String    @unique
+  grnNumber             String
   date                  DateTime  @default(now())
   branchId              String?
   branch                Branch?   @relation(fields: [branchId], references: [id])
@@ -700,6 +703,8 @@ model GRN {
   purchaseReturns       PurchaseReturn[]
   payments              SupplierPayment[]
   editLogs              GrnEditLog[]
+
+  @@unique([grnNumber, branchId])
 }
 
 // Payment-state of a GRN's supplier invoice. Separate from the GRNStatus
@@ -771,7 +776,7 @@ model Expense {
 // ── Credit Notes (Sales Returns from Customers) ───────────────
 model CreditNote {
   id              String           @id @default(cuid())
-  creditNoteNo    String           @unique
+  creditNoteNo    String
   date            DateTime         @default(now())
   branchId        String?
   branch          Branch?          @relation(fields: [branchId], references: [id])
@@ -813,6 +818,8 @@ model CreditNote {
   createdById     String
   createdAt       DateTime         @default(now())
   refund          Refund?
+
+  @@unique([creditNoteNo, branchId])
 }
 
 model CreditNoteItem {
@@ -843,7 +850,7 @@ enum SettlementMode {
 // note), and is the audit trail for "we paid the customer back". One per CN.
 model Refund {
   id           String     @id @default(cuid())
-  refundNumber String     @unique
+  refundNumber String
   creditNoteId String     @unique
   creditNote   CreditNote @relation(fields: [creditNoteId], references: [id])
   customerId   String?
@@ -859,6 +866,7 @@ model Refund {
   createdAt    DateTime   @default(now())
   @@index([customerId])
   @@index([createdAt])
+  @@unique([refundNumber, branchId])
 }
 
 enum CreditNoteStatus {
@@ -870,7 +878,7 @@ enum CreditNoteStatus {
 // ── Debit Notes / Purchase Returns (to Suppliers) ─────────────
 model PurchaseReturn {
   id                String                     @id @default(cuid())
-  debitNoteNo       String                     @unique
+  debitNoteNo       String
   date              DateTime                   @default(now())
   branchId          String?
   branch            Branch?                    @relation(fields: [branchId], references: [id])
@@ -897,6 +905,8 @@ model PurchaseReturn {
   // this short-delivery debit note. Prevents the reverse endpoint from
   // adding the same qty twice on repeated calls.
   stockReversedAt   DateTime?
+
+  @@unique([debitNoteNo, branchId])
 }
 
 enum PurchaseReturnSettlement {
@@ -995,7 +1005,7 @@ enum DiscountType {
 // ── Quotations ────────────────────────────────────────────────
 model Quotation {
   id              String          @id @default(cuid())
-  quotationNumber String          @unique
+  quotationNumber String
   date            DateTime        @default(now())
   branchId        String?
   customerId      String?
@@ -1016,6 +1026,7 @@ model Quotation {
   leadId          String?
   lead            Lead?           @relation(fields: [leadId], references: [id])
   @@index([leadId])  // declared to match the index created in 20260518100000_add_lead_module
+  @@unique([quotationNumber, branchId])
 }
 
 model QuotationItem {
@@ -1045,7 +1056,7 @@ enum QuotationStatus {
 // ── Payment Records ───────────────────────────────────────────
 model Payment {
   id              String        @id @default(cuid())
-  receiptNumber   String        @unique
+  receiptNumber   String
   customerId      String
   customer        Customer      @relation(fields: [customerId], references: [id])
   invoiceId       String?       // null = customer-level lump payment (allocated below)
@@ -1058,6 +1069,7 @@ model Payment {
   branch          Branch?       @relation(fields: [branchId], references: [id])
   createdAt       DateTime      @default(now())
   @@index([referenceNumber])    // fast webhook reconciliation lookup
+  @@unique([receiptNumber, branchId])
 }
 
 // ── Supplier Payment Records ──────────────────────────────────
@@ -1066,7 +1078,7 @@ model Payment {
 // invoice; null = lump payment allocated FIFO across the supplier's open GRNs.
 model SupplierPayment {
   id              String        @id @default(cuid())
-  paymentNumber   String        @unique
+  paymentNumber   String
   supplierId      String
   supplier        Supplier      @relation(fields: [supplierId], references: [id])
   grnId           String?       // null = supplier-level lump payment (allocated FIFO)
@@ -1080,6 +1092,7 @@ model SupplierPayment {
   createdAt       DateTime      @default(now())
   @@index([supplierId])
   @@index([grnId])
+  @@unique([paymentNumber, branchId])
 }
 
 // ── Notifications ─────────────────────────────────────────────

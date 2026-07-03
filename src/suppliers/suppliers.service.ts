@@ -674,6 +674,19 @@ export class SuppliersService {
     branchId?: string,
     grnIds?: string[],
   ) {
+    return this.numbering.retryOnCollision(() =>
+      this.recordPaymentInternal(id, amount, paymentMode, referenceNumber, branchId, grnIds),
+    );
+  }
+
+  private async recordPaymentInternal(
+    id: string,
+    amount: number,
+    paymentMode: string,
+    referenceNumber?: string,
+    branchId?: string,
+    grnIds?: string[],
+  ) {
     if (amount <= 0)
       throw new BadRequestException('Amount must be greater than zero');
 

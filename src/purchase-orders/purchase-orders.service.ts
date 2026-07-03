@@ -37,6 +37,16 @@ export class PurchaseOrdersService {
     userId: string,
     branchId?: string,
   ) {
+    return this.numbering.retryOnCollision(() =>
+      this.createInternal(createPurchaseOrderDto, userId, branchId),
+    );
+  }
+
+  private async createInternal(
+    createPurchaseOrderDto: CreatePurchaseOrderDto,
+    userId: string,
+    branchId?: string,
+  ) {
     return this.prisma.$transaction(async (tx) => {
       // Verify supplier exists (and is in scope of caller's branch when branch-scoped)
       const supplier = await tx.supplier.findUnique({

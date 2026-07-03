@@ -123,4 +123,31 @@ export class DocumentNumberingService {
       NN: renderedNn,
     });
   }
+
+  // ── Collision defense for live (non-import) creation paths ────────────────
+  // Document numbers are branch-scoped unique (see migration
+  // 20260703000000_branch_scope_document_numbers), so a collision here should
+  // be rare — it can only come from a live counter climbing into a number a
+  // same-branch import already claimed, or a narrow concurrent-request race
+  // on a brand-new (branch, docType, FY) counter row. Import services already
+  // handle their own collisions with a bespoke renumber-and-retry (see
+  // customer-import.service.ts / supplier-import.service.ts); this is the
+  // equivalent safety net for everyday invoice/payment/GRN/etc. creation,
+  // which previously had none and would surface a raw 500 on any collision.
+  //
+  // `operation` must run entirely inside its own transaction (or otherwise
+  // leave no partial state on failure) so a retried attempt starts clean —
+  // e.g. wrap an existing `this.prisma.$transaction(...)` call site as-is.
+  async retryOnCollision<T>(operation: () => Promise<T>, maxRetries = 5): Promise<T> {
+    let attempt = 0;
+    for (;;) {
+      try {
+        return await operation();
+      } catch (err) {
+        const code = (err as { code?: string })?.code;
+        if (code !== 'P2002' || attempt >= maxRetries) throw err;
+        attempt++;
+      }
+    }
+  }
 }

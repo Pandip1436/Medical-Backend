@@ -31,6 +31,15 @@ export class ReconciliationService {
     overpayment: number;
     duplicate: boolean;
   }> {
+    return this.numbering.retryOnCollision(() => this.handleQrCreditedInternal(input));
+  }
+
+  private async handleQrCreditedInternal(input: QrCreditedInput): Promise<{
+    invoiceId: string;
+    receiptNumber: string | null;
+    overpayment: number;
+    duplicate: boolean;
+  }> {
     // Idempotency layer 2 — if we already processed this payment_id, no-op.
     const existing = await this.prisma.payment.findFirst({
       where: { referenceNumber: input.providerPaymentId },

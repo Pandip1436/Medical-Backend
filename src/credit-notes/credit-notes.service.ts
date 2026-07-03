@@ -99,6 +99,12 @@ export class CreditNotesService {
    * later via `approve()`).
    */
   async createPendingReview(dto: CreateCreditNoteDto, userId: string, branchId?: string) {
+    return this.numbering.retryOnCollision(() =>
+      this.createPendingReviewInternal(dto, userId, branchId),
+    );
+  }
+
+  private async createPendingReviewInternal(dto: CreateCreditNoteDto, userId: string, branchId?: string) {
     return this.prisma.$transaction(async (tx) => {
       const invoice = await tx.invoice.findUnique({
         where: { id: dto.invoiceId },
@@ -237,6 +243,17 @@ export class CreditNotesService {
    * actually drives stock/balance changes.
    */
   async approve(
+    id: string,
+    reviewerUserId: string,
+    opts: ApproveCreditNoteDto,
+    branchId?: string,
+  ) {
+    return this.numbering.retryOnCollision(() =>
+      this.approveInternal(id, reviewerUserId, opts, branchId),
+    );
+  }
+
+  private async approveInternal(
     id: string,
     reviewerUserId: string,
     opts: ApproveCreditNoteDto,

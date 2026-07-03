@@ -334,7 +334,23 @@ export class BillingService {
     return fallbacks.get(`${item.productId}::${item.batchId ?? ''}`) ?? 0;
   }
 
+  // Public entry point — retries the whole operation on a document-number
+  // collision (rare now that numbers are branch-scoped unique; see
+  // DocumentNumberingService.retryOnCollision). Safe to retry wholesale:
+  // everything below runs inside one transaction plus a post-commit event
+  // emit, so a failed attempt leaves no partial state to double-apply.
   async create(
+    createInvoiceDto: CreateInvoiceDto,
+    userId: string,
+    branchId?: string,
+    userRole?: string,
+  ) {
+    return this.numbering.retryOnCollision(() =>
+      this.createInternal(createInvoiceDto, userId, branchId, userRole),
+    );
+  }
+
+  private async createInternal(
     createInvoiceDto: CreateInvoiceDto,
     userId: string,
     branchId?: string,
@@ -1195,6 +1211,12 @@ export class BillingService {
   }
 
   async convertToInvoice(id: string, branchId?: string) {
+    return this.numbering.retryOnCollision(() =>
+      this.convertToInvoiceInternal(id, branchId),
+    );
+  }
+
+  private async convertToInvoiceInternal(id: string, branchId?: string) {
     return this.prisma.$transaction(async (tx) => {
       const quotation = await tx.invoice.findUnique({
         where: { id },
@@ -1323,6 +1345,12 @@ export class BillingService {
     if (dto.status === 'DRAFT') {
       throw new BadRequestException('Finalize requires a non-DRAFT status (PAID / UNPAID / PARTIAL).');
     }
+    return this.numbering.retryOnCollision(() =>
+      this.finalizeDraftInternal(id, dto, branchId),
+    );
+  }
+
+  private async finalizeDraftInternal(id: string, dto: CreateInvoiceDto, branchId?: string) {
     return this.prisma.$transaction(async (tx) => {
       const existing = await this._verifyDraft(tx, id, branchId);
 
@@ -1685,6 +1713,12 @@ export class BillingService {
   }
 
   async collectPayment(id: string, amountReceived: number, paymentMode: string, branchId?: string, referenceNumber?: string) {
+    return this.numbering.retryOnCollision(() =>
+      this.collectPaymentInternal(id, amountReceived, paymentMode, branchId, referenceNumber),
+    );
+  }
+
+  private async collectPaymentInternal(id: string, amountReceived: number, paymentMode: string, branchId?: string, referenceNumber?: string) {
     // Non-cash modes (UPI / Card / Cheque / NEFT) are traceable — require a
     // reference (UTR / txn id / cheque no.) so the receipt can be reconciled.
     const ref = referenceNumber?.trim() || undefined;

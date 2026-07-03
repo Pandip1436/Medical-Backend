@@ -128,8 +128,16 @@ export class ApprovalsService {
       data: { status: 'APPROVED', reviewedById, reviewedAt: new Date(), reviewNote: reviewNote ?? null },
     });
 
-    // Execute the approved action
-    await this.executeApprovedAction(req.type, req.payload as Record<string, any>, req.refId, req.branchId);
+    // Execute the approved action. Retried on a document-number collision —
+    // safe here specifically because executeApprovedAction's numbering-
+    // generating branches each run inside their own self-contained
+    // transaction, so a failed attempt leaves no partial state (unlike this
+    // outer approve() method, which is NOT itself transactional and must not
+    // be retried wholesale — the approvalRequest.update just above has
+    // already committed by this point).
+    await this.numbering.retryOnCollision(() =>
+      this.executeApprovedAction(req.type, req.payload as Record<string, any>, req.refId, req.branchId),
+    );
 
     // Notify requestor. Lead with the customer (+ phone) when the payload
     // carries them — the Notifications list parses "<name> (<phone>) — <rest>"

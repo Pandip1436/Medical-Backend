@@ -38,6 +38,12 @@ export class GrnService {
   }
 
   async create(createGrnDto: CreateGrnDto, branchId?: string) {
+    return this.numbering.retryOnCollision(() =>
+      this.createInternal(createGrnDto, branchId),
+    );
+  }
+
+  private async createInternal(createGrnDto: CreateGrnDto, branchId?: string) {
     const effectiveBranchId = branchId ?? createGrnDto.branchId;
     return this.prisma.$transaction(async (tx) => {
       // 1. Generate unique GRN number (atomic per branch+FY)

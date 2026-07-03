@@ -16,6 +16,12 @@ export class QuotationsService {
   ) {}
 
   async create(dto: CreateQuotationDto, branchId?: string) {
+    return this.numbering.retryOnCollision(() =>
+      this.createInternal(dto, branchId),
+    );
+  }
+
+  private async createInternal(dto: CreateQuotationDto, branchId?: string) {
     return this.prisma.$transaction(async (tx) => {
       const quotationNumber = await this.numbering.nextNumber(
         tx,

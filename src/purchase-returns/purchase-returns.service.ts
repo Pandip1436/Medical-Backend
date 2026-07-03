@@ -34,6 +34,12 @@ export class PurchaseReturnsService {
       return { approvalRequested: true, approvalRequestId: req.id };
     }
 
+    return this.numbering.retryOnCollision(() =>
+      this.createInternal(dto, userId, userBranchId),
+    );
+  }
+
+  private async createInternal(dto: CreatePurchaseReturnDto, userId: string, userBranchId?: string) {
     return this.prisma.$transaction(async (tx) => {
       // Inherit branchId from the linked GRN if available, fall back to user branch
       let branchId: string | null = userBranchId ?? null;
