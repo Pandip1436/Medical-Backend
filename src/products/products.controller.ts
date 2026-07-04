@@ -123,6 +123,11 @@ export class ProductsController {
     required: false,
     enum: ['active', 'inactive'],
   })
+  @ApiQuery({
+    name: 'stockFilter',
+    required: false,
+    enum: ['in_stock', 'low_stock', 'out_of_stock'],
+  })
   exportProducts(
     @Request() req: any,
     @Query('q') q?: string,
@@ -130,6 +135,7 @@ export class ProductsController {
     @Query('categoryId') categoryId?: string,
     @Query('schedule') schedule?: string,
     @Query('status') status?: string,
+    @Query('stockFilter') stockFilter?: string,
   ) {
     const effectiveBranchId = resolveBranchScope(req.user);
     return this.productsService.exportData(effectiveBranchId, {
@@ -137,6 +143,12 @@ export class ProductsController {
       categoryId: categoryId || undefined,
       schedule: schedule || undefined,
       status: status === 'active' || status === 'inactive' ? status : undefined,
+      stockFilter:
+        stockFilter === 'in_stock' ||
+        stockFilter === 'low_stock' ||
+        stockFilter === 'out_of_stock'
+          ? stockFilter
+          : undefined,
     });
   }
 

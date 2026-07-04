@@ -230,6 +230,9 @@ export class CustomerImportService {
       );
     }
 
+    // Imported invoices / payments / credit notes carry file-supplied numbers
+    // that bypass the sequence counters — resync so live creates don't collide.
+    await this.numbering.resyncSequences();
     return result;
   }
 
@@ -631,7 +634,14 @@ export class CustomerImportService {
 
     // ── Payments ──
     for (const pay of row.payments ?? []) {
-      await this.createPayment(pay, row, customerId, ctx, result);
+      await this.createPayment(
+        pay,
+        row,
+        customerId,
+        ctx,
+        result,
+        invoiceNumberRedirects,
+      );
     }
 
     // ── Activities ──
@@ -1039,6 +1049,7 @@ export class CustomerImportService {
     customerId: string,
     ctx: { userId: string; branchId?: string | null },
     result: ImportResult,
+    invoiceNumberRedirects?: Map<string, string>,
   ): Promise<void> {
     const amount = toNumber(pay.amount);
     if (amount <= 0) {
@@ -1060,6 +1071,20 @@ export class CustomerImportService {
     // on free ground. A branch with hundreds of historical documents needs a
     // correspondingly large budget; each attempt is a cheap single-row
     // reservation, so a generous cap costs little.
+    // Resolve the invoice this receipt paid (if the file linked one) so the
+    // payment is attributed to it — invoiceNumberRedirects maps any invoice
+    // renumbered on a cross-branch collision to the number actually stored.
+    let linkedInvoiceId: string | null = null;
+    const linkNumber = pay.invoiceNumber?.trim();
+    if (linkNumber) {
+      const actualNumber = invoiceNumberRedirects?.get(linkNumber) ?? linkNumber;
+      const inv = await this.prisma.invoice.findFirst({
+        where: { customerId, invoiceNumber: actualNumber },
+        select: { id: true },
+      });
+      linkedInvoiceId = inv?.id ?? null;
+    }
+
     const MAX_GENERATED_RETRIES = 200;
     let userProvidedReceipt = pay.receiptNumber?.trim();
     let lastErr: unknown = null;
@@ -1093,6 +1118,9 @@ export class CustomerImportService {
               referenceNumber: pay.referenceNumber ?? null,
               notes: pay.notes ?? null,
               createdAt: parseDate(pay.date) ?? new Date(),
+              ...(linkedInvoiceId
+                ? { invoice: { connect: { id: linkedInvoiceId } } }
+                : {}),
               ...(ctx.branchId
                 ? { branch: { connect: { id: ctx.branchId } } }
                 : {}),

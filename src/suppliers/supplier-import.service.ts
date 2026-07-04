@@ -183,6 +183,9 @@ export class SupplierImportService {
         result,
       );
     }
+    // Imported GRNs / debit notes / payments carry file-supplied numbers that
+    // bypass the sequence counters — resync so live creates don't collide.
+    await this.numbering.resyncSequences();
     return result;
   }
 
@@ -1118,6 +1121,10 @@ export class SupplierImportService {
             data: {
               debitNoteNo,
               date: parseDate(d.date) ?? new Date(),
+              // The ledger orders returns by createdAt, so stamp it with the
+              // historical date too — otherwise imported returns all sort by
+              // import time and lose their original sequence.
+              createdAt: parseDate(d.date) ?? new Date(),
               supplier: { connect: { id: supplierId } },
               supplierName: supplier?.name ?? parent.name,
               reason: d.reason ?? 'Imported debit note',
@@ -1315,6 +1322,10 @@ export class SupplierImportService {
               paymentMode: p.paymentMode ?? 'CASH',
               referenceNumber: p.referenceNumber ?? null,
               notes: p.notes ?? null,
+              // The ledger orders payments by createdAt — stamp it with the
+              // historical date so imported payments keep their sequence
+              // instead of all sorting by import time.
+              createdAt: parseDate(p.date) ?? new Date(),
               ...(ctx.branchId
                 ? { branch: { connect: { id: ctx.branchId } } }
                 : {}),

@@ -157,6 +157,10 @@ export class ProductImportService {
       ctx.branchId ?? null,
       result,
     );
+    // The real, freshly-resolved category ids for THIS db/branch. An explicit
+    // category_id carried in an exported file is stale (categories get new ids
+    // on import), so we only honour it when it matches one of these.
+    const validCategoryIds = new Set(categoryByName.values());
 
     for (const row of validRows) {
       await this.processRow(
@@ -164,6 +168,7 @@ export class ProductImportService {
         existingByName,
         existingByBarcode,
         categoryByName,
+        validCategoryIds,
         crossBranchByName,
         dto.duplicateHandling,
         ctx,
@@ -541,6 +546,7 @@ export class ProductImportService {
       }
     >,
     categoryByName: Map<string, string>,
+    validCategoryIds: Set<string>,
     crossBranchByName: Map<string, { branchName: string }>,
     handling: ImportDuplicateHandling,
     ctx: { userId: string; branchId?: string | null },
@@ -550,11 +556,14 @@ export class ProductImportService {
       existingByName.get(nameKey(row.name)) ??
       (row.barcode ? existingByBarcode.get(row.barcode.trim()) : undefined);
 
-    // Resolve categoryId: explicit id wins over name lookup.
+    // Resolve categoryId. Prefer the name→id map (always a real id for this
+    // db/branch). Only fall back to an explicit category_id when it actually
+    // exists — a stale id from an exported file would otherwise fail the
+    // `category: { connect }` with "No Category record found".
+    const rawId = row.categoryId?.trim();
     const categoryId =
-      row.categoryId?.trim() ||
-      categoryByName.get((row.categoryName ?? '').trim().toLowerCase()) ||
-      null;
+      categoryByName.get((row.categoryName ?? '').trim().toLowerCase()) ??
+      (rawId && validCategoryIds.has(rawId) ? rawId : null);
 
     if (existing) {
       if (handling === 'SKIP') {

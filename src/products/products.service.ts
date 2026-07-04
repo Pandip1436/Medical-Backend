@@ -338,6 +338,7 @@ export class ProductsService {
       categoryId?: string;
       schedule?: string;
       status?: string;
+      stockFilter?: string;
     },
   ) {
     const where: any = {};
@@ -358,6 +359,24 @@ export class ProductsService {
     }
     if (filters?.categoryId) where.categoryId = filters.categoryId;
     if (filters?.schedule) where.schedule = filters.schedule;
+
+    // Same stock-tab filter as findAll(), so the export respects the In Stock /
+    // Low Stock / Out of Stock tab the operator has selected.
+    const stockFilter = filters?.stockFilter;
+    if (stockFilter === 'in_stock') {
+      where.totalStock = { gt: 0 };
+    } else if (stockFilter === 'out_of_stock') {
+      where.totalStock = { lte: 0 };
+    } else if (stockFilter === 'low_stock') {
+      const rows = await this.prisma.product.findMany({
+        where,
+        select: { id: true, totalStock: true, minStock: true },
+      });
+      const ids = rows
+        .filter((p) => p.totalStock > 0 && p.totalStock < p.minStock)
+        .map((p) => p.id);
+      where.id = { in: ids };
+    }
 
     const products = await this.prisma.product.findMany({
       where,

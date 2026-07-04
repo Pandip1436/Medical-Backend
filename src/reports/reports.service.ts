@@ -1605,7 +1605,22 @@ export class ReportsService {
       });
     });
 
-    entries.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+    // Sort by date; on a tie (common for imported history, where every row
+    // carries the same file date) keep each invoice immediately followed by the
+    // payment(s) booked against it — a linked/synthetic payment shares `ref`
+    // with its invoice — instead of listing all invoices then all payments.
+    const TYPE_ORDER: Record<string, number> = {
+      INVOICE: 0,
+      PAYMENT: 1,
+      CREDIT_NOTE: 2,
+      REFUND: 3,
+    };
+    entries.sort((a, b) => {
+      const dt = new Date(a.date).getTime() - new Date(b.date).getTime();
+      if (dt !== 0) return dt;
+      if (a.ref !== b.ref) return a.ref < b.ref ? -1 : 1;
+      return (TYPE_ORDER[a.sourceType] ?? 9) - (TYPE_ORDER[b.sourceType] ?? 9);
+    });
     let balance = 0;
     const ledger = entries.map((e) => {
       // Neutral rows (refund/replacement returns, refund-mode payouts) display

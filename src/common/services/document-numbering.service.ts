@@ -150,4 +150,75 @@ export class DocumentNumberingService {
       }
     }
   }
+
+  // ── Sequence resync after bulk import ─────────────────────────────────────
+  // Imports write document numbers straight from the uploaded file (or the
+  // legacy series) without going through nextNumber(), so the DocumentSequence
+  // counters don't advance. The next LIVE create then regenerates a number an
+  // import already claimed → P2002 (and retryOnCollision can't recover, since
+  // the counter increment rolls back with the failed write). Call this once at
+  // the end of every import commit: it walks each numbered model, extracts the
+  // trailing NNNNN + FY per (docType, branch), and bumps each sequence up to the
+  // highest number in use. Only ever RAISES a counter — safe to run repeatedly.
+  async resyncSequences(): Promise<void> {
+    const DOCS: Array<[DocType, string, string]> = [
+      ['INV', 'invoice', 'invoiceNumber'],
+      ['PO', 'purchaseOrder', 'poNumber'],
+      ['GRN', 'gRN', 'grnNumber'],
+      ['CN', 'creditNote', 'creditNoteNo'],
+      ['REF', 'refund', 'refundNumber'],
+      ['DN', 'purchaseReturn', 'debitNoteNo'],
+      ['QTN', 'quotation', 'quotationNumber'],
+      ['RCPT', 'payment', 'receiptNumber'],
+      ['SPAY', 'supplierPayment', 'paymentNumber'],
+    ];
+
+    const maxByKey = new Map<
+      string,
+      { docType: DocType; branchId: string | null; fy: string; counter: number }
+    >();
+
+    for (const [docType, model, field] of DOCS) {
+      const delegate = (this.prisma as unknown as Record<string, { findMany?: (a: unknown) => Promise<unknown> }>)[model];
+      if (!delegate?.findMany) continue;
+      const rows = (await delegate.findMany({
+        select: { [field]: true, branchId: true },
+      })) as Array<Record<string, unknown>>;
+      for (const r of rows) {
+        const num = r[field];
+        if (typeof num !== 'string') continue;
+        const parts = num.split('/');
+        const suffix = parseInt(parts[parts.length - 1], 10);
+        if (!Number.isFinite(suffix)) continue;
+        const fy = parts.find((x) => /^\d{2}-\d{2}$/.test(x));
+        if (!fy) continue;
+        const branchId = (r.branchId as string | null) ?? null;
+        const key = `${docType}:${branchId ?? 'GLOBAL'}:${fy}`;
+        const cur = maxByKey.get(key);
+        if (!cur || suffix > cur.counter) {
+          maxByKey.set(key, { docType, branchId, fy, counter: suffix });
+        }
+      }
+    }
+
+    for (const [key, v] of maxByKey) {
+      const existing = await this.prisma.documentSequence.findUnique({
+        where: { key },
+        select: { counter: true },
+      });
+      const target = Math.max(v.counter, existing?.counter ?? 0);
+      if (existing && existing.counter >= target) continue; // already ahead
+      await this.prisma.documentSequence.upsert({
+        where: { key },
+        update: { counter: target },
+        create: {
+          key,
+          docType: v.docType,
+          branchId: v.branchId,
+          financialYear: v.fy,
+          counter: target,
+        },
+      });
+    }
+  }
 }

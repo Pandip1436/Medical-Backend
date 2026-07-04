@@ -86,6 +86,11 @@ export class ImportPaymentDto {
   @IsOptional() @IsString() paymentMode?: string; // CASH | CARD | UPI | CHEQUE | NEFT | etc.
   @IsOptional() @IsString() referenceNumber?: string;
   @IsOptional() @IsString() notes?: string;
+  // Links this receipt to the invoice it paid (by the invoice's number). Keeps
+  // the payment attributed to its invoice in the ledger — without it the ledger
+  // both synthesises a payment from invoice.amountPaid AND shows this receipt,
+  // double-counting the payment.
+  @IsOptional() @IsString() invoiceNumber?: string;
 }
 
 // A cash refund paid out to the customer, always tied to a REFUND-settled
