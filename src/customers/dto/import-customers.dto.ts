@@ -153,6 +153,9 @@ export class ImportCreditNoteDto {
   @IsOptional() @IsNumber() sgst?: number;
   @IsOptional() @IsNumber() igst?: number;
   @IsOptional() @IsNumber() totalAmount?: number;
+  // PENDING_REVIEW | APPROVED | REJECTED — blank defaults to APPROVED
+  // (imported returns are historical, already-processed events).
+  @IsOptional() @IsString() status?: string;
   // REFUND | CREDIT | REPLACEMENT — validated server-side.
   @IsOptional() @IsString() settlementMode?: string;
   @IsOptional()

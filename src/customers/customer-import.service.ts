@@ -1596,6 +1596,21 @@ export class CustomerImportService {
               ? rawMode
               : 'REFUND';
 
+          // Preserve the credit note's original lifecycle status. Blank defaults
+          // to APPROVED (imported returns are historical, already-processed) —
+          // but a PENDING_REVIEW / REJECTED source stays that way so the ledger
+          // and Credit Notes tabs match the source exactly.
+          const rawStatus = (cn.status ?? '').toUpperCase().trim();
+          const status: 'PENDING_REVIEW' | 'APPROVED' | 'REJECTED' =
+            rawStatus === 'PENDING_REVIEW' || rawStatus === 'REJECTED'
+              ? rawStatus
+              : 'APPROVED';
+          const reviewedAt =
+            status === 'PENDING_REVIEW' ? null : (parseDate(cn.date) ?? new Date());
+          // Only an APPROVED credit note is settled (the credit applied / refund
+          // paid / replacement issued). Pending & rejected are not settled.
+          const settledAt = status === 'APPROVED' ? (parseDate(cn.date) ?? new Date()) : null;
+
           const customer = await tx.customer.findUnique({
             where: { id: customerId },
             select: { name: true },
@@ -1616,6 +1631,15 @@ export class CustomerImportService {
               igst: new Prisma.Decimal(cn.igst ?? 0),
               totalAmount: new Prisma.Decimal(cn.totalAmount ?? 0),
               settlementMode,
+              // Preserve the source status. APPROVED shows in the ledger and (for
+              // CREDIT settlement) absorbs into the invoice's amountPaid; a
+              // PENDING_REVIEW source stays pending (no reviewer/settlement), so
+              // the import matches the original instead of over-approving it.
+              status,
+              ...(reviewedAt
+                ? { reviewedBy: { connect: { id: ctx.userId } }, reviewedAt }
+                : {}),
+              settledAt,
               notes: cn.notes ?? null,
               createdById: ctx.userId,
               ...(ctx.branchId
