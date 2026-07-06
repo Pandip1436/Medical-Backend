@@ -138,11 +138,13 @@ export class DeliveryService {
       ];
     }
 
-    // "Dispatched" isn't a user-facing status — it folds into "In Transit".
-    // So selecting In Transit matches both IN_TRANSIT and DISPATCHED rows.
+    // "In Transit" is a bucket covering every mid-journey status — the same set
+    // the headline "In Transit" chip counts (DISPATCHED / IN_TRANSIT /
+    // ARRIVED_AT_HUB / OUT_FOR_DELIVERY). Selecting it (or clicking the chip)
+    // must match all of them, so the filtered list equals the counted total.
     const statusWhere: Prisma.DeliveryTrackingWhereInput =
       status === 'IN_TRANSIT'
-        ? { status: { in: ['IN_TRANSIT', 'DISPATCHED'] as DeliveryStatus[] } }
+        ? { status: { in: ['IN_TRANSIT', 'DISPATCHED', 'ARRIVED_AT_HUB', 'OUT_FOR_DELIVERY'] as DeliveryStatus[] } }
         : status && status in STATUS_LABEL
           ? { status: status as DeliveryStatus }
           : {};
