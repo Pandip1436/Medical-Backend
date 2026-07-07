@@ -10,7 +10,7 @@ export interface PublicPayView {
   invoiceId: string;
   invoiceNumber: string;
   invoiceDate: string;          // ISO
-  customerFirstName: string;    // first token only — no full name leak
+  customerName: string;         // full customer name (shown on the pay page)
   pharmacyName: string;
   branchPhone: string | null;
   amount: number;               // grandTotal
@@ -76,7 +76,7 @@ export class PublicPayService {
       invoiceId: invoice.id,
       invoiceNumber: invoice.invoiceNumber,
       invoiceDate: invoice.date.toISOString(),
-      customerFirstName: (invoice.customerName ?? 'Customer').split(/\s+/)[0],
+      customerName: invoice.customerName ?? 'Customer',
       pharmacyName: invoice.branch?.name ?? 'Pharmacy',
       branchPhone: invoice.branch?.phone ?? null,
       amount: grandTotal,
