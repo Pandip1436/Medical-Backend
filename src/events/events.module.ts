@@ -25,5 +25,12 @@ import { PaymentReceivedListener } from './payment-received.listener';
     LowStockNotificationListener,
     ReminderDueNotificationListener,
   ],
+  // InvoiceCreatedListener is exported so BillingService can call .handle()
+  // directly for the manual "Send WhatsApp" button — emitAsync() does NOT
+  // actually wait for @OnEvent({async:true}) listeners to finish (confirmed:
+  // it resolves in ~1ms while the real send takes several seconds), so a
+  // caller that needs the real outcome must invoke the listener directly
+  // rather than going through the event bus.
+  exports: [InvoiceCreatedListener],
 })
 export class EventsModule {}

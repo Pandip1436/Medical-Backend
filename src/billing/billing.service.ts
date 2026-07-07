@@ -7,6 +7,7 @@ import { CreateInvoiceDto } from './dto/create-invoice.dto';
 import { CreateInvoiceItemDto } from './dto/create-invoice-item.dto';
 import { PaymentMode, Prisma, InvoiceStatus } from '@prisma/client';
 import { INVOICE_CREATED, InvoiceCreatedPayload } from '../events/invoice-events';
+import { InvoiceCreatedListener } from '../events/invoice-created.listener';
 import { syncPaymentDueForInvoice } from '../notifications/payment-due-sync';
 
 // Round to 2 decimal places before persisting any rupee/percent column. The
@@ -52,6 +53,7 @@ export class BillingService {
     private readonly approvalsService: ApprovalsService,
     private readonly numbering: DocumentNumberingService,
     private readonly events: EventEmitter2,
+    private readonly invoiceCreatedListener: InvoiceCreatedListener,
   ) {}
 
   // Schedule H, H1, and X are prescription-only drugs under the Drugs &
@@ -726,21 +728,56 @@ export class BillingService {
 
   // Public helper so the manual `POST /:id/send-whatsapp` controller endpoint
   // can re-fire the listener flow for an existing invoice.
-  emitInvoiceCreatedById(invoiceId: string) {
-    return this.prisma.invoice.findUnique({ where: { id: invoiceId } }).then((inv) => {
-      if (!inv) throw new NotFoundException('Invoice not found');
-      const payload: InvoiceCreatedPayload = {
-        invoiceId: inv.id,
-        branchId: inv.branchId ?? null,
-        customerId: inv.customerId ?? null,
-        type: inv.type as any,
-        status: inv.status as any,
-        grandTotal: Number(inv.grandTotal),
-        amountPaid: Number(inv.amountPaid),
-      };
-      this.events.emit(INVOICE_CREATED, payload);
-      return { ok: true, queued: inv.invoiceNumber };
+  //
+  // Calls InvoiceCreatedListener.handle() DIRECTLY rather than through the
+  // event bus. The auto-send path on invoice create deliberately fires the
+  // event and forgets, since billing must never block on WhatsApp/PDF/R2 —
+  // but `EventEmitter2.emitAsync()` does NOT actually wait for
+  // `@OnEvent({async:true})` listeners to finish despite the name (confirmed
+  // by instrumenting both sides live: emitAsync resolved in ~1ms while the
+  // real listener took ~7s to complete PDF render + upload + the Meta call).
+  // Awaiting that gave a false "SKIPPED" result for sends that had, in fact,
+  // just succeeded. A manual button click has no reason to avoid blocking, so
+  // it calls the listener's method directly — an ordinary async function call
+  // the caller can genuinely await — instead of going through the event bus.
+  async emitInvoiceCreatedById(invoiceId: string) {
+    const inv = await this.prisma.invoice.findUnique({ where: { id: invoiceId } });
+    if (!inv) throw new NotFoundException('Invoice not found');
+    const payload: InvoiceCreatedPayload = {
+      invoiceId: inv.id,
+      branchId: inv.branchId ?? null,
+      customerId: inv.customerId ?? null,
+      type: inv.type as any,
+      status: inv.status as any,
+      grandTotal: Number(inv.grandTotal),
+      amountPaid: Number(inv.amountPaid),
+    };
+    // Diff by id rather than assuming "no rows before, so any row after is
+    // new" — robust even if handle() is ever called concurrently for the
+    // same invoice from two requests.
+    const before = await this.prisma.whatsAppMessage.findMany({
+      where: { relatedEntityId: inv.id, relatedEntityType: 'invoice' },
+      select: { id: true },
     });
+    const beforeIds = new Set(before.map((m) => m.id));
+    await this.invoiceCreatedListener.handle(payload);
+    const candidates = await this.prisma.whatsAppMessage.findMany({
+      where: { relatedEntityId: inv.id, relatedEntityType: 'invoice' },
+      orderBy: { createdAt: 'desc' },
+      take: beforeIds.size + 5,
+    });
+    const sent = candidates.find((m) => !beforeIds.has(m.id));
+    if (!sent) {
+      // Listener returned without creating a message — opted out, no phone,
+      // WHATSAPP_AUTO_SEND_ENABLED off, or PDF render failed before send.
+      return { ok: false, status: 'SKIPPED', invoiceNumber: inv.invoiceNumber };
+    }
+    return {
+      ok: sent.status === 'SENT',
+      status: sent.status,
+      invoiceNumber: inv.invoiceNumber,
+      errorMessage: sent.errorMessage ?? undefined,
+    };
   }
 
   // Match the customers/suppliers pattern: legacy plain-array path when no
