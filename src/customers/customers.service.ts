@@ -930,10 +930,17 @@ export class CustomersService {
 
     const receiptNumber = `RCT-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
 
-    return this.prisma.$transaction(async (tx) => {
+    // First pass (pure calc): work out how the amount splits across the open
+    // invoices FIFO, so we know the allocation count up front and can write one
+    // Payment row PER invoice below.
+    const plan: {
+      inv: (typeof openInvoices)[number];
+      applied: number;
+      newAmountPaid: number;
+      newStatus: 'PAID' | 'PARTIAL';
+    }[] = [];
+    {
       let remaining = amount;
-      const allocations: { invoiceId: string; applied: number; newStatus: string }[] = [];
-
       for (const inv of openInvoices) {
         if (remaining <= 0.01) break;
         const due = Number(inv.grandTotal) - Number(inv.amountPaid);
@@ -941,6 +948,21 @@ export class CustomersService {
         const newAmountPaid = Number(inv.amountPaid) + applied;
         const stillDue = Number(inv.grandTotal) - newAmountPaid;
         const newStatus = stillDue <= 0.01 ? 'PAID' : 'PARTIAL';
+        plan.push({ inv, applied, newAmountPaid, newStatus });
+        remaining -= applied;
+      }
+    }
+    const totalApplied = plan.reduce((s, p) => s + p.applied, 0);
+    // Multiple invoices → suffix the receipt so each per-invoice Payment row has
+    // a unique receiptNumber (the @@unique([receiptNumber, branchId]) constraint
+    // forbids duplicates). Single invoice keeps the clean base number.
+    const multi = plan.length > 1;
+
+    return this.prisma.$transaction(async (tx) => {
+      const allocations: { invoiceId: string; applied: number; newStatus: string }[] = [];
+
+      for (let i = 0; i < plan.length; i++) {
+        const { inv, applied, newAmountPaid, newStatus } = plan[i];
 
         await tx.invoice.update({
           where: { id: inv.id },
@@ -959,33 +981,34 @@ export class CustomersService {
           customerId: inv.customerId,
         });
 
+        // One Payment row LINKED to this invoice. Linking is essential: the
+        // ledger reconciles each invoice's amountPaid against its linked
+        // Payments, so an UNLINKED lump (invoiceId: null) would be double-counted
+        // — once via the invoice's amountPaid (legacy-payment bridge) and once as
+        // a stray customer-level advance. Per-invoice rows keep the two in sync.
+        await tx.payment.create({
+          data: {
+            receiptNumber: multi ? `${receiptNumber}-${i + 1}` : receiptNumber,
+            customerId: id,
+            invoiceId: inv.id,
+            amount: applied,
+            paymentMode,
+            referenceNumber: referenceNumber ?? null,
+            branchId: customer.branchId ?? branchId ?? null,
+          },
+        });
+
         allocations.push({ invoiceId: inv.id, applied, newStatus });
-        remaining -= applied;
       }
 
       // Decrement customer outstanding by actual amount applied
-      const totalApplied = amount - Math.max(0, remaining);
       await tx.customer.update({
         where: { id },
         data: { currentOutstanding: { decrement: totalApplied } },
       });
 
-      // Create a single Payment record for the full collection
-      const payment = await tx.payment.create({
-        data: {
-          receiptNumber,
-          customerId: id,
-          // link to first invoice if only one touched, else null (lump payment)
-          invoiceId: allocations.length === 1 ? allocations[0].invoiceId : null,
-          amount: totalApplied,
-          paymentMode,
-          referenceNumber: referenceNumber ?? null,
-          branchId: customer.branchId ?? branchId ?? null,
-        },
-      });
-
       return {
-        receiptNumber: payment.receiptNumber,
+        receiptNumber,
         customerId: id,
         amountRecorded: totalApplied,
         allocations,
