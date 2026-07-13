@@ -1524,7 +1524,10 @@ export class ReportsService {
       entries.push({
         date: inv.date,
         ref: inv.invoiceNumber,
-        description: `Invoice`,
+        // Replacement invoices (REPL-… numbering, issued to swap returned
+        // goods) read as a plain "Invoice" otherwise, which hides that this
+        // line is a no-charge replacement rather than a fresh sale.
+        description: inv.invoiceNumber.startsWith('REPL') ? `Invoice (Replacement)` : `Invoice`,
         debit: Number(inv.grandTotal),
         credit: 0,
         sourceType: 'INVOICE',
@@ -1576,6 +1579,9 @@ export class ReportsService {
       const tag =
         cn.settlementMode === 'REFUND' ? ' (Refund)'
         : cn.settlementMode === 'REPLACEMENT' ? ' (Replacement)'
+        // CREDIT settlement = "Adjust Against Outstanding" — tag it so it's
+        // distinguishable from the Replacement / Refund credit notes.
+        : cn.settlementMode === 'CREDIT' ? ' (Adjust)'
         : '';
       entries.push({
         date: cn.date,
