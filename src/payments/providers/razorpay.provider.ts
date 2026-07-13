@@ -65,6 +65,18 @@ export class RazorpayProvider implements PaymentProvider, OnModuleInit {
     // QR for the same invoice (after partial cash collection) doesn't 409.
     const referenceId = `${input.invoiceId}-${Date.now()}`;
 
+    // Full customer object so Razorpay shows name + contact + email under
+    // "Customer detail" in the dashboard (previously we sent only the name,
+    // so the list column fell back to the payer's UPI-registered phone).
+    const customer: { name?: string; contact?: string; email?: string } = {};
+    if (input.customerName) customer.name = input.customerName;
+    if (input.customerPhone) {
+      const digits = String(input.customerPhone).replace(/\D/g, '');
+      // Razorpay wants an E.164-ish contact; assume India for bare 10-digit numbers.
+      customer.contact = digits.length === 10 ? `+91${digits}` : String(input.customerPhone).trim();
+    }
+    if (input.customerEmail) customer.email = input.customerEmail;
+
     const link = await (client.paymentLink as any).create({
       amount: paise,
       currency: 'INR',
@@ -72,9 +84,7 @@ export class RazorpayProvider implements PaymentProvider, OnModuleInit {
       description: `Invoice ${input.invoiceNumber}`,
       reference_id: referenceId,
       expire_by: expireBy,
-      customer: input.customerName
-        ? { name: input.customerName }
-        : undefined,
+      customer: Object.keys(customer).length ? customer : undefined,
       // We handle WhatsApp delivery ourselves via Meta Cloud API — disable
       // Razorpay's built-in SMS/email so customers don't get duplicate
       // messages from Razorpay's domain.
@@ -84,6 +94,8 @@ export class RazorpayProvider implements PaymentProvider, OnModuleInit {
         invoice_id: input.invoiceId,
         invoice_number: input.invoiceNumber,
         branch_id: input.branchId ?? '',
+        customer_name: input.customerName ?? '',
+        customer_phone: input.customerPhone ?? '',
       },
     });
 

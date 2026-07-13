@@ -8,6 +8,8 @@ export interface CreateQrInput {
   invoiceId: string;
   invoiceNumber: string;
   customerName?: string | null;
+  customerPhone?: string | null;
+  customerEmail?: string | null;
   branchId?: string | null;
   branchName?: string | null;
 }

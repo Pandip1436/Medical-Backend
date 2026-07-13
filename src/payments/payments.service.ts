@@ -26,7 +26,14 @@ export class PaymentsService {
   async createPaymentLinkForInvoice(invoiceId: string) {
     const invoice = await this.prisma.invoice.findUnique({
       where: { id: invoiceId },
-      include: { branch: true },
+      include: {
+        branch: true,
+        // Phone/email live on the Customer relation (invoice only denormalizes
+        // the name), so pull them to hand Razorpay a full customer for the
+        // payment-link — that's what shows up as "Customer detail" in the
+        // Razorpay dashboard.
+        customer: { select: { name: true, phone: true, email: true } },
+      },
     });
     if (!invoice) throw new NotFoundException('Invoice not found');
 
@@ -43,7 +50,9 @@ export class PaymentsService {
       amount: outstanding,
       invoiceId: invoice.id,
       invoiceNumber: invoice.invoiceNumber,
-      customerName: invoice.customerName,
+      customerName: invoice.customerName || invoice.customer?.name || null,
+      customerPhone: invoice.customer?.phone ?? null,
+      customerEmail: invoice.customer?.email ?? null,
       branchId: invoice.branchId,
       branchName: invoice.branch?.name ?? null,
     });
