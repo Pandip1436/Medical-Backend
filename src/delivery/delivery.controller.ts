@@ -89,10 +89,23 @@ export class DeliveryController {
   @Roles('ADMIN', 'PHARMACIST', 'ACCOUNTANT', 'DELIVERY')
   @ApiOperation({
     summary:
-      'Bulk-check tracking status for every active shipment (has a tracking ID, not yet Delivered/Returned) in one click. Returns a sync summary.',
+      'Bulk-check tracking status for the active shipments matching the given filters (search / status / courier / date). With no filters this covers every active shipment (has a tracking ID, not yet Delivered/Returned). Returns a sync summary.',
   })
-  checkAll(@Request() req: any) {
-    return this.deliveryService.checkAll(req.user.branchId);
+  checkAll(
+    @Request() req: any,
+    @Query('q') q?: string,
+    @Query('status') status?: string,
+    @Query('courier') courier?: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+  ) {
+    return this.deliveryService.checkAll(req.user.branchId, {
+      q: q || undefined,
+      status: status || undefined,
+      courier: courier || undefined,
+      from: from || undefined,
+      to: to || undefined,
+    });
   }
 
   @Get('invoice/:invoiceId')

@@ -456,12 +456,69 @@ export class DeliveryService {
   // one click. Targets non-terminal deliveries (not yet Delivered/Returned) so
   // we don't waste carrier calls on finished parcels. Runs sequentially to stay
   // within the carrier's rate limits; per-item failures are counted, not fatal.
-  async checkAll(branchId?: string) {
+  async checkAll(
+    branchId?: string,
+    filters?: {
+      q?: string;
+      status?: string;
+      courier?: string;
+      from?: string;
+      to?: string;
+    },
+  ) {
+    // Base constraint: only shipments that actually carry a tracking id.
     const where: Prisma.DeliveryTrackingWhereInput = {
       trackingId: { not: null },
-      status: { notIn: ['DELIVERED', 'RETURNED'] },
     };
     if (branchId) where.branchId = branchId;
+
+    // Layer the caller's active list filters (search / status / courier / date)
+    // on top so "Check All" syncs only the shipments currently shown — e.g. a
+    // single courier — instead of every active shipment. Combined via AND so
+    // the status facet and the terminal-status exclusion below don't collide on
+    // the same `status` key.
+    const and: Prisma.DeliveryTrackingWhereInput[] = [
+      // Never re-check terminal shipments, even if the caller's status facet
+      // would include them.
+      { status: { notIn: ['DELIVERED', 'RETURNED'] as DeliveryStatus[] } },
+    ];
+
+    const fromDate = filters?.from ? new Date(filters.from) : undefined;
+    const toDate = filters?.to ? new Date(filters.to) : undefined;
+    const createdAt: Prisma.DateTimeFilter = {};
+    if (fromDate && !isNaN(fromDate.getTime())) createdAt.gte = fromDate;
+    if (toDate && !isNaN(toDate.getTime())) createdAt.lte = toDate;
+    if (createdAt.gte || createdAt.lte) and.push({ createdAt });
+
+    const q = filters?.q?.trim();
+    if (q) {
+      and.push({
+        OR: [
+          { invoiceNumber: { contains: q, mode: 'insensitive' } },
+          { customerName: { contains: q, mode: 'insensitive' } },
+          { trackingId: { contains: q, mode: 'insensitive' } },
+          { courierName: { contains: q, mode: 'insensitive' } },
+          { mobileNumber: { contains: q, mode: 'insensitive' } },
+        ],
+      });
+    }
+
+    // Same "In Transit" bucket the list uses so the checked set matches the
+    // filtered list exactly.
+    const status = filters?.status;
+    if (status === 'IN_TRANSIT') {
+      and.push({
+        status: {
+          in: ['IN_TRANSIT', 'DISPATCHED', 'ARRIVED_AT_HUB', 'OUT_FOR_DELIVERY'] as DeliveryStatus[],
+        },
+      });
+    } else if (status && status in STATUS_LABEL) {
+      and.push({ status: status as DeliveryStatus });
+    }
+
+    if (filters?.courier) and.push({ courierName: filters.courier });
+
+    where.AND = and;
 
     const targets = await this.prisma.deliveryTracking.findMany({
       where,
