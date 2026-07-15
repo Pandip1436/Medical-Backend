@@ -107,6 +107,61 @@ export class LeadsController {
     });
   }
 
+  // NOTE: this static route MUST be declared before the `@Get(':id')` catch-all
+  // below — otherwise NestJS matches `GET /leads/export` against `:id` (id =
+  // "export") and findOne throws "Lead not found".
+  @Get('export')
+  @Roles('ADMIN', 'PHARMACIST', 'ACCOUNTANT', 'SALESPERSON')
+  @ApiOperation({
+    summary:
+      'Bulk export — same filters as GET /leads, no pagination, capped at 50,000 rows',
+  })
+  @ApiQuery({ name: 'q', required: false })
+  @ApiQuery({ name: 'tab', required: false })
+  @ApiQuery({ name: 'stage', required: false, isArray: true })
+  @ApiQuery({ name: 'source', required: false, isArray: true })
+  @ApiQuery({ name: 'assignedToUserId', required: false })
+  @ApiQuery({ name: 'createdFrom', required: false })
+  @ApiQuery({ name: 'createdTo', required: false })
+  @ApiQuery({ name: 'updatedFrom', required: false })
+  @ApiQuery({ name: 'updatedTo', required: false })
+  @ApiQuery({
+    name: 'ids',
+    required: false,
+    description: 'Comma-separated lead ids — when present, filter params are ignored',
+  })
+  exportLeads(
+    @Request() req: AuthenticatedRequest,
+    @Query('q') q?: string,
+    @Query('tab') tab?: string,
+    @Query('stage') stageRaw?: string | string[],
+    @Query('source') sourceRaw?: string | string[],
+    @Query('assignedToUserId') assignedToUserId?: string,
+    @Query('branchId') qBranchId?: string,
+    @Query('createdFrom') createdFrom?: string,
+    @Query('createdTo') createdTo?: string,
+    @Query('updatedFrom') updatedFrom?: string,
+    @Query('updatedTo') updatedTo?: string,
+    @Query('ids') ids?: string,
+  ) {
+    const idArr = ids
+      ? ids.split(',').map((s) => s.trim()).filter((s) => s.length > 0)
+      : undefined;
+    return this.leadsService.export({
+      q,
+      tab: VALID_TABS.includes(tab as LeadTab) ? (tab as LeadTab) : undefined,
+      stage: toEnumArray<LeadStage>(stageRaw, LeadStage),
+      source: toEnumArray<LeadSource>(sourceRaw, LeadSource),
+      assignedToUserId,
+      branchId: req.user.branchId ?? qBranchId ?? undefined,
+      createdFrom,
+      createdTo,
+      updatedFrom,
+      updatedTo,
+      ids: idArr,
+    });
+  }
+
   @Get(':id')
   @Roles('ADMIN', 'PHARMACIST', 'ACCOUNTANT', 'SALESPERSON')
   findOne(@Param('id') id: string, @Request() req: AuthenticatedRequest) {
@@ -178,58 +233,6 @@ export class LeadsController {
       body.ids,
       req.user.branchId ?? undefined,
     );
-  }
-
-  @Get('export')
-  @Roles('ADMIN', 'PHARMACIST', 'ACCOUNTANT', 'SALESPERSON')
-  @ApiOperation({
-    summary:
-      'Bulk export — same filters as GET /leads, no pagination, capped at 50,000 rows',
-  })
-  @ApiQuery({ name: 'q', required: false })
-  @ApiQuery({ name: 'tab', required: false })
-  @ApiQuery({ name: 'stage', required: false, isArray: true })
-  @ApiQuery({ name: 'source', required: false, isArray: true })
-  @ApiQuery({ name: 'assignedToUserId', required: false })
-  @ApiQuery({ name: 'createdFrom', required: false })
-  @ApiQuery({ name: 'createdTo', required: false })
-  @ApiQuery({ name: 'updatedFrom', required: false })
-  @ApiQuery({ name: 'updatedTo', required: false })
-  @ApiQuery({
-    name: 'ids',
-    required: false,
-    description: 'Comma-separated lead ids — when present, filter params are ignored',
-  })
-  exportLeads(
-    @Request() req: AuthenticatedRequest,
-    @Query('q') q?: string,
-    @Query('tab') tab?: string,
-    @Query('stage') stageRaw?: string | string[],
-    @Query('source') sourceRaw?: string | string[],
-    @Query('assignedToUserId') assignedToUserId?: string,
-    @Query('branchId') qBranchId?: string,
-    @Query('createdFrom') createdFrom?: string,
-    @Query('createdTo') createdTo?: string,
-    @Query('updatedFrom') updatedFrom?: string,
-    @Query('updatedTo') updatedTo?: string,
-    @Query('ids') ids?: string,
-  ) {
-    const idArr = ids
-      ? ids.split(',').map((s) => s.trim()).filter((s) => s.length > 0)
-      : undefined;
-    return this.leadsService.export({
-      q,
-      tab: VALID_TABS.includes(tab as LeadTab) ? (tab as LeadTab) : undefined,
-      stage: toEnumArray<LeadStage>(stageRaw, LeadStage),
-      source: toEnumArray<LeadSource>(sourceRaw, LeadSource),
-      assignedToUserId,
-      branchId: req.user.branchId ?? qBranchId ?? undefined,
-      createdFrom,
-      createdTo,
-      updatedFrom,
-      updatedTo,
-      ids: idArr,
-    });
   }
 
   @Post('import')
