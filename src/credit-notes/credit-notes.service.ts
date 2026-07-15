@@ -1,5 +1,6 @@
 import {
   Injectable,
+  Logger,
   NotFoundException,
   BadRequestException,
   ForbiddenException,
@@ -16,6 +17,8 @@ import { syncPaymentDueForInvoice } from '../notifications/payment-due-sync';
 
 @Injectable()
 export class CreditNotesService {
+  private readonly logger = new Logger(CreditNotesService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly numbering: DocumentNumberingService,
@@ -310,6 +313,22 @@ export class CreditNotesService {
 
       // Restore stock (was lines 113-120 of the old create()).
       for (const item of cn.items) {
+        // The batch can be gone by the time a return is approved (expiry
+        // cleanup, manual batch deletion, etc.). Restoring into a missing batch
+        // makes batch.update throw P2025 and aborts the whole approval — so only
+        // restore when the batch still exists, and skip (with a warning)
+        // otherwise. We skip the product totalStock bump too, since there's no
+        // batch to back it (keeps totalStock == sum of batch quantities).
+        const batchExists = await tx.batch.findUnique({
+          where: { id: item.batchId },
+          select: { id: true },
+        });
+        if (!batchExists) {
+          this.logger.warn(
+            `Credit note ${cn.id}: batch ${item.batchId} no longer exists — skipping stock restore for product ${item.productId} (${item.returnedQty} units).`,
+          );
+          continue;
+        }
         await tx.batch.update({
           where: { id: item.batchId },
           data: { quantity: { increment: item.returnedQty } },

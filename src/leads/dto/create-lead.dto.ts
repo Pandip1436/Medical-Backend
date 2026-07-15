@@ -79,4 +79,26 @@ export class CreateLeadDto {
   @IsOptional()
   @IsString()
   assignedToUserId?: string;
+
+  // ── Requirement details (the "Requirements" card). Auto-filled for IndiaMART
+  // leads; these let a manually-created lead capture the same info. ──
+  @IsOptional()
+  @IsString()
+  externalProductName?: string;
+
+  @IsOptional()
+  @IsString()
+  externalCategory?: string;
+
+  @IsOptional()
+  @IsString()
+  externalCity?: string;
+
+  @IsOptional()
+  @IsString()
+  externalState?: string;
+
+  @IsOptional()
+  @IsString()
+  externalMessage?: string;
 }

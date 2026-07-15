@@ -42,6 +42,12 @@ export class CreateContactDto {
   @IsString()
   companyId?: string;
 
+  // Free-typed company name. When set (and companyId isn't), the service
+  // find-or-creates a Company with this name in the branch and links it.
+  @IsOptional()
+  @IsString()
+  companyName?: string;
+
   @IsOptional()
   @IsString()
   address?: string;

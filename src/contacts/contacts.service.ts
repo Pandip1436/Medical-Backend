@@ -108,6 +108,26 @@ export class ContactsService {
       );
     }
 
+    // Resolve the company link: an explicit companyId wins; otherwise a
+    // free-typed companyName is find-or-created within the branch (so the user
+    // can just type a name instead of searching/selecting).
+    let companyId = dto.companyId;
+    if (!companyId && dto.companyName?.trim()) {
+      const name = dto.companyName.trim();
+      const found = await this.prisma.company.findFirst({
+        where: { branchId: ctx.branchId, name: { equals: name, mode: 'insensitive' } },
+        select: { id: true },
+      });
+      companyId =
+        found?.id ??
+        (
+          await this.prisma.company.create({
+            data: { name, branchId: ctx.branchId },
+            select: { id: true },
+          })
+        ).id;
+    }
+
     return this.prisma.contact.create({
       data: {
         firstName: dto.firstName.trim(),
@@ -126,8 +146,8 @@ export class ContactsService {
         notes: dto.notes ?? null,
         ownerUser: { connect: { id: dto.ownerUserId ?? ctx.userId } },
         branch: { connect: { id: ctx.branchId } },
-        ...(dto.companyId && {
-          company: { connect: { id: dto.companyId } },
+        ...(companyId && {
+          company: { connect: { id: companyId } },
         }),
       },
       include: this.contactInclude,

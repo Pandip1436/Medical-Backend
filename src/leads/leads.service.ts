@@ -173,6 +173,13 @@ export class LeadsService {
           ? new Date(dto.expectedCloseDate)
           : null,
         validUntil: dto.validUntil ? new Date(dto.validUntil) : null,
+        // Requirement details (mirrors the IndiaMART payload) — lets a manual
+        // lead populate the "Requirements" card.
+        externalProductName: dto.externalProductName?.trim() || null,
+        externalCategory: dto.externalCategory?.trim() || null,
+        externalCity: dto.externalCity?.trim() || null,
+        externalState: dto.externalState?.trim() || null,
+        externalMessage: dto.externalMessage?.trim() || null,
         contact: { connect: { id: contactId! } },
         ...(dto.companyId && { company: { connect: { id: dto.companyId } } }),
         assignedToUser: {
