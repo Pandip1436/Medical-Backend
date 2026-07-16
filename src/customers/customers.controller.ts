@@ -287,6 +287,29 @@ export class CustomersController {
     );
   }
 
+  // Declared before `@Get(':id')` so "check-duplicate" isn't captured as an id.
+  @Get('check-duplicate')
+  @Roles('ADMIN', 'PHARMACIST', 'ACCOUNTANT', 'SALESPERSON', 'INVENTORY_MANAGER')
+  @ApiOperation({
+    summary:
+      'Live check whether a GSTIN / drug license is already used by another customer in the branch (drives inline form validation).',
+  })
+  @ApiQuery({ name: 'gstin', required: false })
+  @ApiQuery({ name: 'dlNumber', required: false })
+  @ApiQuery({ name: 'excludeId', required: false })
+  checkDuplicate(
+    @Request() req: AuthenticatedRequest,
+    @Query('gstin') gstin?: string,
+    @Query('dlNumber') dlNumber?: string,
+    @Query('excludeId') excludeId?: string,
+  ) {
+    return this.customersService.checkDuplicate(req.user.branchId ?? undefined, {
+      gstin,
+      dlNumber,
+      excludeId,
+    });
+  }
+
   @Get(':id')
   @Roles(
     'ADMIN',

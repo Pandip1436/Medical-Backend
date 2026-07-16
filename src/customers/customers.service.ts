@@ -61,6 +61,94 @@ export class CustomersService {
     }
   }
 
+  // Reject a GSTIN / drug-licence that another customer in the branch already
+  // uses. Mirrors the supplier guard — a shared licence number across two
+  // customer records is almost always a duplicate. Empty/blank is skipped.
+  private async assertUniqueGstinDl(
+    data: { gstin?: string | null; dlNumber?: string | null; branchId?: string | null },
+    excludeId?: string,
+  ) {
+    const branchScope = data.branchId
+      ? [{ branchId: data.branchId }, { branchId: null }]
+      : [{ branchId: null }];
+    const notSelf = excludeId ? [{ id: { not: excludeId } }] : [];
+
+    const gstin = data.gstin?.trim();
+    if (gstin) {
+      const dup = await this.prisma.customer.findFirst({
+        where: { AND: [{ gstin }, { OR: branchScope }, ...notSelf] },
+        select: { name: true },
+      });
+      if (dup) {
+        throw new ConflictException(
+          `Another customer (${dup.name}) already uses GSTIN ${gstin} in this branch.`,
+        );
+      }
+    }
+
+    const dl = data.dlNumber?.trim();
+    if (dl) {
+      const dup = await this.prisma.customer.findFirst({
+        where: {
+          AND: [
+            { dlNumber: { equals: dl, mode: 'insensitive' } },
+            { OR: branchScope },
+            ...notSelf,
+          ],
+        },
+        select: { name: true },
+      });
+      if (dup) {
+        throw new ConflictException(
+          `Another customer (${dup.name}) already uses Drug License ${dl} in this branch.`,
+        );
+      }
+    }
+  }
+
+  // Live availability check for the Add/Edit + quick-add forms — flags a taken
+  // GSTIN / drug licence as the user types instead of only on submit.
+  async checkDuplicate(
+    branchId: string | undefined,
+    opts: { gstin?: string; dlNumber?: string; excludeId?: string },
+  ) {
+    const branchScope = branchId
+      ? [{ branchId }, { branchId: null }]
+      : [{ branchId: null }];
+    const notSelf = opts.excludeId ? [{ id: { not: opts.excludeId } }] : [];
+
+    const result: {
+      gstin?: { taken: boolean; name: string };
+      dlNumber?: { taken: boolean; name: string };
+    } = {};
+
+    const gstin = opts.gstin?.trim();
+    if (gstin) {
+      const dup = await this.prisma.customer.findFirst({
+        where: { AND: [{ gstin }, { OR: branchScope }, ...notSelf] },
+        select: { name: true },
+      });
+      if (dup) result.gstin = { taken: true, name: dup.name };
+    }
+
+    const dl = opts.dlNumber?.trim();
+    if (dl) {
+      const dup = await this.prisma.customer.findFirst({
+        where: {
+          AND: [
+            { dlNumber: { equals: dl, mode: 'insensitive' } },
+            { OR: branchScope },
+            ...notSelf,
+          ],
+        },
+        select: { name: true },
+      });
+      if (dup) result.dlNumber = { taken: true, name: dup.name };
+    }
+
+    return result;
+  }
+
   async create(
     createCustomerDto: CreateCustomerDto & { branchId?: string },
     user?: { userId: string; role: string },
@@ -82,6 +170,9 @@ export class CustomersService {
     await this.assertUniquePhone(
       dto.phone,
       dto.branchId ?? null,
+    );
+    await this.assertUniqueGstinDl(
+      { gstin: dto.gstin, dlNumber: dto.dlNumber, branchId: dto.branchId ?? null },
     );
 
     // PHARMACISTs must request approval; ADMINs and others create directly
@@ -673,6 +764,12 @@ export class CustomersService {
         await this.assertUniquePhone(normalized, existing.branchId ?? null, id);
       }
       data.phone = normalized;
+    }
+    if (data.gstin !== undefined || data.dlNumber !== undefined) {
+      await this.assertUniqueGstinDl(
+        { gstin: data.gstin, dlNumber: data.dlNumber, branchId: existing.branchId ?? null },
+        id,
+      );
     }
     // Bug #7 belt-and-braces: trim name on edit too, even though the DTO
     // already trims via @Transform — guards admin tools that hit this

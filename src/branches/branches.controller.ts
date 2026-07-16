@@ -72,6 +72,24 @@ export class BranchesController {
     return this.branchesService.summary();
   }
 
+  // Declared before `@Get(':id')` so "check-duplicate" isn't captured as an id.
+  @Get('check-duplicate')
+  @Roles('ADMIN')
+  @ApiOperation({
+    summary:
+      'Live check whether a GSTIN / drug license is already used by another branch (drives inline form validation).',
+  })
+  @ApiQuery({ name: 'gstin', required: false })
+  @ApiQuery({ name: 'drugLicense', required: false })
+  @ApiQuery({ name: 'excludeId', required: false })
+  checkDuplicate(
+    @Query('gstin') gstin?: string,
+    @Query('drugLicense') drugLicense?: string,
+    @Query('excludeId') excludeId?: string,
+  ) {
+    return this.branchesService.checkDuplicate({ gstin, drugLicense, excludeId });
+  }
+
   @Get(':id')
   @Roles('ADMIN', 'PHARMACIST', 'INVENTORY_MANAGER', 'ACCOUNTANT', 'SALESPERSON', 'DELIVERY')
   @ApiOperation({ summary: 'Get a branch by ID' })

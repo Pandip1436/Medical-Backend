@@ -40,7 +40,7 @@ export class SuppliersService {
   // data — HQ and BR1 each maintain their own row for the same legal supplier
   // so phone/GSTIN uniqueness is naturally branch-scoped too.
   private async assertNoDuplicate(
-    data: { phone?: string; gstin?: string; branchId?: string | null },
+    data: { phone?: string; gstin?: string; drugLicense?: string; branchId?: string | null },
     excludeId?: string,
   ) {
     const normalizedPhone = this.normalizePhone(data.phone);
@@ -62,6 +62,28 @@ export class SuppliersService {
       if (gstinDup) {
         throw new ConflictException(
           `Another supplier (${gstinDup.name}) already uses GSTIN ${data.gstin} in this branch.`,
+        );
+      }
+    }
+
+    // Drug licence numbers are unique per real supplier too — guard against a
+    // second supplier reusing one. Compared case-insensitively so "dl-20b" and
+    // "DL-20B" collide. Empty string (the column default) is skipped.
+    if (data.drugLicense && data.drugLicense.trim()) {
+      const dl = data.drugLicense.trim();
+      const dlDup = await this.prisma.supplier.findFirst({
+        where: {
+          AND: [
+            { drugLicense: { equals: dl, mode: 'insensitive' } },
+            { OR: branchScope },
+            ...(excludeId ? [{ id: { not: excludeId } }] : []),
+          ],
+        },
+        select: { id: true, name: true },
+      });
+      if (dlDup) {
+        throw new ConflictException(
+          `Another supplier (${dlDup.name}) already uses Drug License ${dl} in this branch.`,
         );
       }
     }
@@ -109,9 +131,54 @@ export class SuppliersService {
     await this.assertNoDuplicate({
       phone: dto.phone,
       gstin: dto.gstin,
+      drugLicense: dto.drugLicense,
       branchId: dto.branchId ?? null,
     });
     return this.prisma.supplier.create({ data: dto });
+  }
+
+  // Live availability check for the Add/Edit form — lets the UI flag a taken
+  // GSTIN / drug licence AS THE USER TYPES instead of only on submit. Returns
+  // the conflicting supplier's name per field so the form can name it inline.
+  async checkDuplicate(
+    branchId: string | undefined,
+    opts: { gstin?: string; drugLicense?: string; excludeId?: string },
+  ) {
+    const branchScope = branchId
+      ? [{ branchId }, { branchId: null }]
+      : [{ branchId: null }];
+    const notSelf = opts.excludeId ? [{ id: { not: opts.excludeId } }] : [];
+
+    const result: {
+      gstin?: { taken: boolean; name: string };
+      drugLicense?: { taken: boolean; name: string };
+    } = {};
+
+    const gstin = opts.gstin?.trim();
+    if (gstin) {
+      const dup = await this.prisma.supplier.findFirst({
+        where: { AND: [{ gstin }, { OR: branchScope }, ...notSelf] },
+        select: { name: true },
+      });
+      if (dup) result.gstin = { taken: true, name: dup.name };
+    }
+
+    const dl = opts.drugLicense?.trim();
+    if (dl) {
+      const dup = await this.prisma.supplier.findFirst({
+        where: {
+          AND: [
+            { drugLicense: { equals: dl, mode: 'insensitive' } },
+            { OR: branchScope },
+            ...notSelf,
+          ],
+        },
+        select: { name: true },
+      });
+      if (dup) result.drugLicense = { taken: true, name: dup.name };
+    }
+
+    return result;
   }
 
   async bulkCreate(suppliers: CreateSupplierDto[], branchId?: string) {
@@ -944,11 +1011,16 @@ export class SuppliersService {
     if (data.phone !== undefined) {
       data.phone = this.normalizePhone(data.phone);
     }
-    if (data.phone !== undefined || data.gstin !== undefined) {
+    if (
+      data.phone !== undefined ||
+      data.gstin !== undefined ||
+      data.drugLicense !== undefined
+    ) {
       await this.assertNoDuplicate(
         {
           phone: data.phone,
           gstin: data.gstin,
+          drugLicense: data.drugLicense,
           branchId: existing.branchId,
         },
         id,

@@ -25,9 +25,83 @@ type BranchRow = {
 export class BranchesService {
   constructor(private readonly prisma: PrismaService) {}
 
+  // Reject a GSTIN / drug-licence already used by another branch. Branches are
+  // global master data (not branch-scoped), so the match is across all rows.
+  private async assertUniqueGstinDl(
+    data: { gstin?: string | null; drugLicense?: string | null },
+    excludeId?: string,
+  ) {
+    const notSelf = excludeId ? [{ id: { not: excludeId } }] : [];
+
+    const gstin = data.gstin?.trim();
+    if (gstin) {
+      const dup = await this.prisma.branch.findFirst({
+        where: { AND: [{ gstin }, ...notSelf] },
+        select: { name: true },
+      });
+      if (dup) {
+        throw new ConflictException(
+          `Another branch (${dup.name}) already uses GSTIN ${gstin}.`,
+        );
+      }
+    }
+
+    const dl = data.drugLicense?.trim();
+    if (dl) {
+      const dup = await this.prisma.branch.findFirst({
+        where: {
+          AND: [{ drugLicense: { equals: dl, mode: 'insensitive' } }, ...notSelf],
+        },
+        select: { name: true },
+      });
+      if (dup) {
+        throw new ConflictException(
+          `Another branch (${dup.name}) already uses Drug License ${dl}.`,
+        );
+      }
+    }
+  }
+
+  // Live availability check for the branch form — flags a taken GSTIN / drug
+  // licence as the user types instead of only on submit.
+  async checkDuplicate(opts: {
+    gstin?: string;
+    drugLicense?: string;
+    excludeId?: string;
+  }) {
+    const notSelf = opts.excludeId ? [{ id: { not: opts.excludeId } }] : [];
+    const result: {
+      gstin?: { taken: boolean; name: string };
+      drugLicense?: { taken: boolean; name: string };
+    } = {};
+
+    const gstin = opts.gstin?.trim();
+    if (gstin) {
+      const dup = await this.prisma.branch.findFirst({
+        where: { AND: [{ gstin }, ...notSelf] },
+        select: { name: true },
+      });
+      if (dup) result.gstin = { taken: true, name: dup.name };
+    }
+
+    const dl = opts.drugLicense?.trim();
+    if (dl) {
+      const dup = await this.prisma.branch.findFirst({
+        where: {
+          AND: [{ drugLicense: { equals: dl, mode: 'insensitive' } }, ...notSelf],
+        },
+        select: { name: true },
+      });
+      if (dup) result.drugLicense = { taken: true, name: dup.name };
+    }
+
+    return result;
+  }
+
   async create(dto: CreateBranchDto) {
     const existing = await this.prisma.branch.findUnique({ where: { code: dto.code } });
     if (existing) throw new ConflictException('Branch code already exists');
+    await this.assertUniqueGstinDl({ gstin: dto.gstin, drugLicense: dto.drugLicense });
     return this.prisma.branch.create({ data: { ...dto, name: dto.name.trim() } });
   }
 
@@ -188,6 +262,12 @@ export class BranchesService {
 
   async update(id: string, dto: UpdateBranchDto) {
     await this.findOne(id);
+    if (dto.gstin !== undefined || dto.drugLicense !== undefined) {
+      await this.assertUniqueGstinDl(
+        { gstin: dto.gstin, drugLicense: dto.drugLicense },
+        id,
+      );
+    }
     if (dto.isDefault) {
       await this.prisma.branch.updateMany({
         where: { isDefault: true },
