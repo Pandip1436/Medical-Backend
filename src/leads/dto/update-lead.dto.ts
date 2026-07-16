@@ -80,4 +80,25 @@ export class UpdateLeadDto {
   @IsOptional()
   @IsString()
   assignedToUserId?: string;
+
+  // ── Requirement details (the "Requirements" card) — editable post-create. ──
+  @IsOptional()
+  @IsString()
+  externalProductName?: string;
+
+  @IsOptional()
+  @IsString()
+  externalCategory?: string;
+
+  @IsOptional()
+  @IsString()
+  externalCity?: string;
+
+  @IsOptional()
+  @IsString()
+  externalState?: string;
+
+  @IsOptional()
+  @IsString()
+  externalMessage?: string;
 }

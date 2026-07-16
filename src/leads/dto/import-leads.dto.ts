@@ -11,7 +11,7 @@ import {
   ValidateNested,
 } from 'class-validator';
 import { Type, Transform } from 'class-transformer';
-import { LeadSource, LeadStage } from '@prisma/client';
+import { LeadPipeline, LeadSource, LeadStage } from '@prisma/client';
 
 // ── Enum coercion for imported CSV cells ──────────────────────────────────
 // Import files come from spreadsheets / other CRMs, so a Stage/Source cell can
@@ -44,6 +44,17 @@ function normalizeSource(value: unknown): LeadSource | undefined {
   return (Object.values(LeadSource) as string[]).includes(key)
     ? (key as LeadSource)
     : undefined;
+}
+
+const PIPELINE_ALIASES: Record<string, LeadPipeline> = {
+  SALES: LeadPipeline.SALES, SALE: LeadPipeline.SALES,
+  PROCUREMENT: LeadPipeline.PROCUREMENT, PURCHASE: LeadPipeline.PROCUREMENT, PURCHASING: LeadPipeline.PROCUREMENT,
+  SUPPORT: LeadPipeline.SUPPORT, SERVICE: LeadPipeline.SUPPORT,
+};
+
+function normalizePipeline(value: unknown): LeadPipeline | undefined {
+  const key = norm(value);
+  return key ? PIPELINE_ALIASES[key] : undefined;
 }
 
 /**
@@ -122,6 +133,26 @@ export class ImportLeadRowDto {
   stage?: LeadStage;
 
   @IsOptional()
+  @Transform(({ value }) => normalizePipeline(value))
+  @IsEnum(LeadPipeline)
+  pipeline?: LeadPipeline;
+
+  @IsOptional()
+  @IsString()
+  currency?: string;
+
+  // Dates arrive as free-form strings from spreadsheets — kept as strings here
+  // and parsed defensively in the service (invalid → null) rather than a strict
+  // @IsISO8601 that would hard-fail an otherwise-good row.
+  @IsOptional()
+  @IsString()
+  expectedCloseDate?: string;
+
+  @IsOptional()
+  @IsString()
+  validUntil?: string;
+
+  @IsOptional()
   value?: number | string;
 
   @IsOptional()
@@ -129,6 +160,27 @@ export class ImportLeadRowDto {
   @Min(0)
   @Max(100)
   score?: number;
+
+  // ── Requirements (the lead's "Requirements" card) ──
+  @IsOptional()
+  @IsString()
+  externalProductName?: string;
+
+  @IsOptional()
+  @IsString()
+  externalCategory?: string;
+
+  @IsOptional()
+  @IsString()
+  externalCity?: string;
+
+  @IsOptional()
+  @IsString()
+  externalState?: string;
+
+  @IsOptional()
+  @IsString()
+  externalMessage?: string;
 }
 
 export type DuplicateHandling = 'UPDATE' | 'SKIP' | 'CREATE';

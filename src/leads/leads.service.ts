@@ -57,6 +57,7 @@ export class LeadsService {
         city: true,
         state: true,
         country: true,
+        company: { select: { id: true, name: true } },
       },
     },
     company: { select: { id: true, name: true } },
@@ -148,13 +149,18 @@ export class LeadsService {
     // Resolve contact: existing OR create-on-the-fly. Done outside the
     // transaction because contacts.service.create has its own validation.
     let contactId = dto.contactId;
+    let newContactCompanyId: string | undefined;
     if (!contactId && dto.contact) {
       const created = await this.contacts.create(dto.contact, {
         branchId: ctx.branchId,
         userId: ctx.userId,
       });
       contactId = created.id;
+      // The contact may have been find-or-created WITH a company (typed name) —
+      // link the lead to that same company so the lead's Company field shows it.
+      newContactCompanyId = created.company?.id ?? undefined;
     }
+    const leadCompanyId = dto.companyId ?? newContactCompanyId;
 
     const leadNumber = await this.numbering.next();
 
@@ -181,7 +187,7 @@ export class LeadsService {
         externalState: dto.externalState?.trim() || null,
         externalMessage: dto.externalMessage?.trim() || null,
         contact: { connect: { id: contactId! } },
-        ...(dto.companyId && { company: { connect: { id: dto.companyId } } }),
+        ...(leadCompanyId && { company: { connect: { id: leadCompanyId } } }),
         assignedToUser: {
           connect: { id: dto.assignedToUserId ?? ctx.userId },
         },
@@ -230,6 +236,21 @@ export class LeadsService {
     }
     if (dto.assignedToUserId !== undefined) {
       data.assignedToUser = { connect: { id: dto.assignedToUserId } };
+    }
+    if (dto.externalProductName !== undefined) {
+      data.externalProductName = dto.externalProductName || null;
+    }
+    if (dto.externalCategory !== undefined) {
+      data.externalCategory = dto.externalCategory || null;
+    }
+    if (dto.externalCity !== undefined) {
+      data.externalCity = dto.externalCity || null;
+    }
+    if (dto.externalState !== undefined) {
+      data.externalState = dto.externalState || null;
+    }
+    if (dto.externalMessage !== undefined) {
+      data.externalMessage = dto.externalMessage || null;
     }
 
     return this.prisma.lead.update({
@@ -479,6 +500,15 @@ export class LeadsService {
       contactId = created.id;
     }
 
+    // Spreadsheet dates are free-form — accept anything Date can parse, drop
+    // the rest to null so one bad cell doesn't fail the row.
+    const parseDate = (s?: string): Date | null => {
+      const t = s?.trim();
+      if (!t) return null;
+      const d = new Date(t);
+      return Number.isNaN(d.getTime()) ? null : d;
+    };
+
     const leadNumber = await this.numbering.next();
     await this.prisma.lead.create({
       data: {
@@ -487,9 +517,17 @@ export class LeadsService {
         description: row.description?.trim() || null,
         source: row.source ?? dto.defaultSource ?? 'OTHER',
         stage: row.stage ?? dto.defaultStage ?? 'LEAD',
+        pipeline: row.pipeline ?? 'SALES',
         score: typeof row.score === 'number' ? row.score : 50,
         value: row.value != null ? Number(row.value) || 0 : 0,
-        currency: 'INR',
+        currency: row.currency?.trim() || 'INR',
+        expectedCloseDate: parseDate(row.expectedCloseDate),
+        validUntil: parseDate(row.validUntil),
+        externalProductName: row.externalProductName?.trim() || null,
+        externalCategory: row.externalCategory?.trim() || null,
+        externalCity: row.externalCity?.trim() || null,
+        externalState: row.externalState?.trim() || null,
+        externalMessage: row.externalMessage?.trim() || null,
         contactId,
         ...(companyId && { companyId }),
         assignedToUserId: ctx.userId,
