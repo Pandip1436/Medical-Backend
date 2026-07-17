@@ -16,21 +16,17 @@ import {
   Request,
 } from '@nestjs/common'
 import { FileInterceptor } from '@nestjs/platform-express'
-import { diskStorage } from 'multer'
-import { extname } from 'path'
-import { v4 as uuidv4 } from 'uuid'
+import { memoryStorage } from 'multer'
 import { PrescriptionsService } from './prescriptions.service'
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard'
 import { RolesGuard } from '../common/guards/roles.guard'
 import { Roles } from '../common/decorators/roles.decorator'
 
+// In-memory storage so the file buffer can be streamed straight to R2 (cloud
+// object storage). Disk storage only persisted on whichever server received
+// the upload — so files uploaded locally 404'd in production and vice-versa.
 const multerOptions = {
-  storage: diskStorage({
-    destination: './uploads/prescriptions',
-    filename: (_req: any, file: Express.Multer.File, cb: (error: Error | null, filename: string) => void) => {
-      cb(null, `${uuidv4()}${extname(file.originalname)}`)
-    },
-  }),
+  storage: memoryStorage(),
 }
 
 @Controller('api/v1/prescriptions')
