@@ -1,4 +1,4 @@
-import { IsString, IsNotEmpty, IsEnum, IsNumber, Min, IsOptional, IsBoolean, ValidateNested, ArrayMinSize, IsDateString } from 'class-validator';
+import { IsString, IsNotEmpty, IsEnum, IsNumber, Min, IsOptional, IsBoolean, ValidateNested, ArrayMinSize, IsDateString, IsIn } from 'class-validator';
 import { Type } from 'class-transformer';
 import { InvoiceType, BillingType, PaymentMode, InvoiceStatus } from '@prisma/client';
 import { CreateInvoiceItemDto } from './create-invoice-item.dto';
@@ -80,8 +80,22 @@ export class CreateInvoiceDto {
   @IsOptional()
   paymentDetails?: any;
 
-  // Payment due date for credit sales (ISO string). Required on the UI for
-  // CREDIT mode; optional here so CASH/UPI/card invoices omit it.
+  // Reference for the paid portion collected at billing (UPI txn id / card ref).
+  // Stored on the resulting Payment row for reconciliation. Empty for cash.
+  @IsOptional()
+  @IsString()
+  paymentReference?: string;
+
+  // How money collected at billing actually came in (CASH/UPI/CARD). Set even
+  // when `paymentMode` is CREDIT — a partial cash/UPI collection marks the
+  // invoice as credit but the payment-history row must keep the real method.
+  @IsOptional()
+  @IsIn(['CASH', 'UPI', 'CARD'])
+  collectionMethod?: 'CASH' | 'UPI' | 'CARD';
+
+  // Payment due date for sales that leave a balance (ISO string). Sent for a
+  // pure credit sale OR a partial cash/UPI/card collection; optional here so
+  // fully-paid invoices omit it.
   @IsOptional()
   @IsDateString()
   dueDate?: string;

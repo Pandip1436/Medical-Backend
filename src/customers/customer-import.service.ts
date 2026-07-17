@@ -311,18 +311,34 @@ export class CustomerImportService {
       }
 
       // Type coercion is permissive: workbook may have "retail"/"Retail"/"R"
-      // — let the frontend uppercase; we still defensively enum-check.
+      // — let the frontend uppercase; we still defensively enum-check. When
+      // the column is blank or unrecognised, derive the type from GSTIN/Drug
+      // License/Registration Number instead of blindly defaulting to RETAIL —
+      // an explicit, recognised value in the sheet is still honoured as-is.
       const rawType: unknown = row.type;
       if (rawType && !this.isCustomerType(rawType)) {
-        this.pushWarning(result, {
-          kind: 'coerced',
-          sheet: 'Customers',
-          row: src,
-          customerCode: code,
-          field: 'type',
-          message: `Type "${typeof rawType === 'string' ? rawType : 'unknown'}" not recognised — falling back to RETAIL.`,
-        });
-        row.type = CustomerType.RETAIL;
+        row.type = undefined;
+      }
+      if (!row.type) {
+        const derived = this.deriveCustomerType(
+          row.gstin,
+          row.dlNumber,
+          row.registrationNumber,
+        );
+        if (derived !== CustomerType.RETAIL) {
+          this.pushWarning(result, {
+            kind: 'coerced',
+            sheet: 'Customers',
+            row: src,
+            customerCode: code,
+            field: 'type',
+            message:
+              rawType && !this.isCustomerType(rawType)
+                ? `Type "${typeof rawType === 'string' ? rawType : 'unknown'}" not recognised — set to ${derived} based on ${derived === CustomerType.DOCTOR ? 'the registration_number' : 'gstin + dl_number'} present in this row.`
+                : `Type was blank — set to ${derived} based on ${derived === CustomerType.DOCTOR ? 'the registration_number' : 'gstin + dl_number'} present in this row.`,
+          });
+        }
+        row.type = derived;
       }
 
       valid.push(row);
@@ -1873,6 +1889,20 @@ export class CustomerImportService {
       typeof v === 'string' &&
       (Object.values(CustomerType) as string[]).includes(v)
     );
+  }
+
+  // Business rule: a registration number is a doctor's unambiguous
+  // professional identifier, checked first. Otherwise, both a GSTIN and a
+  // drug license together indicate a registered wholesale distributor. With
+  // neither, the customer is a plain retail buyer.
+  private deriveCustomerType(
+    gstin?: string,
+    dlNumber?: string,
+    registrationNumber?: string,
+  ): CustomerType {
+    if (registrationNumber?.trim()) return CustomerType.DOCTOR;
+    if (gstin?.trim() && dlNumber?.trim()) return CustomerType.WHOLESALE;
+    return CustomerType.RETAIL;
   }
 
   // Best-effort link to a real Product by name (case-insensitive, scoped to

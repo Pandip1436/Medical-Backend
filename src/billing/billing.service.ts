@@ -611,14 +611,18 @@ export class BillingService {
         await this.recordCounterPayment(tx, {
           invoiceId: invoice.id,
           customerId: createInvoiceDto.customerId,
-          // A credit sale can carry an up-front cash advance (amountPaid > 0).
-          // Record it as CASH so it posts to payment history — recordCounterPayment
-          // ignores the CREDIT mode otherwise. A zero advance is a no-op there.
+          // Stamp the history row with the method money actually came in on. A
+          // partial cash/UPI collection sets paymentMode = CREDIT on the invoice,
+          // so we rely on the explicit collectionMethod here (falling back to the
+          // paymentMode only when it's itself a collection method). A zero
+          // amountPaid is a no-op inside recordCounterPayment.
           paymentMode:
-            createInvoiceDto.paymentMode === 'CREDIT'
-              ? 'CASH'
-              : createInvoiceDto.paymentMode,
+            createInvoiceDto.collectionMethod ??
+            (['CASH', 'UPI', 'CARD'].includes(createInvoiceDto.paymentMode)
+              ? createInvoiceDto.paymentMode
+              : 'CASH'),
           amountPaid: createInvoiceDto.amountPaid,
+          referenceNumber: createInvoiceDto.paymentReference ?? null,
           branchId,
         });
       }
@@ -697,6 +701,7 @@ export class BillingService {
       customerId?: string | null;
       paymentMode: string;
       amountPaid: number | null | undefined;
+      referenceNumber?: string | null;
       branchId?: string | null;
     },
   ) {
@@ -720,6 +725,7 @@ export class BillingService {
         invoiceId: args.invoiceId,
         amount,
         paymentMode: args.paymentMode,
+        referenceNumber: args.referenceNumber?.trim() || null,
         notes: 'Collected at billing',
         branchId: args.branchId ?? null,
       },
@@ -1540,19 +1546,15 @@ export class BillingService {
           'Only invoices can be edited here. Use the quotation flow for quotations.',
         );
       }
-      // PAID / UNPAID / PARTIAL are all editable. CANCELLED is excluded
-      // because the invoice has been formally wound down; RETURNED is
-      // excluded because a credit note now carries its financial counterweight
-      // (and the credit-notes check below would catch that anyway). DRAFT
-      // has its own saveDraft / finalizeDraft flow and never reaches here
-      // via this endpoint in normal use.
-      if (
-        existing.status !== 'PAID' &&
-        existing.status !== 'UNPAID' &&
-        existing.status !== 'PARTIAL'
-      ) {
+      // Only UNPAID / PARTIAL invoices are editable. PAID is excluded because
+      // the sale is fully settled — any correction there should go through a
+      // credit note, not a silent edit (this mirrors the UI, which only offers
+      // Edit for UNPAID/PARTIAL, and now enforces it server-side too). CANCELLED
+      // / RETURNED are financially closed. DRAFT has its own saveDraft /
+      // finalizeDraft flow and never reaches here via this endpoint.
+      if (existing.status !== 'UNPAID' && existing.status !== 'PARTIAL') {
         throw new BadRequestException(
-          `Cannot edit invoice ${existing.invoiceNumber}: status is ${existing.status}. CANCELLED / RETURNED invoices are financially closed.`,
+          `Cannot edit invoice ${existing.invoiceNumber}: only UNPAID or PARTIAL invoices can be edited (status is ${existing.status}). Fully paid, cancelled, or returned invoices are financially closed — issue a credit note instead.`,
         );
       }
       // Block edits on invoices that already have a credit note — those
