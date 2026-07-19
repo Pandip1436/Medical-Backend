@@ -53,10 +53,17 @@ export interface InvoicePdfData {
   paymentQrAmount?: number;     // outstanding amount the QR is for
 }
 
+// Close the shared Chromium after this long with no renders, so a burst of
+// invoices doesn't hold ~300 MB of headless Chrome resident forever. Mirrors
+// the courier scraper's idle-shutdown (scrapers/scrape.util.ts) so both browsers
+// only exist while actually working — important on small (2 GB) hosts.
+const BROWSER_IDLE_MS = 60_000;
+
 @Injectable()
 export class InvoicePdfService implements OnModuleDestroy {
   private readonly logger = new Logger(InvoicePdfService.name);
   private browser?: Browser;
+  private idleTimer?: NodeJS.Timeout;
   private compiled?: Handlebars.TemplateDelegate;
 
   constructor() {
@@ -83,11 +90,37 @@ export class InvoicePdfService implements OnModuleDestroy {
       return Buffer.from(pdf);
     } finally {
       await page.close().catch(() => undefined);
+      // Keep the browser warm for the next invoice, but arm the idle timer so it
+      // gets released after a quiet period instead of sitting resident forever.
+      this.touchIdleTimer();
     }
   }
 
   async onModuleDestroy() {
-    await this.browser?.close().catch(() => undefined);
+    await this.closeBrowser();
+  }
+
+  // Reset the inactivity countdown after each render; when it fires with no
+  // renders in between, the browser is closed and its memory reclaimed.
+  private touchIdleTimer(): void {
+    if (this.idleTimer) clearTimeout(this.idleTimer);
+    this.idleTimer = setTimeout(() => {
+      void this.closeBrowser();
+    }, BROWSER_IDLE_MS);
+    // Don't keep the Node event loop alive just for this cleanup timer.
+    this.idleTimer.unref?.();
+  }
+
+  // Closed automatically after BROWSER_IDLE_MS of inactivity, and explicitly on
+  // module destroy. Relaunched lazily on the next render via getBrowser().
+  private async closeBrowser(): Promise<void> {
+    if (this.idleTimer) {
+      clearTimeout(this.idleTimer);
+      this.idleTimer = undefined;
+    }
+    const b = this.browser;
+    this.browser = undefined;
+    await b?.close().catch(() => undefined);
   }
 
   // ── Build the HTML from the compiled Handlebars template + a view model ──
