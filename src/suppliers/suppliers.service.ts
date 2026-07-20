@@ -271,6 +271,7 @@ export class SuppliersService {
           { name: { contains: query, mode: 'insensitive' } },
           { gstin: { contains: query, mode: 'insensitive' } },
           { phone: { contains: query } },
+          { email: { contains: query, mode: 'insensitive' } },
           { address: { contains: query, mode: 'insensitive' } },
           { contactPerson: { contains: query, mode: 'insensitive' } },
         ],

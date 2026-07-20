@@ -131,6 +131,7 @@ export class BranchesService {
           { code: { contains: q, mode: 'insensitive' } },
           { email: { contains: q, mode: 'insensitive' } },
           { gstin: { contains: q, mode: 'insensitive' } },
+          { phone: { contains: q } },
         ],
       });
     }

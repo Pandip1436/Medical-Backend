@@ -683,6 +683,7 @@ export class CustomersService {
       where.OR = [
         { name: { contains: filters.q, mode: 'insensitive' } },
         { phone: { contains: filters.q } },
+        { email: { contains: filters.q, mode: 'insensitive' } },
         { gstin: { contains: filters.q, mode: 'insensitive' } },
         { address: { contains: filters.q, mode: 'insensitive' } },
       ];
