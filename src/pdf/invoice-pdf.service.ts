@@ -59,12 +59,22 @@ export interface InvoicePdfData {
 // only exist while actually working — important on small (2 GB) hosts.
 const BROWSER_IDLE_MS = 60_000;
 
+// Cap concurrent page renders. Chromium's memory scales with the number of live
+// pages, not with the browser process itself, so a caller that fans out — a
+// retry sweep, a bulk invoice run — can spike RAM by hundreds of MB per page and
+// get the whole process OOM-killed. Renders past this limit queue instead.
+// Keep this low: 3 pages is roughly 0.5-0.75 GB of headroom.
+const MAX_CONCURRENT_RENDERS = 3;
+
 @Injectable()
 export class InvoicePdfService implements OnModuleDestroy {
   private readonly logger = new Logger(InvoicePdfService.name);
   private browser?: Browser;
   private idleTimer?: NodeJS.Timeout;
   private compiled?: Handlebars.TemplateDelegate;
+  // Render-slot accounting for MAX_CONCURRENT_RENDERS (see acquireSlot).
+  private activeRenders = 0;
+  private readonly waiting: Array<() => void> = [];
 
   constructor() {
     this.registerHelpers();
@@ -73,27 +83,56 @@ export class InvoicePdfService implements OnModuleDestroy {
   // ── Public API — unchanged signature. Returns a PDF Buffer that the
   //    invoice-created listener uploads to R2 and attaches to WhatsApp. ──
   async render(data: InvoicePdfData): Promise<Buffer> {
+    // Built before taking a slot — templating and QR generation are cheap and
+    // hold no browser resources, so there's no reason to queue behind them.
     const html = await this.renderHtml(data);
-    const browser = await this.getBrowser();
-    const page = await browser.newPage();
+
+    await this.acquireSlot();
     try {
-      // Everything (CSS + QR) is inlined, so `load` fires immediately — no
-      // network round-trips, so the render is fast and deterministic.
-      await page.setContent(html, { waitUntil: 'load' });
-      const pdf = await page.pdf({
-        format: 'A4',
-        printBackground: true,
-        margin: { top: '12mm', right: '12mm', bottom: '14mm', left: '12mm' },
-      });
-      // page.pdf() returns Uint8Array on newer Puppeteer; normalise to Buffer
-      // so the existing R2 upload pipeline keeps working byte-for-byte.
-      return Buffer.from(pdf);
+      const browser = await this.getBrowser();
+      const page = await browser.newPage();
+      try {
+        // Everything (CSS + QR) is inlined, so `load` fires immediately — no
+        // network round-trips, so the render is fast and deterministic.
+        await page.setContent(html, { waitUntil: 'load' });
+        const pdf = await page.pdf({
+          format: 'A4',
+          printBackground: true,
+          margin: { top: '12mm', right: '12mm', bottom: '14mm', left: '12mm' },
+        });
+        // page.pdf() returns Uint8Array on newer Puppeteer; normalise to Buffer
+        // so the existing R2 upload pipeline keeps working byte-for-byte.
+        return Buffer.from(pdf);
+      } finally {
+        await page.close().catch(() => undefined);
+        // Keep the browser warm for the next invoice, but arm the idle timer so it
+        // gets released after a quiet period instead of sitting resident forever.
+        this.touchIdleTimer();
+      }
     } finally {
-      await page.close().catch(() => undefined);
-      // Keep the browser warm for the next invoice, but arm the idle timer so it
-      // gets released after a quiet period instead of sitting resident forever.
-      this.touchIdleTimer();
+      this.releaseSlot();
     }
+  }
+
+  // ── Render-slot semaphore ──
+  // Take a slot, or queue until one frees. Waiters are woken FIFO.
+  private async acquireSlot(): Promise<void> {
+    if (this.activeRenders < MAX_CONCURRENT_RENDERS) {
+      this.activeRenders++;
+      return;
+    }
+    // The slot is handed over directly by releaseSlot(), which is why this path
+    // doesn't increment: the count already includes the slot we're inheriting.
+    await new Promise<void>((resolve) => this.waiting.push(resolve));
+  }
+
+  // Hand the slot straight to the next waiter rather than decrementing and
+  // letting it re-race for it — otherwise a caller arriving in the gap before
+  // the woken waiter resumes could push us over the limit.
+  private releaseSlot(): void {
+    const next = this.waiting.shift();
+    if (next) next();
+    else this.activeRenders--;
   }
 
   async onModuleDestroy() {

@@ -55,14 +55,33 @@ export class WhatsAppRetryService {
     private readonly whatsapp: WhatsAppService,
   ) {}
 
+  // Guards against overlapping sweeps: retries are now awaited sequentially, so
+  // a slow batch can outlast the 5-minute tick. Without this the next tick would
+  // start a second sweep alongside the first and reintroduce the concurrency
+  // this change exists to remove.
+  private sweeping = false;
+
   @Cron('*/5 * * * *')
   async sweep() {
+    if (this.sweeping) {
+      this.logger.warn('previous sweep still running — skipping this tick');
+      return;
+    }
     if (process.env.WHATSAPP_AUTO_SEND_ENABLED !== 'true') {
       // Master switch off — listener is a no-op, so no FAILED rows would
       // ever exist. Saves a DB roundtrip when the feature is dormant.
       return;
     }
 
+    this.sweeping = true;
+    try {
+      await this.runSweep();
+    } finally {
+      this.sweeping = false;
+    }
+  }
+
+  private async runSweep() {
     const candidates = await this.prisma.whatsAppMessage.findMany({
       where: {
         status: 'FAILED',
@@ -144,7 +163,21 @@ export class WhatsAppRetryService {
       amountPaid: Number(invoice.amountPaid),
     };
 
-    this.events.emit(INVOICE_CREATED, payload);
+    // `emitAsync`, not `emit`: the listener is registered `{ async: true }` and
+    // renders a PDF via headless Chromium. Fire-and-forget `emit` returned
+    // immediately, so the sweep's loop started every candidate at once — a
+    // batch of up to `take` concurrent Chromium pages every 5 minutes, which
+    // was enough to OOM the host. Awaiting here keeps retries strictly
+    // sequential; they're backoff-gated already, so latency doesn't matter.
+    try {
+      await this.events.emitAsync(INVOICE_CREATED, payload);
+    } catch (e: any) {
+      // A listener that threw shouldn't abort the sweep — bump attempts below
+      // so this message still progresses through its backoff schedule.
+      this.logger.error(
+        `invoice.created listener failed for ${invoiceId} (msg ${messageId}): ${e?.message ?? e}`,
+      );
+    }
 
     await this.prisma.whatsAppMessage.update({
       where: { id: messageId },
