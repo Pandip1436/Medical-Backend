@@ -5,6 +5,11 @@ import dayjs from 'dayjs';
 
 type PeriodQuery = { from?: string; to?: string; branchId?: string };
 
+// Credit window assumed for an open invoice that carries no dueDate of its own
+// (the column is nullable, and cash/UPI sales rarely set one). Matches the flat
+// 30-day rule that overdue reporting used before due dates were honoured.
+const FALLBACK_CREDIT_DAYS = 30;
+
 @Injectable()
 export class ReportsService {
   constructor(
@@ -17,6 +22,14 @@ export class ReportsService {
     const from = q.from ? dayjs(q.from).startOf('day').toDate() : dayjs().startOf('month').toDate();
     const to = q.to ? dayjs(q.to).endOf('day').toDate() : dayjs().endOf('day').toDate();
     return { from, to, branchId: q.branchId };
+  }
+
+  // The date an invoice actually falls due: its agreed dueDate, or invoice
+  // date + FALLBACK_CREDIT_DAYS when none was recorded. Single source of truth
+  // for both the dashboard "Due" inbox and the aged-receivables report, so the
+  // two can't drift apart.
+  private effectiveDueDate(inv: { date: Date; dueDate: Date | null }): Date {
+    return inv.dueDate ?? dayjs(inv.date).add(FALLBACK_CREDIT_DAYS, 'day').toDate();
   }
 
   private branchFilter(branchId?: string) {
@@ -234,21 +247,51 @@ export class ReportsService {
     return { items, total: lowStock.length, outOfStockCount, totalProducts: products.length };
   }
 
-  // Overdue payments (invoices > 30d old, still unpaid), rolled up per customer.
+  // Overdue payments, rolled up per customer. An invoice is overdue once its
+  // own dueDate has passed — the agreed credit term, not a blanket age. For
+  // invoices with no dueDate (dueDate is nullable, and cash/UPI sales rarely
+  // carry one) we fall back to the previous rule: invoice date + 30 days.
+  //
   // Returns the FULL sorted list (by overdue amount desc) plus the customer
   // count and total overdue amount, so the first page and lazy pages share one
   // computation.
   private async computeOverdueCustomers(branchId?: string) {
     const bFilter = this.branchFilter(branchId);
-    const overdueCutoff = dayjs().subtract(30, 'day').toDate();
+    const now = dayjs();
+    // The customer has until the END of the due date to pay, so an invoice is
+    // overdue only once its due date is strictly before today. Comparing
+    // against `now` instead would flag an invoice due today from 00:00.
+    const startOfToday = now.startOf('day');
+    const fallbackCutoff = startOfToday
+      .subtract(FALLBACK_CREDIT_DAYS, 'day')
+      .toDate();
+    // No paymentMode filter: an invoice booked as UPI/CASH but left PARTIAL is
+    // money the customer still owes, and it comes due exactly like a credit
+    // sale. Filtering to CREDIT/SPLIT hid those balances from Due forever, no
+    // matter how old they got.
+    //
+    // The OR is the query-level form of "past its due date": either it has a
+    // dueDate that has passed, or it has none and the fallback window has
+    // elapsed. Both branches are re-checked per row below via effectiveDueDate.
     const overdueInvoices = await this.prisma.invoice.findMany({
       where: {
-        paymentMode: { in: ['CREDIT', 'SPLIT'] },
         status: { in: ['UNPAID', 'PARTIAL'] },
-        date: { lte: overdueCutoff },
+        OR: [
+          { dueDate: { lt: startOfToday.toDate() } },
+          { dueDate: null, date: { lt: fallbackCutoff } },
+        ],
         ...bFilter,
       },
-      select: { customerId: true, customerName: true, date: true, grandTotal: true, amountPaid: true },
+      select: {
+        id: true,
+        invoiceNumber: true,
+        customerId: true,
+        customerName: true,
+        date: true,
+        dueDate: true,
+        grandTotal: true,
+        amountPaid: true,
+      },
       orderBy: { date: 'asc' },
     });
 
@@ -256,24 +299,40 @@ export class ReportsService {
       customerId: string;
       customerName: string;
       overdueAmount: number;
-      oldestDate: Date;
+      oldestDueDate: Date;
+      // The invoice that fell due first — what the dashboard's Due row opens
+      // when a customer has exactly one overdue invoice.
+      oldestInvoiceId: string;
+      oldestInvoiceNumber: string;
       invoiceCount: number;
     }>();
     overdueInvoices.forEach((inv) => {
       const unpaid = Number(inv.grandTotal) - Number(inv.amountPaid);
       if (unpaid <= 0) return;
+      // The date this invoice actually fell due. Drives "N days overdue", and
+      // re-checks the OR above so a row can't slip through on the wrong branch.
+      const due = this.effectiveDueDate(inv);
+      if (!dayjs(due).isBefore(startOfToday)) return;
       const key = inv.customerId ?? inv.customerName;
       const cur = overdueByCustomer.get(key);
       if (cur) {
         cur.overdueAmount += unpaid;
         cur.invoiceCount += 1;
-        if (inv.date < cur.oldestDate) cur.oldestDate = inv.date;
+        // Track the EARLIEST due date, so daysOverdue reports the customer's
+        // worst-aged invoice rather than their most recent one.
+        if (due < cur.oldestDueDate) {
+          cur.oldestDueDate = due;
+          cur.oldestInvoiceId = inv.id;
+          cur.oldestInvoiceNumber = inv.invoiceNumber;
+        }
       } else {
         overdueByCustomer.set(key, {
           customerId: inv.customerId ?? '',
           customerName: inv.customerName,
           overdueAmount: unpaid,
-          oldestDate: inv.date,
+          oldestDueDate: due,
+          oldestInvoiceId: inv.id,
+          oldestInvoiceNumber: inv.invoiceNumber,
           invoiceCount: 1,
         });
       }
@@ -300,7 +359,9 @@ export class ReportsService {
         customerName: c.customerName,
         customerPhone: c.customerId ? phoneMap.get(c.customerId) ?? null : null,
         overdueAmount: c.overdueAmount,
-        daysOverdue: dayjs().diff(dayjs(c.oldestDate), 'day'),
+        daysOverdue: startOfToday.diff(dayjs(c.oldestDueDate), 'day'),
+        oldestInvoiceId: c.oldestInvoiceId,
+        oldestInvoiceNumber: c.oldestInvoiceNumber,
         invoiceCount: c.invoiceCount,
       }))
       .sort((a, b) => b.overdueAmount - a.overdueAmount);
@@ -2070,10 +2131,13 @@ export class ReportsService {
 
     const rows = await Promise.all(
       customers.map(async (c) => {
+        // Every open invoice ages, whatever mode it was booked under — see the
+        // note in computeOverdueCustomers(). Keeping a paymentMode filter here
+        // would also stop the ageing buckets reconciling with the customer's
+        // currentOutstanding, which this report is measured against.
         const openInvoices = await this.prisma.invoice.findMany({
           where: {
             customerId: c.id,
-            paymentMode: { in: ['CREDIT', 'SPLIT'] },
             status: { in: ['UNPAID', 'PARTIAL'] },
             ...(branchId ? { branchId } : {}),
           },
@@ -2082,7 +2146,13 @@ export class ReportsService {
         const agedBuckets = { current: 0, '0-30': 0, '31-60': 0, '61-90': 0, '90+': 0 };
         openInvoices.forEach((inv) => {
           const unpaid = Number(inv.grandTotal) - Number(inv.amountPaid);
-          const days = today.diff(dayjs(inv.date), 'day');
+          // Age from the due date, not the invoice date — an invoice on 60-day
+          // terms isn't 45 days late at day 45, it isn't late at all. "current"
+          // now means genuinely not yet due. Same rule as the dashboard's Due
+          // inbox via effectiveDueDate().
+          const days = today
+            .startOf('day')
+            .diff(dayjs(this.effectiveDueDate(inv)), 'day');
           let b: keyof typeof agedBuckets = 'current';
           if (days > 90) b = '90+';
           else if (days > 60) b = '61-90';
