@@ -319,18 +319,43 @@ export class CreditNotesService {
         // restore when the batch still exists, and skip (with a warning)
         // otherwise. We skip the product totalStock bump too, since there's no
         // batch to back it (keeps totalStock == sum of batch quantities).
-        const batchExists = await tx.batch.findUnique({
-          where: { id: item.batchId },
-          select: { id: true },
-        });
+        // Imported invoice lines carry a batchNumber but no batchId, so fall
+        // back to matching on (productId, batchNumber) — preferring the batch
+        // whose expiry matches the returned line when a number was reused.
+        // Without this the goods come back but stock never does.
+        const batchExists = item.batchId
+          ? await tx.batch.findUnique({
+              where: { id: item.batchId },
+              select: { id: true },
+            })
+          : item.batchNumber
+            ? ((await tx.batch.findFirst({
+                where: {
+                  productId: item.productId,
+                  batchNumber: item.batchNumber,
+                  expiryDate: item.expiryDate,
+                },
+                select: { id: true },
+              })) ??
+              // Number reused across expiries, or the imported expiry doesn't
+              // line up with the real batch — fall back to FEFO on the number.
+              (await tx.batch.findFirst({
+                where: {
+                  productId: item.productId,
+                  batchNumber: item.batchNumber,
+                },
+                orderBy: { expiryDate: 'asc' },
+                select: { id: true },
+              })))
+            : null;
         if (!batchExists) {
           this.logger.warn(
-            `Credit note ${cn.id}: batch ${item.batchId} no longer exists — skipping stock restore for product ${item.productId} (${item.returnedQty} units).`,
+            `Credit note ${cn.id}: batch ${item.batchId || item.batchNumber || '(none)'} not found — skipping stock restore for product ${item.productId} (${item.returnedQty} units).`,
           );
           continue;
         }
         await tx.batch.update({
-          where: { id: item.batchId },
+          where: { id: batchExists.id },
           data: { quantity: { increment: item.returnedQty } },
         });
         await tx.product.update({
