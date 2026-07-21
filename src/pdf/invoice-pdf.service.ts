@@ -5,6 +5,7 @@ import Handlebars from 'handlebars';
 import puppeteer, { Browser } from 'puppeteer';
 import * as QRCode from 'qrcode';
 import dayjs from 'dayjs';
+import { forceCloseBrowser } from '../common/browser/close-browser.util';
 
 export interface InvoicePdfData {
   invoiceNumber: string;
@@ -158,8 +159,11 @@ export class InvoicePdfService implements OnModuleDestroy {
       this.idleTimer = undefined;
     }
     const b = this.browser;
+    // Cleared before the await so a render arriving mid-shutdown launches a
+    // fresh browser rather than reusing one that's going away. That handover is
+    // exactly why the close must be guaranteed — see forceCloseBrowser.
     this.browser = undefined;
-    await b?.close().catch(() => undefined);
+    await forceCloseBrowser(b, this.logger, 'invoice-pdf');
   }
 
   // ── Build the HTML from the compiled Handlebars template + a view model ──

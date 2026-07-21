@@ -4,6 +4,7 @@ import dayjs from 'dayjs';
 import customParseFormat from 'dayjs/plugin/customParseFormat';
 import { DeliveryStatus } from '@prisma/client';
 import { ScrapedEvent } from './scrape.types';
+import { forceCloseBrowser } from '../../../common/browser/close-browser.util';
 
 dayjs.extend(customParseFormat);
 
@@ -58,8 +59,11 @@ export async function closeScraperBrowser(): Promise<void> {
     idleTimer = undefined;
   }
   const b = browser;
+  // Cleared before the await so a scrape arriving mid-shutdown launches a fresh
+  // browser instead of reusing one that's going away. That handover is why the
+  // close has to be guaranteed rather than best-effort — see forceCloseBrowser.
   browser = undefined;
-  await b?.close().catch(() => undefined);
+  await forceCloseBrowser(b, logger, 'courier-scraper');
 }
 
 // Run `fn` with a fresh page on the shared browser. The page is always closed;
