@@ -27,6 +27,15 @@ let browser: Browser | undefined;
 let idleTimer: NodeJS.Timeout | undefined;
 const BROWSER_IDLE_MS = 60_000;
 
+// Recycle the browser after this many pages even while it's still busy. Courier
+// sites are ad/tracker-heavy and a long-lived Chromium ratchets RSS upward
+// across a "Check All" run; past a few dozen pages on a small host that surfaced
+// as net::ERR_INSUFFICIENT_RESOURCES on navigation (Chromium failing to allocate
+// sockets/memory) rather than a clean OOM. A periodic fresh start is cheap
+// (~1 launch per 25 shipments) and keeps the ceiling flat.
+const MAX_PAGES_PER_BROWSER = 25;
+let pagesServed = 0;
+
 async function getBrowser(): Promise<Browser> {
   if (browser?.connected) return browser;
   logger.log('Launching Chromium for courier scraping…');
@@ -37,8 +46,16 @@ async function getBrowser(): Promise<Browser> {
       '--no-sandbox',
       '--disable-setuid-sandbox',
       '--disable-dev-shm-usage',
+      // Nothing here needs a GPU, extensions, or the background feature
+      // machinery; each is a process and a chunk of RSS we're paying for on a
+      // host that also runs Node and a second Chromium (the PDF renderer).
+      '--disable-gpu',
+      '--disable-extensions',
+      '--disable-background-networking',
+      '--no-first-run',
     ],
   });
+  pagesServed = 0;
   return browser;
 }
 
@@ -66,29 +83,90 @@ export async function closeScraperBrowser(): Promise<void> {
   await forceCloseBrowser(b, logger, 'courier-scraper');
 }
 
+// Failures that mean "the browser/network hiccupped", not "this courier can't
+// be scraped". Each is worth one clean retry on a freshly launched Chromium:
+//   • "Navigating frame was detached" — the site replaced the frame mid-load
+//     (trackcourier.io swaps the document after its proof-of-work challenge).
+//   • ERR_INSUFFICIENT_RESOURCES — Chromium couldn't allocate for the request.
+//   • Target/Session/Protocol errors — the tab or the CDP connection died.
+const TRANSIENT_RE =
+  /frame was detached|ERR_INSUFFICIENT_RESOURCES|ERR_NETWORK_CHANGED|ERR_CONNECTION_(?:RESET|CLOSED|ABORTED|FAILED)|Target closed|Session closed|Protocol error|socket hang up/i;
+const MAX_ATTEMPTS = 2;
+
+// Scrapes run one at a time. Chromium is by far the heaviest thing on this host
+// and concurrent tabs were how a transient stall turned into resource
+// exhaustion; serialising costs nothing real, since "Check All" already walks
+// its targets sequentially.
+let queue: Promise<unknown> = Promise.resolve();
+
+function serialize<T>(fn: () => Promise<T>): Promise<T> {
+  const run = queue.then(fn, fn);
+  // Swallow on the chain itself so one failed scrape doesn't reject the next.
+  queue = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  return run;
+}
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
 // Run `fn` with a fresh page on the shared browser. The page is always closed;
-// the browser is kept warm (idle-timer reset) for the next scrape.
-export async function withPage<T>(fn: (page: Page) => Promise<T>): Promise<T> {
+// the browser is kept warm (idle-timer reset) for the next scrape, unless it has
+// served enough pages to be worth recycling.
+export function withPage<T>(fn: (page: Page) => Promise<T>): Promise<T> {
+  return serialize(async () => {
+    for (let attempt = 1; ; attempt++) {
+      try {
+        return await runOnFreshPage(fn);
+      } catch (e: any) {
+        const msg = e?.message ?? String(e);
+        if (attempt >= MAX_ATTEMPTS || !TRANSIENT_RE.test(msg)) throw e;
+        logger.warn(
+          `scrape attempt ${attempt} failed (${msg}) — recycling Chromium and retrying`,
+        );
+        // The browser itself is the suspect for every error in TRANSIENT_RE, so
+        // retrying on the same instance would just reproduce it.
+        await closeScraperBrowser();
+        await sleep(1_000);
+      }
+    }
+  });
+}
+
+async function runOnFreshPage<T>(fn: (page: Page) => Promise<T>): Promise<T> {
   const b = await getBrowser();
   const page = await b.newPage();
+  pagesServed++;
   try {
     await page.setUserAgent(BROWSER_UA);
     await page.setViewport({ width: 1280, height: 900 });
-    // Skip images/fonts/media — we only need the DOM text, and this makes
-    // scrapes noticeably faster and lighter.
+    // Skip images/fonts/media/stylesheets — we only need the DOM text and the
+    // site's own XHR, and this makes scrapes noticeably faster and lighter.
     await page.setRequestInterception(true);
     page.on('request', (req) => {
       const type = req.resourceType();
-      if (type === 'image' || type === 'font' || type === 'media') {
-        void req.abort();
-      } else {
-        void req.continue();
-      }
+      const blocked =
+        type === 'image' ||
+        type === 'font' ||
+        type === 'media' ||
+        type === 'stylesheet';
+      // Both calls reject if the frame detached or the request was already
+      // handled — routine on a page that navigates mid-load. Unhandled, those
+      // rejections surfaced as process-level unhandledRejection noise.
+      void (blocked ? req.abort() : req.continue()).catch(() => undefined);
     });
     return await fn(page);
   } finally {
     await page.close().catch(() => undefined);
-    touchIdleTimer();
+    if (pagesServed >= MAX_PAGES_PER_BROWSER) {
+      logger.log(
+        `Recycling Chromium after ${pagesServed} pages to keep memory flat`,
+      );
+      await closeScraperBrowser();
+    } else {
+      touchIdleTimer();
+    }
   }
 }
 

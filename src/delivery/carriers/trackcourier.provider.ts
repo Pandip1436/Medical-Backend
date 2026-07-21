@@ -160,9 +160,13 @@ export class TrackCourierProvider implements CarrierProvider {
   private scrape(slug: string, number: string): Promise<TcCheckpoint[] | null> {
     return withPage(async (page) => {
       const url = `${BASE}/track-and-trace/${slug}/${encodeURIComponent(number)}`;
-      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30_000 });
 
-      const resp = await page
+      // Attached *before* navigating: waitForResponse only sees responses that
+      // arrive after it's registered, and on a warm connection the page's own JS
+      // can POST for the checkpoints table before goto() resolves — a race that
+      // showed up as an intermittent "no data" for numbers that track fine in a
+      // real browser.
+      const checkpointsResponse = page
         .waitForResponse(
           (r) =>
             /\/api\/v1\/get_checkpoints_table\//i.test(r.url()) &&
@@ -170,6 +174,19 @@ export class TrackCourierProvider implements CarrierProvider {
           { timeout: 25_000 },
         )
         .catch(() => null);
+
+      try {
+        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30_000 });
+      } catch (e: any) {
+        // trackcourier.io replaces the document once its proof-of-work challenge
+        // completes, which detaches the frame goto() was waiting on. The XHR we
+        // actually want still fires, so don't abandon the scrape here — let the
+        // response wait below decide. Any other navigation failure is real and
+        // propagates (withPage retries the transient ones on a fresh browser).
+        if (!/frame was detached/i.test(e?.message ?? '')) throw e;
+      }
+
+      const resp = await checkpointsResponse;
       if (!resp) return null;
 
       let json: any = null;
