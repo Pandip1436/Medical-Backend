@@ -96,14 +96,6 @@ export class WhatsAppRetryService {
     let retried = 0;
     let droppedPermanent = 0;
     let skippedBackoff = 0;
-    let skippedDuplicate = 0;
-
-    // One invoice can accumulate several FAILED rows (each failed send writes
-    // its own). Re-firing invoice.created per row rendered the same PDF several
-    // times over — six renders of one invoice inside three minutes, in the
-    // incident that prompted this. The event rebuilds its payload from the
-    // invoice itself, so a single re-fire covers every row pointing at it.
-    const firedInvoices = new Set<string>();
 
     for (const msg of candidates) {
       if (msg.errorCode && PERMANENT_ERROR_CODES.has(msg.errorCode)) {
@@ -124,16 +116,6 @@ export class WhatsAppRetryService {
       }
 
       if (msg.relatedEntityType === 'invoice' && msg.relatedEntityId) {
-        if (firedInvoices.has(msg.relatedEntityId)) {
-          // Covered by the re-fire above. Still advance attempts/lastAttemptAt
-          // so this row moves through its backoff schedule and eventually
-          // retires — leaving it untouched would make it a permanent duplicate,
-          // picked up again by every future sweep.
-          await this.bumpAttempt(msg.id);
-          skippedDuplicate++;
-          continue;
-        }
-        firedInvoices.add(msg.relatedEntityId);
         const ok = await this.retryInvoiceMessage(msg.id, msg.relatedEntityId);
         if (ok) retried++;
       } else if (msg.templateVars && TEMPLATE_BUILDERS[msg.templateName]) {
@@ -152,10 +134,9 @@ export class WhatsAppRetryService {
       }
     }
 
-    if (retried + droppedPermanent + skippedDuplicate > 0) {
+    if (retried + droppedPermanent > 0) {
       this.logger.log(
-        `sweep done — retried=${retried}, dropped_permanent=${droppedPermanent}, ` +
-          `skipped_backoff=${skippedBackoff}, skipped_duplicate=${skippedDuplicate}`,
+        `sweep done — retried=${retried}, dropped_permanent=${droppedPermanent}, skipped_backoff=${skippedBackoff}`,
       );
     }
   }
@@ -198,7 +179,13 @@ export class WhatsAppRetryService {
       );
     }
 
-    await this.bumpAttempt(messageId);
+    await this.prisma.whatsAppMessage.update({
+      where: { id: messageId },
+      data: {
+        attempts: { increment: 1 },
+        lastAttemptAt: new Date(),
+      },
+    });
 
     this.logger.log(
       `re-fired invoice.created for ${invoice.invoiceNumber} (msg ${messageId})`,
@@ -255,14 +242,6 @@ export class WhatsAppRetryService {
       this.logger.error(`retryFromTemplateVars failed for ${msg.id}: ${e?.message ?? e}`);
       return false;
     }
-  }
-
-  // Advance a row through its backoff schedule without sending anything.
-  private async bumpAttempt(messageId: string) {
-    await this.prisma.whatsAppMessage.update({
-      where: { id: messageId },
-      data: { attempts: { increment: 1 }, lastAttemptAt: new Date() },
-    });
   }
 
   private async markTerminallyFailed(messageId: string) {
