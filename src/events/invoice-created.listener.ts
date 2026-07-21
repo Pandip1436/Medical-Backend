@@ -8,7 +8,7 @@ import { WhatsAppService } from '../whatsapp/whatsapp.service';
 import { invoicePaymentRequestTemplate } from '../whatsapp/templates';
 import { INVOICE_CREATED, PAYMENT_RECEIVED } from './invoice-events';
 import type { InvoiceCreatedPayload, PaymentReceivedPayload } from './invoice-events';
-import { PaymentLinkStatus } from '@prisma/client';
+import { PaymentLinkStatus, WhatsAppMessageStatus } from '@prisma/client';
 
 // Fires AFTER the BillingService.create transaction commits. Orchestrates
 // the full "send invoice + payment QR to WhatsApp" flow.
@@ -151,6 +151,13 @@ export class InvoiceCreatedListener {
       });
     } catch (e: any) {
       this.logger.error(`PDF render/upload failed for ${invoice.id}: ${e?.message ?? e}`);
+      // Hand this off to the retry sweeper. It only ever looks at FAILED
+      // WhatsAppMessage rows, and the send that would have created one is
+      // exactly what we just aborted — so returning here silently stranded the
+      // invoice forever, with nothing in the UI but "Not sent". Writing the row
+      // ourselves puts it on the same backoff schedule as a Meta-side failure;
+      // the sweeper re-fires invoice.created, which retries the render.
+      await this.recordPdfFailure(invoice.id, invoice.branchId, invoice.invoiceNumber, phone, e);
       return;
     }
 
@@ -222,6 +229,50 @@ export class InvoiceCreatedListener {
       }
     } catch (e: any) {
       this.logger.error(`WhatsApp send failed for ${invoice.id}: ${e?.message ?? e}`);
+    }
+  }
+
+  // Queue a render failure for WhatsAppRetryService. Deliberately writes at
+  // most ONE row per invoice: the sweeper re-fires invoice.created, so a fresh
+  // row per failure would reset the attempt counter every sweep and the invoice
+  // would be retried forever. When a row already exists the sweeper's own
+  // bumpAttempt() advances it through the backoff schedule until it retires.
+  private async recordPdfFailure(
+    invoiceId: string,
+    branchId: string | null,
+    invoiceNumber: string,
+    to: string,
+    err: any,
+  ): Promise<void> {
+    try {
+      const existing = await this.prisma.whatsAppMessage.findFirst({
+        where: {
+          relatedEntityType: 'invoice',
+          relatedEntityId: invoiceId,
+          status: WhatsAppMessageStatus.FAILED,
+        },
+      });
+      if (existing) return;
+
+      await this.prisma.whatsAppMessage.create({
+        data: {
+          to: WhatsAppService.normalisePhone(to),
+          templateName: 'invoice_payment_request',
+          messageBody: `Invoice ${invoiceNumber} — PDF render failed before send`,
+          status: WhatsAppMessageStatus.FAILED,
+          // No errorCode: those are Meta's, and the sweeper treats some of them
+          // as permanently unretryable. A render failure is transient.
+          errorMessage: `pdf: ${err?.message ?? err}`,
+          relatedEntityType: 'invoice',
+          relatedEntityId: invoiceId,
+          branchId,
+          attempts: 1,
+          lastAttemptAt: new Date(),
+        },
+      });
+    } catch (e: any) {
+      // Never let bookkeeping mask the original render failure.
+      this.logger.error(`could not queue PDF-failure retry for ${invoiceId}: ${e?.message ?? e}`);
     }
   }
 }

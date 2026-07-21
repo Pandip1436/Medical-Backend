@@ -67,6 +67,18 @@ const BROWSER_IDLE_MS = 60_000;
 // Keep this low: 3 pages is roughly 0.5-0.75 GB of headroom.
 const MAX_CONCURRENT_RENDERS = 3;
 
+// A render that fails is retried on a *freshly launched* browser. Chromium
+// failures here are overwhelmingly whole-browser deaths (renderer OOM-killed,
+// launch aborted, page wedged) rather than anything wrong with this invoice's
+// HTML, so retrying against the same browser just reproduces the failure —
+// hence discardBrowser() between attempts.
+const RENDER_ATTEMPTS = 3;
+
+// page.setContent / page.pdf default to Puppeteer's 30s protocol timeout. That
+// is far longer than a healthy render of a fully-inlined page (<2s), so a wait
+// that long means the browser is already dead and we're just delaying the retry.
+const PAGE_TIMEOUT_MS = 15_000;
+
 @Injectable()
 export class InvoicePdfService implements OnModuleDestroy {
   private readonly logger = new Logger(InvoicePdfService.name);
@@ -90,28 +102,54 @@ export class InvoicePdfService implements OnModuleDestroy {
 
     await this.acquireSlot();
     try {
-      const browser = await this.getBrowser();
-      const page = await browser.newPage();
-      try {
-        // Everything (CSS + QR) is inlined, so `load` fires immediately — no
-        // network round-trips, so the render is fast and deterministic.
-        await page.setContent(html, { waitUntil: 'load' });
-        const pdf = await page.pdf({
-          format: 'A4',
-          printBackground: true,
-          margin: { top: '12mm', right: '12mm', bottom: '14mm', left: '12mm' },
-        });
-        // page.pdf() returns Uint8Array on newer Puppeteer; normalise to Buffer
-        // so the existing R2 upload pipeline keeps working byte-for-byte.
-        return Buffer.from(pdf);
-      } finally {
-        await page.close().catch(() => undefined);
-        // Keep the browser warm for the next invoice, but arm the idle timer so it
-        // gets released after a quiet period instead of sitting resident forever.
-        this.touchIdleTimer();
+      let lastErr: unknown;
+      for (let attempt = 1; attempt <= RENDER_ATTEMPTS; attempt++) {
+        try {
+          return await this.renderOnce(html);
+        } catch (e: any) {
+          lastErr = e;
+          this.logger.warn(
+            `render attempt ${attempt}/${RENDER_ATTEMPTS} failed for ${data.invoiceNumber}: ${e?.message ?? e}`,
+          );
+          // Tear the browser down unconditionally. `browser.connected` reports
+          // true for a browser whose renderers have already been killed, so
+          // leaving it in place means every subsequent invoice inherits the
+          // corpse — which is how one failure turned into a run of them.
+          // This does yank the browser out from under any concurrent render,
+          // but a browser we just failed against is one they were about to fail
+          // against too, and their own retry re-launches a healthy one.
+          await this.closeBrowser();
+        }
       }
+      throw lastErr;
     } finally {
       this.releaseSlot();
+    }
+  }
+
+  // One render attempt against the shared browser. Any throw from here means
+  // the caller discards the browser and tries again on a fresh one.
+  private async renderOnce(html: string): Promise<Buffer> {
+    const browser = await this.getBrowser();
+    const page = await browser.newPage();
+    try {
+      // Everything (CSS + QR) is inlined, so `load` fires immediately — no
+      // network round-trips, so the render is fast and deterministic.
+      await page.setContent(html, { waitUntil: 'load', timeout: PAGE_TIMEOUT_MS });
+      const pdf = await page.pdf({
+        format: 'A4',
+        printBackground: true,
+        margin: { top: '12mm', right: '12mm', bottom: '14mm', left: '12mm' },
+        timeout: PAGE_TIMEOUT_MS,
+      });
+      // page.pdf() returns Uint8Array on newer Puppeteer; normalise to Buffer
+      // so the existing R2 upload pipeline keeps working byte-for-byte.
+      return Buffer.from(pdf);
+    } finally {
+      await page.close().catch(() => undefined);
+      // Keep the browser warm for the next invoice, but arm the idle timer so it
+      // gets released after a quiet period instead of sitting resident forever.
+      this.touchIdleTimer();
     }
   }
 
@@ -232,6 +270,13 @@ export class InvoicePdfService implements OnModuleDestroy {
         '--disable-setuid-sandbox',
         '--disable-dev-shm-usage', // avoid /dev/shm exhaustion in containers
         '--font-render-hinting=none',
+        // Nothing here needs a GPU, extensions, or the background feature
+        // machinery; each is a process and a chunk of RSS we're paying for on a
+        // host that also runs Node and a second Chromium (the courier scraper).
+        '--disable-gpu',
+        '--disable-extensions',
+        '--disable-background-networking',
+        '--no-first-run',
       ],
     });
     return this.browser;
