@@ -1,6 +1,6 @@
 import { IsIn, IsInt, IsString, Matches, Max, MaxLength, Min, MinLength } from 'class-validator';
 
-export const DOC_TYPES = ['INV', 'QTN', 'CN', 'DN', 'PO', 'GRN'] as const;
+export const DOC_TYPES = ['INV', 'RCPT', 'QTN', 'CN', 'DN', 'PO', 'GRN'] as const;
 export type ConfigurableDocType = (typeof DOC_TYPES)[number];
 
 export const FY_FORMATS = ['YY-YY', 'YYYY-YY', 'YY', 'YYYY'] as const;
