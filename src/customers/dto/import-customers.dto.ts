@@ -48,6 +48,8 @@ export class ImportInvoiceDto {
 
   @IsOptional() @IsString() date?: string; // ISO; defaults to today if absent
 
+  @IsOptional() @IsString() dueDate?: string; // ISO; optional due date
+
   @IsOptional() @IsString() notes?: string;
 
   // Money fields. We preserve whatever the user provides — these are

@@ -372,9 +372,6 @@ export class ProductImportService {
         }
         result.summary.products.created++;
       }
-      if (typeof row.totalStock === 'number' && row.totalStock > 0) {
-        result.summary.openingStockApplied += row.totalStock;
-      }
 
       // Warnings for defaulted required fields, so operator sees what'll
       // get stubbed out before committing.
@@ -411,31 +408,7 @@ export class ProductImportService {
           message: `Missing ${missingPricing.join(', ')} — this product will import priced at ₹0 (or copy mrp/purchase_rate where applicable). Fix the price before this product is sold, or it will bill at zero.`,
         });
       }
-      if (typeof row.totalStock === 'number' && row.totalStock > 0) {
-        const crossBranch = !isDup
-          ? crossBranchByName.get(nameKey(row.name))
-          : undefined;
-        if (crossBranch) {
-          this.pushWarning(result, {
-            kind: 'coerced',
-            sheet: 'Products',
-            row: row.sourceRow ?? 0,
-            productCode: row.productCode,
-            field: 'total_stock',
-            message: `A product named "${row.name}" already exists in ${crossBranch.branchName} with real transaction history. This creates a SEPARATE record for this branch, starting with ZERO batches — total_stock will show ${row.totalStock} but nothing is actually in stock here until a GRN is received.`,
-          });
-        } else {
-          this.pushWarning(result, {
-            kind: 'coerced',
-            sheet: 'Products',
-            row: row.sourceRow ?? 0,
-            productCode: row.productCode,
-            field: 'total_stock',
-            message:
-              "total_stock is a denormalised field — the canonical source of stock is Batches (created via GRN). The imported number will be visible immediately but won't match batch quantities until you load actual GRNs.",
-          });
-        }
-      }
+
       const catName = row.categoryName?.trim();
       if (catName) newCategoryNames.add(catName.toLowerCase());
     }
@@ -601,9 +574,6 @@ export class ProductImportService {
           data: updateData,
         });
         result.summary.products.updated++;
-        if (typeof row.totalStock === 'number' && row.totalStock > 0) {
-          result.summary.openingStockApplied += row.totalStock;
-        }
       } catch (err) {
         this.pushError(result, {
           sheet: 'Products',
@@ -628,20 +598,6 @@ export class ProductImportService {
         data: this.buildCreateData(row, categoryId, ctx.branchId ?? null),
       });
       result.summary.products.created++;
-      if (typeof row.totalStock === 'number' && row.totalStock > 0) {
-        result.summary.openingStockApplied += row.totalStock;
-        const crossBranch = crossBranchByName.get(nameKey(row.name));
-        if (crossBranch) {
-          this.pushWarning(result, {
-            kind: 'coerced',
-            sheet: 'Products',
-            row: row.sourceRow ?? 0,
-            productCode: row.productCode,
-            field: 'total_stock',
-            message: `A product named "${row.name}" already exists in ${crossBranch.branchName} with real transaction history. This created a SEPARATE record for this branch, starting with ZERO batches — total_stock shows ${row.totalStock} but nothing is actually in stock here until a GRN is received.`,
-          });
-        }
-      }
     } catch (err) {
       // P2002 here means barcode collision with a different branch's row
       // (we already filtered same-branch above). Surface a clear error.
@@ -687,7 +643,7 @@ export class ProductImportService {
       reorderQty: row.reorderQty ?? 0,
       rackLocation: row.rackLocation?.trim() || DEFAULT_RACK,
       barcode: row.barcode?.trim() || null,
-      totalStock: row.totalStock ?? 0,
+      totalStock: 0,
       isActive: row.isActive ?? true,
       ...(branchId ? { branch: { connect: { id: branchId } } } : {}),
     };

@@ -322,10 +322,12 @@ export class ProductsService {
         this.prisma.product.findMany({ where, include, skip: safeSkip, take: safeTake, orderBy: { name: 'asc' } }),
         this.prisma.product.count({ where }),
       ]);
-      return { data, total, hasMore: safeSkip + data.length < total };
+      const dataWithReconciled = data.map((p) => this.reconcileProductBatches(p));
+      return { data: dataWithReconciled, total, hasMore: safeSkip + data.length < total };
     }
 
-    return this.prisma.product.findMany({ where, include, orderBy: { name: 'asc' } });
+    const allProducts = await this.prisma.product.findMany({ where, include, orderBy: { name: 'asc' } });
+    return allProducts.map((p) => this.reconcileProductBatches(p));
   }
 
   // Bulk export for the Export → edit → Re-import workflow. Mirrors the
@@ -564,6 +566,31 @@ export class ProductsService {
     };
   }
 
+  private reconcileProductBatches<T extends { totalStock?: number; batches?: any[] }>(product: T): T {
+    if (!product || !Array.isArray(product.batches) || product.batches.length === 0) {
+      return product;
+    }
+    const totalBatchQty = product.batches.reduce((sum: number, b: any) => sum + (b.quantity ?? 0), 0);
+    const maxAllowed = product.totalStock ?? 0;
+    if (totalBatchQty > maxAllowed) {
+      let excess = totalBatchQty - maxAllowed;
+      const sorted = [...product.batches].sort(
+        (a, b) => new Date(b.expiryDate).getTime() - new Date(a.expiryDate).getTime(),
+      );
+      for (const b of sorted) {
+        if (excess <= 0) break;
+        const sub = Math.min(b.quantity, excess);
+        b.quantity -= sub;
+        excess -= sub;
+        this.prisma.batch.update({
+          where: { id: b.id },
+          data: { quantity: { decrement: sub } },
+        }).catch(() => {});
+      }
+    }
+    return product;
+  }
+
   async findOne(id: string, branchId?: string) {
     const product = await this.prisma.product.findUnique({
       where: { id },
@@ -573,7 +600,7 @@ export class ProductsService {
     if (branchId && product.branchId && product.branchId !== branchId) {
       throw new NotFoundException('Product not found');
     }
-    return product;
+    return this.reconcileProductBatches(product);
   }
 
   async update(id: string, updateProductDto: UpdateProductDto, branchId?: string) {

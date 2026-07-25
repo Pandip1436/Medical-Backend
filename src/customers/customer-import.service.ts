@@ -917,6 +917,7 @@ export class CustomerImportService {
             data: {
               invoiceNumber,
               date: parseDate(inv.date) ?? new Date(),
+              dueDate: parseDate(inv.dueDate),
               type: 'INVOICE',
               billingType,
               customer: { connect: { id: customerId } },
@@ -962,15 +963,60 @@ export class CustomerImportService {
                 message: `Product "${item.productName}" not found — this line won't appear in that product's history (the invoice itself still imports fine).`,
               });
             }
+            const qty = Math.trunc(item.quantity ?? 0);
+            let resolvedBatchId = '';
+            let resolvedBatchNumber = item.batchNumber ?? '';
+            let resolvedExpiryDate = parseDate(item.expiryDate) ?? new Date();
+
+            if (productId && qty > 0) {
+              // Deduct from batch quantity so batch stock matches product totalStock
+              let needed = qty;
+              const batches = await tx.batch.findMany({
+                where: { productId, quantity: { gt: 0 } },
+                orderBy: [{ expiryDate: 'asc' }, { createdAt: 'asc' }],
+              });
+
+              if (item.batchNumber?.trim()) {
+                const matchIdx = batches.findIndex(
+                  (b) => b.batchNumber.toLowerCase() === item.batchNumber!.trim().toLowerCase(),
+                );
+                if (matchIdx > -1) {
+                  const [matched] = batches.splice(matchIdx, 1);
+                  batches.unshift(matched);
+                }
+              }
+
+              for (const b of batches) {
+                if (needed <= 0) break;
+                const take = Math.min(needed, b.quantity);
+                await tx.batch.update({
+                  where: { id: b.id },
+                  data: { quantity: { decrement: take } },
+                });
+                if (!resolvedBatchId) {
+                  resolvedBatchId = b.id;
+                  resolvedBatchNumber = b.batchNumber;
+                  resolvedExpiryDate = b.expiryDate;
+                }
+                needed -= take;
+              }
+
+              // Decrement the product's denormalised totalStock
+              await tx.product.update({
+                where: { id: productId },
+                data: { totalStock: { decrement: qty } },
+              });
+            }
+
             await tx.invoiceItem.create({
               data: {
                 invoice: { connect: { id: created.id } },
                 productId,
                 productName: item.productName ?? 'Imported item',
-                batchId: '',
-                batchNumber: item.batchNumber ?? '',
-                expiryDate: parseDate(item.expiryDate) ?? new Date(),
-                quantity: Math.trunc(item.quantity ?? 0),
+                batchId: resolvedBatchId,
+                batchNumber: resolvedBatchNumber,
+                expiryDate: resolvedExpiryDate,
+                quantity: qty,
                 mrp: new Prisma.Decimal(item.mrp ?? 0),
                 rate: new Prisma.Decimal(item.rate ?? 0),
                 discountPercent: new Prisma.Decimal(item.discountPercent ?? 0),
@@ -978,6 +1024,7 @@ export class CustomerImportService {
                 amount: new Prisma.Decimal(item.amount ?? 0),
               },
             });
+
             createdItems++;
           }
           return createdItems;
@@ -1696,6 +1743,16 @@ export class CustomerImportService {
                 amount: new Prisma.Decimal(item.amount ?? 0),
               },
             });
+
+            // Increment product totalStock for approved returns so stock level balances
+            const returnedQty = Math.trunc(item.returnedQty ?? 0);
+            if (status === 'APPROVED' && productId && returnedQty > 0) {
+              await tx.product.update({
+                where: { id: productId },
+                data: { totalStock: { increment: returnedQty } },
+              });
+            }
+
             createdItems++;
           }
           return createdItems;
