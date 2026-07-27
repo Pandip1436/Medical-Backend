@@ -71,6 +71,9 @@ const MAX_CONCURRENT_RENDERS = 3;
 export class InvoicePdfService implements OnModuleDestroy {
   private readonly logger = new Logger(InvoicePdfService.name);
   private browser?: Browser;
+  // In-flight launch, shared by every caller that arrives while it's pending —
+  // see getBrowser().
+  private launching?: Promise<Browser>;
   private idleTimer?: NodeJS.Timeout;
   private compiled?: Handlebars.TemplateDelegate;
   // Render-slot accounting for MAX_CONCURRENT_RENDERS (see acquireSlot).
@@ -221,10 +224,33 @@ export class InvoicePdfService implements OnModuleDestroy {
 
   // ── Shared, lazily-launched Chromium. Reused across invoices; relaunched
   //    automatically if it ever disconnects. Closed on module destroy. ──
+  // The launch is memoised because `render()` runs up to MAX_CONCURRENT_RENDERS
+  // at once: after an idle close (or on a cold first burst) every one of those
+  // callers sees `browser` unset in the same tick. Launching per-caller and
+  // assigning the field would leave only the last browser referenced — the
+  // others become trees that *nothing* holds a handle to, so the idle timer,
+  // onModuleDestroy and forceCloseBrowser alike can never close them. That's the
+  // ratchet that stranded ~19 Chromium trees / ~190 processes on the host; a
+  // guaranteed close is no help when no reference survives to close *through*.
   private async getBrowser(): Promise<Browser> {
     if (this.browser?.connected) return this.browser;
+    if (!this.launching) {
+      const launch = this.launch();
+      this.launching = launch;
+      // Clear only our own entry: a later launch may already have superseded
+      // this one, and dropping *that* would put us back to launching per-caller.
+      void launch
+        .catch(() => undefined)
+        .finally(() => {
+          if (this.launching === launch) this.launching = undefined;
+        });
+    }
+    return this.launching;
+  }
+
+  private async launch(): Promise<Browser> {
     this.logger.log('Launching Chromium for PDF rendering…');
-    this.browser = await puppeteer.launch({
+    const browser = await puppeteer.launch({
       headless: true,
       executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
       args: [
@@ -234,7 +260,8 @@ export class InvoicePdfService implements OnModuleDestroy {
         '--font-render-hinting=none',
       ],
     });
-    return this.browser;
+    this.browser = browser;
+    return browser;
   }
 
   private registerHelpers() {

@@ -24,13 +24,36 @@ export const BROWSER_UA =
 // Chromium open forever. Launch args mirror InvoicePdfService for parity with
 // the existing PDF pipeline (container-safe: --no-sandbox, --disable-dev-shm).
 let browser: Browser | undefined;
+// In-flight launch, shared by every scrape that arrives while it's pending —
+// see getBrowser().
+let launching: Promise<Browser> | undefined;
 let idleTimer: NodeJS.Timeout | undefined;
 const BROWSER_IDLE_MS = 60_000;
 
+// The launch is memoised because a "Check All" burst calls withPage() many times
+// concurrently: they all see `browser` unset in the same tick, and launching
+// per-caller would leave only the last one referenced by the module. Every other
+// Chromium tree would then be unreachable — no idle timer, no module-destroy
+// hook and no forceCloseBrowser can close a browser nothing holds a handle to.
 async function getBrowser(): Promise<Browser> {
   if (browser?.connected) return browser;
+  if (!launching) {
+    const launch = launchBrowser();
+    launching = launch;
+    // Clear only our own entry, so a launch that already superseded this one
+    // (e.g. after an idle close mid-flight) isn't dropped from under its waiters.
+    void launch
+      .catch(() => undefined)
+      .finally(() => {
+        if (launching === launch) launching = undefined;
+      });
+  }
+  return launching;
+}
+
+async function launchBrowser(): Promise<Browser> {
   logger.log('Launching Chromium for courier scraping…');
-  browser = await puppeteer.launch({
+  const b = await puppeteer.launch({
     headless: true,
     executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
     args: [
@@ -39,7 +62,8 @@ async function getBrowser(): Promise<Browser> {
       '--disable-dev-shm-usage',
     ],
   });
-  return browser;
+  browser = b;
+  return b;
 }
 
 function touchIdleTimer(): void {
