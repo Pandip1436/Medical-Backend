@@ -153,6 +153,13 @@ export class GrnController {
     return this.grnService.findBillDetail(id, req.user.branchId ?? undefined);
   }
 
+  @Get(':id/payments')
+  @Roles('ADMIN', 'INVENTORY_MANAGER', 'PHARMACIST', 'ACCOUNTANT')
+  @ApiOperation({ summary: 'Payment history for this PE (supplier payments booked against it)' })
+  payments(@Param('id') id: string, @Request() req: AuthenticatedRequest) {
+    return this.grnService.getGrnPayments(id, req.user.branchId ?? undefined);
+  }
+
   @Patch(':id')
   @Roles('ADMIN', 'INVENTORY_MANAGER')
   @ApiOperation({

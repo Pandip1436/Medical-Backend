@@ -120,6 +120,9 @@ export class BillingService {
       rate?: number;
       mrp?: number;
       expiryDate?: string | Date;
+      // Set by the UI once the operator accepted the below-cost warning for
+      // this line. Lets an intentional loss sale through the cost floor below.
+      allowBelowCost?: boolean;
     },
     branchId?: string,
   ) {
@@ -167,10 +170,16 @@ export class BillingService {
       );
     }
 
-    // 3. Price guardrails against THIS batch: the unit sale rate may not exceed
-    //    the batch MRP (legal ceiling) nor fall below its purchase cost (no
-    //    selling at a loss). The cost floor is skipped when purchaseRate is
-    //    unset (0) on legacy batches.
+    // 3. Price guardrails against THIS batch:
+    //    - Selling ABOVE the batch MRP is a HARD block (MRP is the legal ceiling
+    //      under the Drugs Price Control Order — non-negotiable).
+    //    - Selling BELOW the batch's purchase cost is a SOFT guard: it's a
+    //      legitimate business call (clearance, matching a dropped market price,
+    //      draining old costly stock). The UI shows a "below cost" warning and,
+    //      once the operator accepts it, sends allowBelowCost=true. We only
+    //      reject when that acknowledgement is absent (e.g. an API / quotation
+    //      caller) so a typo can't silently sell at a loss. The floor is also
+    //      skipped when purchaseRate is unset (0) on legacy batches.
     if (item.rate !== undefined && item.rate !== null) {
       const rate = Number(item.rate);
       const batchMrp = Number(batch.mrp);
@@ -184,10 +193,11 @@ export class BillingService {
         Number.isFinite(rate) &&
         Number.isFinite(batchCost) &&
         batchCost > 0 &&
-        rate < batchCost - 0.01
+        rate < batchCost - 0.01 &&
+        !item.allowBelowCost
       ) {
         throw new BadRequestException(
-          `Sale price (₹${rate.toFixed(2)}) for ${item.productName} is below batch ${batch.batchNumber} purchase cost (₹${batchCost.toFixed(2)}).`,
+          `Sale price (₹${rate.toFixed(2)}) for ${item.productName} is below batch ${batch.batchNumber} purchase cost (₹${batchCost.toFixed(2)}). Confirm the below-cost sale to proceed.`,
         );
       }
     }
@@ -1295,6 +1305,9 @@ export class BillingService {
             quantity: item.quantity,
             rate: Number(item.rate),
             mrp: Number(item.mrp),
+            // The quotation price was already agreed with the customer, so
+            // conversion must not re-block on the below-cost floor.
+            allowBelowCost: true,
           },
           branchId,
         );

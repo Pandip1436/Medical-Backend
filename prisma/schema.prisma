@@ -302,6 +302,13 @@ model Batch {
   quantity     Int
   mrp          Decimal
   purchaseRate Decimal
+  // Per-batch selling prices. Like mrp/purchaseRate these are captured at
+  // receipt so each batch is sold against its own cost/MRP (FEFO bills the
+  // batch's own rate). Default 0 = "not set" → billing falls back to the
+  // Product master sellingRate/wholesaleRate. Backfilled from the master for
+  // batches created before this field existed.
+  sellingRate  Decimal  @default(0)
+  wholesaleRate Decimal @default(0)
   supplierId   String
   supplier     Supplier @relation(fields: [supplierId], references: [id])
   // The GRN line that received this batch. Nullable for batches created before

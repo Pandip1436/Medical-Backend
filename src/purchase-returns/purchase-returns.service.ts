@@ -73,15 +73,30 @@ export class PurchaseReturnsService {
             `Batch ${item.batchNumber} for ${item.productName} not found`,
           );
         }
-        if (batch.quantity < item.returnedQty) {
+        // H4: the batch must actually belong to the product on this line.
+        // Without this a mismatched payload would decrement batch X's quantity
+        // while debiting product Y's totalStock, drifting BOTH products' stock.
+        if (batch.productId !== item.productId) {
           throw new BadRequestException(
-            `Insufficient stock to return for ${item.productName} batch ${item.batchNumber}. Available: ${batch.quantity}`,
+            `Batch ${item.batchNumber} does not belong to ${item.productName}.`,
           );
         }
-        await tx.batch.update({
-          where: { id: batch.id },
-          data: { quantity: batch.quantity - item.returnedQty },
+        // Atomic, race-safe decrement (mirrors the sale path): the
+        // `quantity >= qty` guard makes this one conditional UPDATE, so two
+        // concurrent returns can't both pass a stale check and over-return.
+        const dec = await tx.batch.updateMany({
+          where: { id: batch.id, quantity: { gte: item.returnedQty } },
+          data: { quantity: { decrement: item.returnedQty } },
         });
+        if (dec.count === 0) {
+          const fresh = await tx.batch.findUnique({
+            where: { id: batch.id },
+            select: { quantity: true },
+          });
+          throw new BadRequestException(
+            `Insufficient stock to return for ${item.productName} batch ${item.batchNumber}. Available: ${fresh?.quantity ?? 0}`,
+          );
+        }
         await tx.product.update({
           where: { id: item.productId },
           data: { totalStock: { decrement: item.returnedQty } },

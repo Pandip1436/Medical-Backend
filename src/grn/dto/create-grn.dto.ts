@@ -64,6 +64,11 @@ export class CreateGrnDto {
   @IsOptional()
   paymentMode?: string;
 
+  // UTR / cheque # / txn reference for the receive-time payment (non-cash modes).
+  @IsString()
+  @IsOptional()
+  referenceNumber?: string;
+
   @IsString()
   @IsOptional()
   branchId?: string;

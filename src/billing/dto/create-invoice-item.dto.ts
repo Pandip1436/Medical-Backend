@@ -1,4 +1,4 @@
-import { IsString, IsNotEmpty, IsNumber, Min, IsDateString, IsOptional } from 'class-validator';
+import { IsString, IsNotEmpty, IsNumber, Min, IsDateString, IsOptional, IsBoolean } from 'class-validator';
 
 export class CreateInvoiceItemDto {
   @IsString()
@@ -47,4 +47,12 @@ export class CreateInvoiceItemDto {
   @IsNumber()
   @Min(0)
   amount: number;
+
+  // Set true by the UI once the operator has seen and accepted the "below
+  // batch cost" warning for this line. When absent/false the backend rejects a
+  // below-cost rate (protects API/quotation-conversion callers); when true it
+  // permits the loss sale. Selling ABOVE MRP stays a hard block regardless.
+  @IsBoolean()
+  @IsOptional()
+  allowBelowCost?: boolean;
 }

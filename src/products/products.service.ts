@@ -675,6 +675,19 @@ export class ProductsService {
     };
   }
 
+  // DISPLAY-ONLY reconciliation. When the denormalized `totalStock` has drifted
+  // below the sum of live batch quantities, trim the batch quantities shown in
+  // THIS response so the UI's per-batch numbers add up to the header total.
+  //
+  // This mutates only the in-memory copy being serialized back to the caller —
+  // it MUST NOT write to the database. It runs inside GET handlers (findAll /
+  // findOne), and the previous version fired un-awaited `batch.update`
+  // decrements from here: that permanently destroyed real batch stock on every
+  // product read, trimmed the freshest (longest-dated) batch first, never
+  // corrected `totalStock` (so it never converged), and double-decremented
+  // under concurrent reads. True reconciliation — recomputing `totalStock` from
+  // SUM(batch.quantity) — belongs in an explicit transactional job/endpoint,
+  // not a read path. See reconcileTotalStock() (TODO) / the stock audit notes.
   private reconcileProductBatches<T extends { totalStock?: number; batches?: any[] }>(product: T): T {
     if (!product || !Array.isArray(product.batches) || product.batches.length === 0) {
       return product;
@@ -689,12 +702,8 @@ export class ProductsService {
       for (const b of sorted) {
         if (excess <= 0) break;
         const sub = Math.min(b.quantity, excess);
-        b.quantity -= sub;
+        b.quantity -= sub; // in-memory display trim only — never persisted
         excess -= sub;
-        this.prisma.batch.update({
-          where: { id: b.id },
-          data: { quantity: { decrement: sub } },
-        }).catch(() => {});
       }
     }
     return product;
@@ -1107,10 +1116,6 @@ export class ProductsService {
           where: { id: item.batchId },
           data: { quantity: item.adjustedQty },
         });
-        await tx.product.update({
-          where: { id: item.productId },
-          data: { totalStock: { increment: item.diff } },
-        });
         if (user) {
           await (tx as any).stockAdjustmentLog.create({
             data: {
@@ -1130,6 +1135,23 @@ export class ProductsService {
           });
         }
       }
+      // Reconcile each affected product's denormalized totalStock from the
+      // ACTUAL sum of its batch quantities, inside this transaction. Replaces
+      // the old `totalStock: { increment: staleDiff }` where diff was computed
+      // from a pre-transaction read — racy against a concurrent sale, and able
+      // to drift or go negative. SUM of the live (non-negative) batch rows is
+      // always correct and can't go below 0. (H2 + M1 fix.)
+      const affectedProductIds = Array.from(new Set(resolved.map((i) => i.productId)));
+      for (const pid of affectedProductIds) {
+        const agg = await tx.batch.aggregate({
+          where: { productId: pid },
+          _sum: { quantity: true },
+        });
+        await tx.product.update({
+          where: { id: pid },
+          data: { totalStock: agg._sum.quantity ?? 0 },
+        });
+      }
       return {
         success: true,
         adjustmentNo,
@@ -1147,7 +1169,10 @@ export class ProductsService {
   }
 
   // Estimate the rupee-value impact of an adjustment so the controller can
-  // decide whether to queue an approval. Uses batch.mrp as the per-unit value.
+  // decide whether to queue an approval. Uses batch.purchaseRate (COST) as the
+  // per-unit value — the financial impact of writing stock off is what we PAID
+  // for it, not its MRP; valuing at MRP overstates the loss and wrongly trips
+  // the approval threshold. (M4 fix.)
   // Skips lines whose batch can't be found — those will throw at execute time.
   async estimateAdjustmentValue(
     items: { productId: string; batchId: string; adjustedQty: number }[],
@@ -1165,7 +1190,7 @@ export class ProductsService {
       });
       if (branchId && product?.branchId && product.branchId !== branchId) continue;
       const diff = Math.abs(item.adjustedQty - batch.quantity);
-      total += diff * Number(batch.mrp);
+      total += diff * Number(batch.purchaseRate);
     }
     return total;
   }
@@ -1175,10 +1200,11 @@ export class ProductsService {
   // submission with line items embedded so the frontend can render a detail
   // panel without a second fetch.
   //
-  // Impact in rupees is best-effort: `mrp` is read from the *current* batch
-  // (since the log doesn't snapshot it). When a batch has been deleted, mrp
-  // falls back to 0 — the totalImpact is therefore an approximation, not an
-  // authoritative ledger value.
+  // Impact in rupees is best-effort: the per-unit COST (batch.purchaseRate) is
+  // read from the *current* batch (the log doesn't snapshot it). When a batch
+  // has been deleted, cost falls back to 0 — so totalImpact is an approximation,
+  // not an authoritative ledger value. Cost (not MRP) is used so a write-off's
+  // impact reflects what was paid for the stock. (M4 fix.)
   async listAdjustments(
     branchId: string | undefined,
     opts: { skip?: number; take?: number } = {},
@@ -1217,15 +1243,17 @@ export class ProductsService {
       orderBy: { createdAt: 'asc' },
     });
 
-    // 3. Best-effort mrp lookup so we can compute impact.
+    // 3. Best-effort per-batch lookup: mrp for the display column, purchaseRate
+    // (cost) for the financial impact. Impact is cost-based (M4).
     const batchIds = Array.from(new Set(logs.map((l: any) => l.batchId)));
     const batches = batchIds.length
       ? await this.prisma.batch.findMany({
           where: { id: { in: batchIds as string[] } },
-          select: { id: true, mrp: true },
+          select: { id: true, mrp: true, purchaseRate: true },
         })
       : [];
     const mrpByBatch = new Map(batches.map((b) => [b.id, Number(b.mrp)]));
+    const costByBatch = new Map(batches.map((b) => [b.id, Number(b.purchaseRate)]));
 
     // 4. Group logs by adjustmentNo, preserving the page order.
     const byNo = new Map<string, any[]>();
@@ -1238,7 +1266,8 @@ export class ProductsService {
     const data = adjustmentNos.map((no) => {
       const items = (byNo.get(no) ?? []).map((l: any) => {
         const mrp = mrpByBatch.get(l.batchId) ?? 0;
-        const impact = l.diff * mrp;
+        const cost = costByBatch.get(l.batchId) ?? 0;
+        const impact = l.diff * cost;
         return {
           productId: l.productId,
           productName: l.product?.name ?? '(deleted product)',

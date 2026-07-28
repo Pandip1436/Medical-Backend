@@ -88,7 +88,10 @@ export class GrnService {
         grn.id,
         createGrnDto.items,
         createGrnDto.supplierId,
-        grn.date,
+        // Price guard keys off the supplier invoice (delivery) date, not the
+        // GRN row's createdAt — so a back-dated receipt can't overwrite newer
+        // master prices. (H1 fix.)
+        new Date(createGrnDto.supplierInvoiceDate),
       );
 
       // 3.5 Record the payable + any payment captured at receive time.
@@ -127,6 +130,7 @@ export class GrnService {
             grnId: grn.id,
             amount: initialPaid,
             paymentMode: createGrnDto.paymentMode ?? 'CASH',
+            referenceNumber: createGrnDto.referenceNumber ?? null,
             branchId: effectiveBranchId ?? null,
           },
         });
@@ -170,7 +174,11 @@ export class GrnService {
     grnId: string,
     items: CreateGrnDto['items'],
     supplierId: string,
-    grnDate: Date,
+    // The date used for the stale-pricing guard. This MUST be the supplier
+    // INVOICE date (actual delivery), NOT the GRN row's createdAt — otherwise
+    // entering a genuinely old GRN today (grn.date = now()) would still look
+    // "newest" and clobber current master prices with stale rates.
+    priceDate: Date,
   ) {
     for (const item of items) {
       // mfgDate is optional — the GRN form no longer captures it. Persist null
@@ -197,6 +205,21 @@ export class GrnService {
 
       const addedStock = item.receivedQty + item.freeQty;
       if (addedStock > 0) {
+        // Fetch the master up-front: it supplies the back-dated-price guard
+        // (lastPriceUpdate) AND the fallback for this batch's selling/wholesale
+        // rate when the GRN line didn't carry one.
+        const product = await tx.product.findUnique({
+          where: { id: item.productId },
+          select: { lastPriceUpdate: true, sellingRate: true, wholesaleRate: true },
+        });
+        // Per-batch sale prices: use the values entered on the GRN line when
+        // present, else inherit the product master so every batch carries a
+        // usable price. Billing still treats 0 as "fall back to master".
+        const batchSellingRate =
+          Number(item.sellingRate) > 0 ? Number(item.sellingRate) : Number(product?.sellingRate ?? 0);
+        const batchWholesaleRate =
+          Number(item.wholesaleRate) > 0 ? Number(item.wholesaleRate) : Number(product?.wholesaleRate ?? 0);
+
         await tx.batch.create({
           data: {
             productId: item.productId,
@@ -206,6 +229,8 @@ export class GrnService {
             quantity: addedStock,
             mrp: item.mrp,
             purchaseRate: item.purchaseRate,
+            sellingRate: batchSellingRate,
+            wholesaleRate: batchWholesaleRate,
             supplierId,
             grnItemId: grnItem.id,
           },
@@ -213,13 +238,11 @@ export class GrnService {
         // Stale-pricing guard: only refresh the product master mrp/purchaseRate
         // when THIS GRN's delivery date is newer than the last price update, so
         // back-dating an old GRN can't clobber current prices. Stock always
-        // increments regardless of date.
-        const product = await tx.product.findUnique({
-          where: { id: item.productId },
-          select: { lastPriceUpdate: true },
-        });
+        // increments regardless of date. (Master sellingRate is deliberately
+        // NOT touched here — a cheaper new batch must not drag down the price of
+        // older, costlier stock still on the shelf; per-batch rates handle that.)
         const isNewerPrice =
-          !product?.lastPriceUpdate || grnDate > product.lastPriceUpdate;
+          !product?.lastPriceUpdate || priceDate > product.lastPriceUpdate;
         await tx.product.update({
           where: { id: item.productId },
           data: {
@@ -228,7 +251,7 @@ export class GrnService {
               ? {
                   purchaseRate: item.purchaseRate,
                   mrp: item.mrp,
-                  lastPriceUpdate: grnDate,
+                  lastPriceUpdate: priceDate,
                 }
               : {}),
           },
@@ -402,13 +425,20 @@ export class GrnService {
       }
 
       // 5. Reverse old stock + payables. Safe to delete batches outright because
-      // the untouched check above proved nothing references them.
-      for (const old of existing.items) {
-        const oldStock = old.receivedQty + old.freeQty;
-        if (oldStock > 0) {
+      // the untouched check above proved nothing references them. Decrement
+      // totalStock by each batch's ACTUAL current quantity rather than the
+      // stored receivedQty+freeQty: the two are normally equal (nothing moved),
+      // but a batch quantity could have drifted out-of-band, so reversing by the
+      // live quantity keeps totalStock == SUM(remaining batches). (L3 hardening.)
+      const oldBatches = await tx.batch.findMany({
+        where: { grnItemId: { in: existing.items.map((i) => i.id) } },
+        select: { id: true, productId: true, quantity: true },
+      });
+      for (const b of oldBatches) {
+        if (b.quantity !== 0) {
           await tx.product.update({
-            where: { id: old.productId },
-            data: { totalStock: { decrement: oldStock } },
+            where: { id: b.productId },
+            data: { totalStock: { decrement: b.quantity } },
           });
         }
       }
@@ -428,10 +458,12 @@ export class GrnService {
         });
       }
 
-      // 6. Reapply new items + header (supplier / PO linkage stay fixed). Use
-      // the GRN's own delivery date so the stale-pricing guard is evaluated
-      // against when the goods were received, not when the edit happens.
-      await this.applyGrnItems(tx, id, dto.items, existing.supplierId, existing.date);
+      // 6. Reapply new items + header (supplier / PO linkage stay fixed). The
+      // stale-pricing guard keys off the supplier INVOICE (delivery) date from
+      // the edit payload — not the GRN row's createdAt (existing.date) — so it
+      // reflects when the goods were actually received, not when they were
+      // typed/edited. (H1 fix.)
+      await this.applyGrnItems(tx, id, dto.items, existing.supplierId, new Date(dto.supplierInvoiceDate));
       await tx.gRN.update({
         where: { id },
         data: {
@@ -612,13 +644,18 @@ export class GrnService {
             where: { id: item.batchId },
             data: { quantity: { increment: item.returnedQty } },
           });
-          if (reAdded.count > 0) batchesFixed++;
-          // Re-add to product totalStock.
-          await tx.product.updateMany({
-            where: { id: item.productId },
-            data: { totalStock: { increment: item.returnedQty } },
-          });
-          productsFixed++;
+          // M5: only bump product.totalStock when the batch was actually
+          // re-added. If the batch no longer exists (updateMany count 0), adding
+          // to totalStock would push it above SUM(batch.quantity) — permanent
+          // drift, and the DN is stamped reversed below so it can't be retried.
+          if (reAdded.count > 0) {
+            batchesFixed++;
+            await tx.product.updateMany({
+              where: { id: item.productId },
+              data: { totalStock: { increment: item.returnedQty } },
+            });
+            productsFixed++;
+          }
         }
         // Mark this DN as reversed so a re-run won't add the qty again.
         await tx.purchaseReturn.update({
@@ -895,6 +932,55 @@ export class GrnService {
       throw new NotFoundException('Purchase Received record not found');
     }
     return grn;
+  }
+
+  // Payment history for one PE — every SupplierPayment booked against this GRN
+  // (the receive-time payment + any later "Record Payment" applied to it),
+  // oldest first. Mirrors the invoice payments endpoint so the UI tab matches.
+  async getGrnPayments(id: string, branchId?: string) {
+    const grn = await this.prisma.gRN.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        grnNumber: true,
+        branchId: true,
+        supplierName: true,
+        supplierInvoiceAmount: true,
+        amountPaid: true,
+      },
+    });
+    if (!grn) throw new NotFoundException('Purchase Received record not found');
+    if (branchId && grn.branchId && grn.branchId !== branchId) {
+      throw new NotFoundException('Purchase Received record not found');
+    }
+    const rows = await this.prisma.supplierPayment.findMany({
+      where: { grnId: id },
+      orderBy: { createdAt: 'asc' },
+      select: {
+        id: true,
+        paymentNumber: true,
+        amount: true,
+        paymentMode: true,
+        referenceNumber: true,
+        notes: true,
+        createdAt: true,
+      },
+    });
+    return {
+      grnNumber: grn.grnNumber,
+      supplierName: grn.supplierName,
+      invoiceAmount: Number(grn.supplierInvoiceAmount),
+      amountPaid: Number(grn.amountPaid),
+      payments: rows.map((p) => ({
+        id: p.id,
+        paymentNumber: p.paymentNumber,
+        amount: Number(p.amount),
+        paymentMode: p.paymentMode,
+        referenceNumber: p.referenceNumber,
+        notes: p.notes,
+        createdAt: p.createdAt,
+      })),
+    };
   }
 
   // "View Bill" — for each line of this PE, trace the batches it created

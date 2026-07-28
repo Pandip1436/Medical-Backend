@@ -375,10 +375,8 @@ export class ApprovalsService {
               where: { id: batch.id },
               data: { quantity: item.adjustedQty },
             });
-            await tx.product.update({
-              where: { id: product.id },
-              data: { totalStock: { increment: diff } },
-            });
+            // totalStock is reconciled from SUM(batches) after the loop (below)
+            // rather than incremented by this diff — see the H2/M1 fix note.
             await (tx as any).stockAdjustmentLog.create({
               data: {
                 adjustmentNo,
@@ -394,6 +392,21 @@ export class ApprovalsService {
                 notes: item.notes ?? null,
                 branchId: product.branchId ?? branchId ?? null,
               },
+            });
+          }
+          // Reconcile each affected product's totalStock from the actual SUM of
+          // its batch quantities (inside this tx), instead of incrementing by a
+          // diff read before the write. Prevents drift / negative stock under a
+          // concurrent sale. (H2 + M1 fix.)
+          const affectedProductIds = Array.from(new Set(items.map((i) => i.productId)));
+          for (const pid of affectedProductIds) {
+            const agg = await tx.batch.aggregate({
+              where: { productId: pid },
+              _sum: { quantity: true },
+            });
+            await tx.product.update({
+              where: { id: pid },
+              data: { totalStock: agg._sum.quantity ?? 0 },
             });
           }
         });

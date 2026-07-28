@@ -2,6 +2,7 @@ import {
   IsString,
   IsNotEmpty,
   IsNumber,
+  IsInt,
   Min,
   IsDateString,
 } from 'class-validator';
@@ -26,7 +27,9 @@ export class CreatePurchaseReturnItemDto {
   @IsDateString()
   expiryDate: string;
 
-  @IsNumber()
+  // Stock is tracked in whole units (Batch.quantity / totalStock are Int), so
+  // a fractional return qty would truncate/desync the columns. Reject it.
+  @IsInt()
   @Min(1)
   returnedQty: number;
 
