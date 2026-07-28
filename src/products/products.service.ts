@@ -500,17 +500,126 @@ export class ProductsService {
 
     const orderBy = { expiryDate: 'asc' as const };
 
+    // When scoped to a single product, enrich each batch with its authoritative
+    // stock movements (received / purchase-returned / sold / sales-returned /
+    // adjusted) so the product Batches tab can show columns that reconcile with
+    // the batch's live quantity. Skipped for the global batch list (would be a
+    // needless product-wide scan per page).
+    const enrich = async (rawRows: any[]) => {
+      const moves = productId
+        ? await this.computeBatchMovements(productId, rawRows)
+        : null;
+      return rawRows.map((b) => {
+        const shaped = this.shapeBatchRow(b);
+        const m = moves?.get(b.id);
+        return m ? { ...shaped, ...m } : shaped;
+      });
+    };
+
     if (take !== undefined) {
       const [rows, total] = await Promise.all([
         this.prisma.batch.findMany({ where, include, skip, take, orderBy }),
         this.prisma.batch.count({ where }),
       ]);
-      const data = rows.map((b) => this.shapeBatchRow(b));
-      return { data, total };
+      return { data: await enrich(rows), total };
     }
 
     const rows = await this.prisma.batch.findMany({ where, include, orderBy });
-    return rows.map((b) => this.shapeBatchRow(b));
+    return enrich(rows);
+  }
+
+  // Authoritative per-batch stock movements for one product. Received is exact
+  // (via each batch's originating GRN line, `grnItemId`); sold / returns are
+  // keyed by batchNumber because imported line items carry an empty batchId —
+  // and split evenly across any batches that share a number so totals aren't
+  // double-counted. `adjustedQty` is the residual (manual adjustments, write-
+  // offs, orphan/direct stock, and any imperfect attribution) computed so every
+  // row balances exactly: qty = received − purchaseReturned − sold +
+  // salesReturned + adjusted.
+  private async computeBatchMovements(
+    productId: string,
+    batches: {
+      id: string;
+      batchNumber: string;
+      grnItemId: string | null;
+      quantity: number;
+    }[],
+  ) {
+    const grnItemIds = batches
+      .map((b) => b.grnItemId)
+      .filter((x): x is string => !!x);
+
+    const [grnItems, soldRows, salesRetRows, purRetItems] = await Promise.all([
+      grnItemIds.length
+        ? this.prisma.gRNItem.findMany({
+            where: { id: { in: grnItemIds } },
+            select: { id: true, receivedQty: true, freeQty: true },
+          })
+        : Promise.resolve([] as { id: string; receivedQty: number; freeQty: number }[]),
+      this.prisma.invoiceItem.groupBy({
+        by: ['batchNumber'],
+        where: { productId, invoice: { status: { notIn: ['DRAFT', 'CANCELLED'] } } },
+        _sum: { quantity: true },
+      }),
+      this.prisma.creditNoteItem.groupBy({
+        by: ['batchNumber'],
+        where: { productId, creditNote: { status: 'APPROVED' } },
+        _sum: { returnedQty: true },
+      }),
+      this.prisma.purchaseReturnItem.findMany({
+        where: { productId },
+        select: {
+          batchNumber: true,
+          returnedQty: true,
+          purchaseReturn: { select: { reason: true } },
+        },
+      }),
+    ]);
+
+    const receivedByGrnItem = new Map(
+      grnItems.map((g) => [g.id, (g.receivedQty ?? 0) + (g.freeQty ?? 0)]),
+    );
+    const soldByNum = new Map<string, number>();
+    for (const s of soldRows) soldByNum.set(s.batchNumber, s._sum.quantity ?? 0);
+    const salesRetByNum = new Map<string, number>();
+    for (const s of salesRetRows) salesRetByNum.set(s.batchNumber, s._sum.returnedQty ?? 0);
+    // Short delivery never touched physical stock, so it isn't a real return —
+    // mirrors the deduction rule in purchase-returns.service.ts.
+    const SHORT = /short.*delivery|short.*supply/i;
+    const purRetByNum = new Map<string, number>();
+    for (const it of purRetItems) {
+      if (SHORT.test(it.purchaseReturn.reason ?? '')) continue;
+      purRetByNum.set(
+        it.batchNumber,
+        (purRetByNum.get(it.batchNumber) ?? 0) + it.returnedQty,
+      );
+    }
+
+    const batchesPerNum = new Map<string, number>();
+    for (const b of batches)
+      batchesPerNum.set(b.batchNumber, (batchesPerNum.get(b.batchNumber) ?? 0) + 1);
+
+    const out = new Map<
+      string,
+      {
+        received: number;
+        purchaseReturnedQty: number;
+        sold: number;
+        salesReturnedQty: number;
+        adjustedQty: number;
+      }
+    >();
+    for (const b of batches) {
+      const n = batchesPerNum.get(b.batchNumber) || 1;
+      const received = b.grnItemId ? receivedByGrnItem.get(b.grnItemId) ?? 0 : 0;
+      const sold = Math.round((soldByNum.get(b.batchNumber) ?? 0) / n);
+      const salesReturnedQty = Math.round((salesRetByNum.get(b.batchNumber) ?? 0) / n);
+      const purchaseReturnedQty = Math.round((purRetByNum.get(b.batchNumber) ?? 0) / n);
+      const adjustedQty =
+        b.quantity - (received - purchaseReturnedQty - sold + salesReturnedQty);
+      out.set(b.id, { received, purchaseReturnedQty, sold, salesReturnedQty, adjustedQty });
+    }
+    return out;
   }
 
   async findOneBatch(id: string, branchId?: string) {

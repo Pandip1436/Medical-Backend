@@ -1145,6 +1145,13 @@ export class SupplierImportService {
             select: { id: true },
           });
 
+          // Short delivery = goods never arrived, so nothing to deduct from
+          // stock. Every other reason means physical goods went back to the
+          // supplier. Mirrors purchase-returns.service.ts create().
+          const isShortDelivery = /short.*delivery|short.*supply/i.test(
+            d.reason ?? '',
+          );
+
           let createdItems = 0;
           for (const item of d.items ?? []) {
             const productId = await this.resolveProductId(
@@ -1159,9 +1166,10 @@ export class SupplierImportService {
                 row: d.sourceRow ?? 0,
                 supplierCode: parent.supplierCode,
                 field: 'product_name',
-                message: `Product "${item.productName}" not found — this line won't appear in that product's history (the debit note itself still imports fine). No stock is adjusted on import either way.`,
+                message: `Product "${item.productName}" not found — this line won't appear in that product's history (the debit note itself still imports fine). No stock can be adjusted for an unmatched product.`,
               });
             }
+            const returnedQty = Math.trunc(item.returnedQty ?? 0);
             await tx.purchaseReturnItem.create({
               data: {
                 purchaseReturn: { connect: { id: created.id } },
@@ -1170,13 +1178,41 @@ export class SupplierImportService {
                 batchId: '',
                 batchNumber: item.batchNumber ?? '',
                 expiryDate: parseDate(item.expiryDate) ?? new Date(),
-                returnedQty: Math.trunc(item.returnedQty ?? 0),
+                returnedQty,
                 purchaseRate: new Prisma.Decimal(item.purchaseRate ?? 0),
                 gstPercent: new Prisma.Decimal(item.gstPercent ?? 0),
                 amount: new Prisma.Decimal(item.amount ?? 0),
               },
             });
             createdItems++;
+
+            // Deduct returned goods from the GRN-created batch, matching the
+            // live purchase-return flow so imported stock isn't left gross of
+            // returns (the batch was created at GRN received qty earlier in
+            // this import — GRNs run before debit notes). Conservative: only
+            // when the batch is unambiguous (exactly one GRN-linked batch for
+            // this product+number) and holds enough stock, so the import can't
+            // fail or drive a batch negative on a polluted/replacement note.
+            if (!isShortDelivery && productId && returnedQty > 0) {
+              const matches = await tx.batch.findMany({
+                where: {
+                  productId,
+                  batchNumber: item.batchNumber ?? '',
+                  grnItemId: { not: null },
+                },
+                select: { id: true, quantity: true },
+              });
+              if (matches.length === 1 && matches[0].quantity >= returnedQty) {
+                await tx.batch.update({
+                  where: { id: matches[0].id },
+                  data: { quantity: { decrement: returnedQty } },
+                });
+                await tx.product.update({
+                  where: { id: productId },
+                  data: { totalStock: { decrement: returnedQty } },
+                });
+              }
+            }
           }
           return createdItems;
         });
