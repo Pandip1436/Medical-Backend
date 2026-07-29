@@ -12,6 +12,12 @@ import { WhatsAppService } from './whatsapp.service';
 const BACKOFF_MINUTES = [1, 5, 30, 120, 720];
 const MAX_ATTEMPTS = 5;
 
+// Hard ceiling on how many WhatsAppMessage rows may exist for one invoice.
+// Retrying re-fires invoice.created, which SPAWNS A NEW row each time, so the
+// per-row MAX_ATTEMPTS can't bound total sends — this cap does. Prevents a
+// permanently-failing (or webhook-flip) invoice from sending forever.
+const MAX_MESSAGES_PER_INVOICE = 5;
+
 // Meta error codes that NEVER succeed on retry. Sweep marks the row as
 // terminally failed (attempts = MAX) so we stop reconsidering it. A few of
 // these are also "user opt-out" signals — we flip `Customer.whatsappOptIn`
@@ -150,6 +156,43 @@ export class WhatsAppRetryService {
         where: { id: messageId },
         data: { attempts: MAX_ATTEMPTS },
       });
+      return false;
+    }
+
+    // Queue-level idempotency: if Meta already accepted a send for this invoice
+    // (a success status OR any row with a providerMessageId — a wamid Meta
+    // returned even if a later webhook flipped it to FAILED), stop and retire
+    // this failed row. Meta can flip a delivered message to FAILED; without
+    // this the sweep would re-fire forever and deliver duplicates.
+    const alreadyAccepted = await this.prisma.whatsAppMessage.count({
+      where: {
+        relatedEntityId: invoiceId,
+        relatedEntityType: 'invoice',
+        OR: [
+          { providerMessageId: { not: null } },
+          { status: { in: ['SENT', 'DELIVERED', 'READ'] } },
+        ],
+      },
+    });
+    if (alreadyAccepted > 0) {
+      await this.markTerminallyFailed(messageId);
+      this.logger.log(
+        `invoice ${invoice.invoiceNumber} already accepted by Meta — retiring failed msg ${messageId}`,
+      );
+      return false;
+    }
+
+    // Per-invoice cap: re-firing spawns a new row each time, so bound the total
+    // rows per invoice. Beyond the cap, give up (retire this row) rather than
+    // keep sending an invoice that never confirms.
+    const totalForInvoice = await this.prisma.whatsAppMessage.count({
+      where: { relatedEntityId: invoiceId, relatedEntityType: 'invoice' },
+    });
+    if (totalForInvoice >= MAX_MESSAGES_PER_INVOICE) {
+      await this.markTerminallyFailed(messageId);
+      this.logger.warn(
+        `invoice ${invoice.invoiceNumber} hit ${MAX_MESSAGES_PER_INVOICE}-message cap — giving up (msg ${messageId})`,
+      );
       return false;
     }
 

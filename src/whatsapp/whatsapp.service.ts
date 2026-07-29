@@ -145,17 +145,35 @@ export class WhatsAppService {
   }
 
   // Used by the WhatsApp webhook controller to apply delivery status updates.
+  //
+  // Status is MONOTONIC — QUEUED → SENT → DELIVERED → READ — and `failed` may
+  // only apply to a message that hasn't been delivered yet. Meta sometimes
+  // sends a late or duplicate `failed` AFTER a `delivered`; honoring it would
+  // resurrect a delivered message back into the retry queue and drive the
+  // resend loop. So each update is guarded to never regress past a later state.
   async applyStatusUpdate(wamid: string, status: 'sent' | 'delivered' | 'read' | 'failed', errorCode?: string, errorMessage?: string) {
+    const S = WhatsAppMessageStatus;
     const map: Record<string, WhatsAppMessageStatus> = {
-      sent: WhatsAppMessageStatus.SENT,
-      delivered: WhatsAppMessageStatus.DELIVERED,
-      read: WhatsAppMessageStatus.READ,
-      failed: WhatsAppMessageStatus.FAILED,
+      sent: S.SENT,
+      delivered: S.DELIVERED,
+      read: S.READ,
+      failed: S.FAILED,
     };
+    // Don't overwrite a status that already represents a later lifecycle state.
+    const guardNotIn: Record<string, WhatsAppMessageStatus[]> = {
+      failed: [S.DELIVERED, S.READ],
+      sent: [S.DELIVERED, S.READ],
+      delivered: [S.READ],
+      read: [],
+    };
+    const notIn = guardNotIn[status] ?? [];
     await this.prisma.whatsAppMessage.updateMany({
-      where: { providerMessageId: wamid },
+      where: {
+        providerMessageId: wamid,
+        ...(notIn.length ? { status: { notIn } } : {}),
+      },
       data: {
-        status: map[status] ?? WhatsAppMessageStatus.SENT,
+        status: map[status] ?? S.SENT,
         errorCode: errorCode ?? null,
         errorMessage: errorMessage ?? null,
       },

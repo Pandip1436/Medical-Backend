@@ -767,6 +767,9 @@ export class BillingService {
       status: inv.status as any,
       grandTotal: Number(inv.grandTotal),
       amountPaid: Number(inv.amountPaid),
+      // Manual "Resend" — bypass the idempotency guard so the operator can
+      // deliberately re-send even when a copy was already delivered.
+      forceResend: true,
     };
     // Diff by id rather than assuming "no rows before, so any row after is
     // new" — robust even if handle() is ever called concurrently for the

@@ -12,6 +12,10 @@ export interface InvoiceCreatedPayload {
   status: 'DRAFT' | 'PAID' | 'UNPAID' | 'PARTIAL' | 'RETURNED' | 'CANCELLED';
   grandTotal: number;
   amountPaid: number;
+  // Set only by the manual "Resend" button. Bypasses the listener's
+  // idempotency guard (which otherwise skips an invoice that already has a
+  // delivered WhatsApp message — the guard that stops the retry-sweep loop).
+  forceResend?: boolean;
 }
 
 export const PAYMENT_RECEIVED = 'payment.received' as const;

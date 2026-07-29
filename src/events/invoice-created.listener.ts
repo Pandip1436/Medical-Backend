@@ -65,6 +65,35 @@ export class InvoiceCreatedListener {
       return;
     }
 
+    // Idempotency: if this invoice already has a WhatsApp message that reached
+    // Meta (SENT/DELIVERED/READ), don't send again. The retry sweep re-fires
+    // this event, and Meta can spuriously flip a delivered message to FAILED —
+    // without this guard every such retry would deliver a DUPLICATE to the
+    // customer AND spawn a new message row, which is exactly the runaway loop
+    // that sent 1000+ copies. Manual "Resend" sets forceResend to bypass this.
+    if (!payload.forceResend) {
+      // "Already accepted by Meta" = a message row that either reached a
+      // success state OR carries a providerMessageId (Meta returned a wamid,
+      // i.e. it accepted the send even if a later webhook flipped it to
+      // FAILED). A send-time failure (non-2xx) has no wamid and IS retryable.
+      const alreadyAccepted = await this.prisma.whatsAppMessage.count({
+        where: {
+          relatedEntityId: invoice.id,
+          relatedEntityType: 'invoice',
+          OR: [
+            { providerMessageId: { not: null } },
+            { status: { in: ['SENT', 'DELIVERED', 'READ'] } },
+          ],
+        },
+      });
+      if (alreadyAccepted > 0) {
+        this.logger.log(
+          `invoice ${invoice.invoiceNumber} already accepted by Meta — skipping resend`,
+        );
+        return;
+      }
+    }
+
     const outstanding = Number(invoice.grandTotal) - Number(invoice.amountPaid);
 
     // Step 1: payment QR (only if there's outstanding to collect).
