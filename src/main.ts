@@ -4,6 +4,15 @@ import { ValidationPipe } from '@nestjs/common';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { json, urlencoded } from 'express';
 
+// Pin the process timezone to IST. This is a single-region (India) business, so
+// every "today" / startOf('day') / expiry-day / reminder-day boundary must be
+// computed on the Indian calendar day — NOT the host's timezone. Local dev runs
+// in IST but Render/Cloud Run run in UTC, so without this an invoice created
+// just after midnight IST (stored as the previous UTC day) silently drops out of
+// "Today's Sales" and the Today invoice filter in production. Defaulting via `||`
+// still lets an explicit TZ env var override it for testing.
+process.env.TZ = process.env.TZ || 'Asia/Kolkata';
+
 async function bootstrap() {
   // rawBody: true preserves the original request Buffer at req.rawBody so
   // webhook controllers (Razorpay, Meta WhatsApp) can verify HMAC-SHA256
