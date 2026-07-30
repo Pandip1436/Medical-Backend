@@ -200,6 +200,37 @@ export class SuppliersController {
     });
   }
 
+  // Declared before `@Get(':id')` so "payments-due" isn't captured as a supplier id.
+  @Get('payments-due')
+  @Roles('ADMIN', 'INVENTORY_MANAGER', 'PHARMACIST', 'ACCOUNTANT')
+  @ApiOperation({
+    summary:
+      'Open credit GRNs due for supplier payment, sorted by due date (overdue / due-soon / upcoming) with KPI summary.',
+  })
+  @ApiQuery({ name: 'branchId', required: false })
+  @ApiQuery({ name: 'q', required: false })
+  @ApiQuery({
+    name: 'status',
+    required: false,
+    enum: ['overdue', 'due-soon', 'upcoming', 'all'],
+  })
+  getPaymentsDue(
+    @Request() req: AuthenticatedRequest,
+    @Query('branchId') branchId?: string,
+    @Query('q') q?: string,
+    @Query('status') status?: string,
+  ) {
+    const effectiveBranchId = req.user.branchId ?? branchId ?? undefined;
+    const allowed = ['overdue', 'due-soon', 'upcoming', 'all'] as const;
+    const safeStatus = (allowed as readonly string[]).includes(status ?? '')
+      ? (status as 'overdue' | 'due-soon' | 'upcoming' | 'all')
+      : undefined;
+    return this.suppliersService.getPaymentsDue(effectiveBranchId, {
+      q: q?.trim() || undefined,
+      status: safeStatus,
+    });
+  }
+
   // Declared before `@Get(':id')` so "summary" isn't captured as a supplier id.
   @Get('summary')
   @Roles('ADMIN', 'INVENTORY_MANAGER', 'PHARMACIST', 'ACCOUNTANT')

@@ -674,20 +674,48 @@ export class NotificationsService {
         supplierInvoiceAmount: true,
         amountPaid: true,
         supplierInvoiceDate: true,
+        dueDate: true,
         branchId: true,
+        supplier: { select: { paymentTerms: true } },
       },
     });
+
+    // Credit-term length in days → fallback due date when a GRN has no explicit
+    // dueDate. Unknown/absent terms fall back to the legacy grace window so
+    // behaviour is unchanged for suppliers without a resolvable term.
+    const termDays = (terms?: string | null): number => {
+      switch (terms) {
+        case 'NET_45':
+          return 45;
+        case 'NET_60':
+          return 60;
+        case 'NET_30':
+          return 30;
+        default:
+          return SUPPLIER_PAYMENT_DUE_AFTER_DAYS;
+      }
+    };
 
     const now = new Date();
     let created = 0;
     for (const g of grns) {
       const outstanding = Number(g.supplierInvoiceAmount) - Number(g.amountPaid);
       if (outstanding <= 0.01) continue;
+      // Fire off the payment DUE DATE (mirrors the Payments Due screen /
+      // SuppliersService.getPaymentsDue), not "N days since the invoice". Use
+      // the explicit GRN.dueDate captured in Purchase Entry, else fall back to
+      // supplierInvoiceDate + the supplier's credit term.
+      const effectiveDue = g.dueDate
+        ? new Date(g.dueDate)
+        : new Date(
+            new Date(g.supplierInvoiceDate).getTime() +
+              termDays(g.supplier?.paymentTerms) * 86_400_000,
+          );
       const daysOutstanding = Math.floor(
-        (now.getTime() - new Date(g.supplierInvoiceDate).getTime()) / 86_400_000,
+        (now.getTime() - effectiveDue.getTime()) / 86_400_000,
       );
-      // Grace period: don't nag until the payment term (default 60 days) elapses.
-      if (daysOutstanding < SUPPLIER_PAYMENT_DUE_AFTER_DAYS) continue;
+      // Not due yet — nothing to nudge about.
+      if (daysOutstanding < 0) continue;
 
       const marker = {
         type: NotificationType.SUPPLIER_PAYMENT_DUE,

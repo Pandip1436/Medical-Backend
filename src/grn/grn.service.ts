@@ -75,6 +75,12 @@ export class GrnService {
           supplierInvoiceNo: createGrnDto.supplierInvoiceNo,
           supplierInvoiceDate: new Date(createGrnDto.supplierInvoiceDate),
           supplierInvoiceAmount: createGrnDto.supplierInvoiceAmount,
+          // Credit due date — only meaningful when part of the invoice stays on
+          // the supplier's outstanding (never for a replacement GRN).
+          dueDate:
+            !isReplacement && createGrnDto.dueDate
+              ? new Date(createGrnDto.dueDate)
+              : null,
           totalAmount: createGrnDto.totalAmount,
           status: createGrnDto.status,
           branchId: effectiveBranchId,
@@ -470,6 +476,11 @@ export class GrnService {
           supplierInvoiceNo: dto.supplierInvoiceNo,
           supplierInvoiceDate: new Date(dto.supplierInvoiceDate),
           supplierInvoiceAmount: dto.supplierInvoiceAmount,
+          // Allow re-setting/clearing the credit due date on edit.
+          dueDate:
+            !existing.isReplacement && dto.dueDate
+              ? new Date(dto.dueDate)
+              : null,
           totalAmount: dto.totalAmount,
           status: dto.status,
           // amountPaid is preserved (payments are unchanged by an edit); only

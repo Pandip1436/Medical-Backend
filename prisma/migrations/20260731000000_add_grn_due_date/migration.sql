@@ -1,0 +1,2 @@
+-- AlterTable
+ALTER TABLE "GRN" ADD COLUMN "dueDate" TIMESTAMP(3);

@@ -696,6 +696,10 @@ model GRN {
   supplierInvoiceNo     String
   supplierInvoiceDate   DateTime
   supplierInvoiceAmount Decimal
+  // Payment due date for the credit portion of this purchase (the amount that
+  // lands in supplier outstanding). Optional — only captured for CREDIT/PARTIAL
+  // receipts; null for paid-in-full or replacement GRNs.
+  dueDate               DateTime?
   items                 GRNItem[]
   totalAmount           Decimal
   status                GRNStatus

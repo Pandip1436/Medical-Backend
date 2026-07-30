@@ -695,6 +695,7 @@ export class SuppliersService {
         id: true,
         grnNumber: true,
         date: true,
+        dueDate: true,
         supplierInvoiceNo: true,
         supplierInvoiceAmount: true,
         amountPaid: true,
@@ -717,6 +718,7 @@ export class SuppliersService {
           id: g.id,
           grnNumber: g.grnNumber,
           date: g.date,
+          dueDate: g.dueDate,
           supplierInvoiceNo: g.supplierInvoiceNo,
           invoiceAmount,
           amountPaid,
@@ -726,6 +728,143 @@ export class SuppliersService {
         };
       })
       .filter((g) => g.balance > 0.01);
+  }
+
+  // Credit-term length in days for a supplier, used to derive a fallback due
+  // date when a GRN has no explicit dueDate (legacy / older credit purchases).
+  private termDays(terms?: string | null): number {
+    switch (terms) {
+      case 'NET_45':
+        return 45;
+      case 'NET_60':
+        return 60;
+      case 'NET_30':
+      default:
+        return 30;
+    }
+  }
+
+  // "Supplier Payments Due" — the payables counterpart to the customer Due inbox.
+  // A flat, due-date-sorted list of every open (UNPAID/PARTIAL) credit GRN with
+  // its outstanding balance, keyed off GRN.dueDate. Where a GRN has no explicit
+  // dueDate (older entries), it falls back to grnDate + the supplier's credit
+  // term (NET_30/45/60) — mirroring reports.service.effectiveDueDate on the
+  // customer side. Each row is classed overdue / due-soon (≤7 days) / upcoming.
+  async getPaymentsDue(
+    branchId?: string,
+    filters?: { q?: string; status?: 'overdue' | 'due-soon' | 'upcoming' | 'all' },
+  ) {
+    const grns = await this.prisma.gRN.findMany({
+      where: {
+        isReplacement: false,
+        paymentStatus: { in: ['UNPAID', 'PARTIAL'] },
+        ...(branchId ? { branchId } : {}),
+      },
+      select: {
+        id: true,
+        grnNumber: true,
+        date: true,
+        dueDate: true,
+        supplierId: true,
+        supplierName: true,
+        supplierInvoiceNo: true,
+        supplierInvoiceAmount: true,
+        amountPaid: true,
+        paymentStatus: true,
+        supplier: { select: { paymentTerms: true } },
+      },
+    });
+
+    const now = Date.now();
+    const DUE_SOON_DAYS = 7;
+    const round2 = (n: number) => Math.round(n * 100) / 100;
+
+    let rows = grns
+      .map((g) => {
+        const balance = round2(
+          Number(g.supplierInvoiceAmount) - Number(g.amountPaid),
+        );
+        if (balance <= 0.01) return null;
+        const explicitDueDate = !!g.dueDate;
+        const effectiveDue = g.dueDate
+          ? new Date(g.dueDate)
+          : new Date(
+              new Date(g.date).getTime() +
+                this.termDays(g.supplier?.paymentTerms) * 86400000,
+            );
+        const daysPastDue = Math.floor(
+          (now - effectiveDue.getTime()) / 86400000,
+        );
+        const bucket: 'overdue' | 'due-soon' | 'upcoming' =
+          daysPastDue > 0
+            ? 'overdue'
+            : daysPastDue >= -DUE_SOON_DAYS
+              ? 'due-soon'
+              : 'upcoming';
+        return {
+          grnId: g.id,
+          grnNumber: g.grnNumber,
+          supplierId: g.supplierId,
+          supplierName: g.supplierName,
+          supplierInvoiceNo: g.supplierInvoiceNo,
+          grnDate: g.date,
+          dueDate: effectiveDue,
+          explicitDueDate,
+          balance,
+          daysPastDue,
+          status: g.paymentStatus,
+          bucket,
+        };
+      })
+      .filter((r): r is NonNullable<typeof r> => r !== null);
+
+    // Most-overdue first (earliest due date at the top).
+    rows.sort((a, b) => a.dueDate.getTime() - b.dueDate.getTime());
+
+    // Summary over ALL due rows (computed before q/status narrowing so the KPI
+    // cards stay stable while the user filters the table).
+    const summary = {
+      overdueAmount: 0,
+      overdueCount: 0,
+      dueSoonAmount: 0,
+      dueSoonCount: 0,
+      upcomingAmount: 0,
+      upcomingCount: 0,
+      totalDue: 0,
+      totalCount: 0,
+    };
+    for (const r of rows) {
+      summary.totalDue += r.balance;
+      summary.totalCount += 1;
+      if (r.bucket === 'overdue') {
+        summary.overdueAmount += r.balance;
+        summary.overdueCount += 1;
+      } else if (r.bucket === 'due-soon') {
+        summary.dueSoonAmount += r.balance;
+        summary.dueSoonCount += 1;
+      } else {
+        summary.upcomingAmount += r.balance;
+        summary.upcomingCount += 1;
+      }
+    }
+    summary.overdueAmount = round2(summary.overdueAmount);
+    summary.dueSoonAmount = round2(summary.dueSoonAmount);
+    summary.upcomingAmount = round2(summary.upcomingAmount);
+    summary.totalDue = round2(summary.totalDue);
+
+    if (filters?.q) {
+      const q = filters.q.toLowerCase();
+      rows = rows.filter(
+        (r) =>
+          r.supplierName.toLowerCase().includes(q) ||
+          (r.supplierInvoiceNo ?? '').toLowerCase().includes(q),
+      );
+    }
+    if (filters?.status && filters.status !== 'all') {
+      rows = rows.filter((r) => r.bucket === filters.status);
+    }
+
+    return { summary, rows };
   }
 
   // Record a payment we made to a supplier — the credit side of the supplier

@@ -35,6 +35,12 @@ export class CreateGrnDto {
   @IsNotEmpty()
   supplierInvoiceDate: string;
 
+  // Payment due date for the credit portion (CREDIT / PARTIAL receipts). Optional
+  // — omitted for paid-in-full or replacement GRNs.
+  @IsDateString()
+  @IsOptional()
+  dueDate?: string;
+
   @IsNumber()
   @Min(0)
   supplierInvoiceAmount: number;

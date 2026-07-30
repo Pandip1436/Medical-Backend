@@ -378,11 +378,15 @@ export class BillingService {
     // ledger update, no notifications, no credit-limit check.
     // The draft only becomes "real" when finalizeDraft() runs.
     const isDraft = createInvoiceDto.status === 'DRAFT';
+    // Admins are exempt from the pending-credit cap — they can extend credit
+    // regardless of how many invoices a customer already has unsettled.
+    const isAdmin = userRole === 'ADMIN' || userRole === 'SUPER_ADMIN';
     const created = await this.prisma.$transaction(async (tx) => {
       // 1. Credit limit check — behaviour differs by role. Skipped for drafts
-      // (a draft hasn't extended credit to anyone yet).
+      // (a draft hasn't extended credit to anyone yet) and for admins.
       if (
         !isDraft &&
+        !isAdmin &&
         createInvoiceDto.type === 'INVOICE' &&
         createInvoiceDto.paymentMode === 'CREDIT' &&
         createInvoiceDto.customerId
