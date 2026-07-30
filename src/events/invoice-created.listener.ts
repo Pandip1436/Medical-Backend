@@ -23,6 +23,11 @@ import { PaymentLinkStatus } from '@prisma/client';
 @Injectable()
 export class InvoiceCreatedListener {
   private readonly logger = new Logger(InvoiceCreatedListener.name);
+  // In-process guard: prevents concurrent handle() calls for the same invoice
+  // from racing through the idempotency check simultaneously. This covers both
+  // the listener-accumulation scenario (duplicate @OnEvent registrations due to
+  // double module import) and rapid concurrent API calls to POST /send-whatsapp.
+  private readonly processing = new Set<string>();
 
   constructor(
     private readonly prisma: PrismaService,
@@ -35,6 +40,19 @@ export class InvoiceCreatedListener {
 
   @OnEvent(INVOICE_CREATED, { async: true })
   async handle(payload: InvoiceCreatedPayload) {
+    if (this.processing.has(payload.invoiceId)) {
+      this.logger.warn(`duplicate handle() for invoice ${payload.invoiceId} — dropped (listener registered multiple times?)`);
+      return;
+    }
+    this.processing.add(payload.invoiceId);
+    try {
+      return await this._handle(payload);
+    } finally {
+      this.processing.delete(payload.invoiceId);
+    }
+  }
+
+  private async _handle(payload: InvoiceCreatedPayload) {
     if (process.env.WHATSAPP_AUTO_SEND_ENABLED !== 'true') {
       this.logger.debug(`auto-send disabled, skipping invoice ${payload.invoiceId}`);
       return;
@@ -82,7 +100,7 @@ export class InvoiceCreatedListener {
           relatedEntityType: 'invoice',
           OR: [
             { providerMessageId: { not: null } },
-            { status: { in: ['SENT', 'DELIVERED', 'READ'] } },
+            { status: { in: ['QUEUED', 'SENT', 'DELIVERED', 'READ'] } },
           ],
         },
       });

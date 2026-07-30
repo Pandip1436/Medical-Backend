@@ -29,6 +29,9 @@ const MAX_MESSAGES_PER_INVOICE = 5;
 //   132000 — template parameter count mismatch
 //   132001 — template does not exist
 //   132012 — template paused for low quality
+//   133010 — sender phone number not registered; requires manual re-registration
+//            via Graph API — retrying automatically will never fix this and
+//            causes a burst of messages once the number is eventually registered.
 const PERMANENT_ERROR_CODES = new Set([
   '131048',
   '131049',
@@ -37,6 +40,7 @@ const PERMANENT_ERROR_CODES = new Set([
   '132000',
   '132001',
   '132012',
+  '133010',
 ]);
 const OPT_OUT_CODES = new Set(['131048', '131049', '131026']);
 
@@ -170,7 +174,7 @@ export class WhatsAppRetryService {
         relatedEntityType: 'invoice',
         OR: [
           { providerMessageId: { not: null } },
-          { status: { in: ['SENT', 'DELIVERED', 'READ'] } },
+          { status: { in: ['QUEUED', 'SENT', 'DELIVERED', 'READ'] } },
         ],
       },
     });

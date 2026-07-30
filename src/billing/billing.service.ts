@@ -1,4 +1,4 @@
-import { Injectable, BadRequestException, NotFoundException } from '@nestjs/common';
+import { Injectable, BadRequestException, NotFoundException, Logger } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { PrismaService } from '../prisma/prisma.service';
 import { ApprovalsService } from '../approvals/approvals.service';
@@ -48,6 +48,8 @@ function normalizeItem(item: CreateInvoiceItemDto, mrpFallback: number) {
 
 @Injectable()
 export class BillingService {
+  private readonly logger = new Logger(BillingService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly approvalsService: ApprovalsService,
@@ -759,6 +761,23 @@ export class BillingService {
   async emitInvoiceCreatedById(invoiceId: string) {
     const inv = await this.prisma.invoice.findUnique({ where: { id: invoiceId } });
     if (!inv) throw new NotFoundException('Invoice not found');
+
+    // Cooldown: if a message was created for this invoice in the last 30 seconds,
+    // skip — protects against rapid button clicks and concurrent API requests
+    // that sneak through the React disabled-state guard.
+    const recentAttempt = await this.prisma.whatsAppMessage.findFirst({
+      where: {
+        relatedEntityId: inv.id,
+        relatedEntityType: 'invoice',
+        createdAt: { gte: new Date(Date.now() - 30_000) },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+    if (recentAttempt) {
+      this.logger.warn(`resend throttled for ${inv.invoiceNumber} — a message was created ${Math.round((Date.now() - recentAttempt.createdAt.getTime()) / 1000)}s ago`);
+      return { ok: false, status: 'SKIPPED', invoiceNumber: inv.invoiceNumber };
+    }
+
     const payload: InvoiceCreatedPayload = {
       invoiceId: inv.id,
       branchId: inv.branchId ?? null,
