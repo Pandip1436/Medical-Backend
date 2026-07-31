@@ -933,16 +933,39 @@ export class GrnService {
     }, MIGRATION_TX_OPTIONS);
   }
 
+  // Credit-term length in days, used to derive a fallback payment due date when
+  // a GRN carries no explicit dueDate. Mirrors suppliers.service.termDays.
+  private termDays(terms?: string | null): number {
+    switch (terms) {
+      case 'NET_45':
+        return 45;
+      case 'NET_60':
+        return 60;
+      case 'NET_30':
+      default:
+        return 30;
+    }
+  }
+
   async findOne(id: string, branchId?: string) {
     const grn = await this.prisma.gRN.findUnique({
       where: { id },
-      include: { items: true },
+      include: { items: true, supplier: { select: { paymentTerms: true } } },
     });
     if (!grn) throw new NotFoundException('Purchase Received record not found');
     if (branchId && grn.branchId && grn.branchId !== branchId) {
       throw new NotFoundException('Purchase Received record not found');
     }
-    return grn;
+    // Effective payment due date: the explicit dueDate, else PE date + the
+    // supplier's credit term (NET_30/45/60). Keeps the detail page in step with
+    // the Supplier Payments Due report (suppliers.service.getPaymentsDue).
+    const effectiveDueDate = grn.dueDate
+      ? grn.dueDate
+      : new Date(
+          new Date(grn.date).getTime() +
+            this.termDays(grn.supplier?.paymentTerms) * 86400000,
+        );
+    return { ...grn, effectiveDueDate };
   }
 
   // Payment history for one PE — every SupplierPayment booked against this GRN
