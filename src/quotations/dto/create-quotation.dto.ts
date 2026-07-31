@@ -1,4 +1,4 @@
-import { IsString, IsNotEmpty, IsNumber, Min, IsOptional, ValidateNested, ArrayMinSize, IsDateString, Matches } from 'class-validator';
+import { IsString, IsNotEmpty, IsNumber, Min, IsOptional, IsArray, ValidateNested, ArrayMinSize, IsDateString, Matches } from 'class-validator';
 import { Type } from 'class-transformer';
 
 export class CreateQuotationItemDto {
@@ -78,6 +78,11 @@ export class CreateQuotationDto {
   @Min(0)
   @IsOptional()
   deliveryCharge?: number;
+
+  // User-defined extra charges (see Invoice). Non-taxable; folded into total.
+  @IsOptional()
+  @IsArray()
+  additionalCharges?: Array<{ label: string; amount: number }>;
 
   @IsNumber()
   @Min(0)

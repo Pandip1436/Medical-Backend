@@ -1,4 +1,4 @@
-import { IsString, IsNotEmpty, IsEnum, IsNumber, Min, IsOptional, IsBoolean, ValidateNested, ArrayMinSize, IsDateString, IsIn } from 'class-validator';
+import { IsString, IsNotEmpty, IsEnum, IsNumber, Min, IsOptional, IsBoolean, IsArray, ValidateNested, ArrayMinSize, IsDateString, IsIn } from 'class-validator';
 import { Type } from 'class-transformer';
 import { InvoiceType, BillingType, PaymentMode, InvoiceStatus } from '@prisma/client';
 import { CreateInvoiceItemDto } from './create-invoice-item.dto';
@@ -66,6 +66,12 @@ export class CreateInvoiceDto {
   @Min(0)
   @IsOptional()
   deliveryCharge?: number;
+
+  // User-defined extra charges (Commission, Handling, …). Non-taxable add-ons
+  // already folded into grandTotal by the client; stored for the PDF/detail.
+  @IsOptional()
+  @IsArray()
+  additionalCharges?: Array<{ label: string; amount: number }>;
 
   @IsNumber()
   roundOff: number;

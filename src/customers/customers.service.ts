@@ -288,17 +288,41 @@ export class CustomersService {
         },
       },
     };
-    if (paginated) {
+
+    const q = (query ?? '').trim().toLowerCase();
+    const isSearch = q.length > 0;
+
+    let customers: any[];
+    let total: number | undefined;
+
+    if (isSearch && paginated) {
+      // Relevance-ranked search. The DB can only order alphabetically, which
+      // buries the obvious name match (e.g. "BABU" for "bab" sinks below any
+      // earlier-alphabet customer whose ADDRESS happens to contain "bab"). So
+      // fetch the matching set (capped), rank it by how well each row matches
+      // the query, then paginate the RANKED list — closest name match first.
+      const RANK_CAP = 200;
+      const [matches, cnt] = await Promise.all([
+        this.prisma.customer.findMany({ ...findArgs, take: RANK_CAP }),
+        this.prisma.customer.count({ where }),
+      ]);
+      const ranked = matches
+        .map((c) => ({ c, s: this.customerRelevanceScore(c, q) }))
+        .sort((a, b) => a.s - b.s || String(a.c.name ?? '').localeCompare(String(b.c.name ?? '')))
+        .map((x) => x.c);
+      customers = ranked.slice(safeSkip!, safeSkip! + safeTake!);
+      total = cnt;
+    } else if (paginated) {
       findArgs.skip = safeSkip;
       findArgs.take = safeTake;
+      [customers, total] = await Promise.all([
+        this.prisma.customer.findMany(findArgs),
+        this.prisma.customer.count({ where }),
+      ]);
+    } else {
+      customers = await this.prisma.customer.findMany(findArgs);
+      total = undefined;
     }
-
-    const [customers, total] = paginated
-      ? await Promise.all([
-          this.prisma.customer.findMany(findArgs),
-          this.prisma.customer.count({ where }),
-        ])
-      : [await this.prisma.customer.findMany(findArgs), undefined];
 
     // Per-customer billed/paid totals across all real invoices (DRAFT and
     // CANCELLED excluded so they mirror the live ledger). One grouped query
@@ -709,6 +733,29 @@ export class CustomersService {
       ];
     }
     return where;
+  }
+
+  // Relevance score for a customer against a search query (LOWER = better).
+  // Name matches beat phone/id/address matches, and a prefix beats a mid-string
+  // hit — so searching "bab" surfaces "BABU" (name prefix) above a customer that
+  // only matches because its ADDRESS contains "bab". Ties fall back to
+  // alphabetical. Mirrors the fields matched in buildCustomerWhere().
+  private customerRelevanceScore(
+    c: { name?: string | null; phone?: string | null; email?: string | null; gstin?: string | null; address?: string | null },
+    q: string,
+  ): number {
+    const name = (c.name ?? '').toLowerCase();
+    const phone = (c.phone ?? '').toLowerCase();
+    const email = (c.email ?? '').toLowerCase();
+    const gstin = (c.gstin ?? '').toLowerCase();
+    const address = (c.address ?? '').toLowerCase();
+    if (name === q) return 0;               // exact name
+    if (name.startsWith(q)) return 1;       // name prefix  → "BABU" for "bab"
+    if (name.includes(q)) return 2;         // name contains
+    if (phone.includes(q)) return 3;        // phone
+    if (email.includes(q) || gstin.includes(q)) return 4;
+    if (address.includes(q)) return 5;      // address only (least relevant)
+    return 6;
   }
 
   async findOne(id: string, branchId?: string) {

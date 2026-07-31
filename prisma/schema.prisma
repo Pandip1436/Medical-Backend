@@ -488,6 +488,9 @@ model Invoice {
   sgst            Decimal
   igst            Decimal       @default(0)
   deliveryCharge  Decimal       @default(0)
+  // User-defined extra charges, e.g. [{ "label": "Commission", "amount": 200 }].
+  // Non-taxable add-ons already folded into grandTotal by the client.
+  additionalCharges Json?
   roundOff        Decimal       @default(0)
   grandTotal      Decimal
   paymentMode     PaymentMode
@@ -1028,6 +1031,8 @@ model Quotation {
   cgst            Decimal         @default(0)
   sgst            Decimal         @default(0)
   deliveryCharge  Decimal         @default(0)
+  // User-defined extra charges (see Invoice.additionalCharges).
+  additionalCharges Json?
   total           Decimal
   validUntil      DateTime?
   notes           String?

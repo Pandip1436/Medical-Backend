@@ -159,6 +159,7 @@ export class DispatchNotificationService {
       sgst: Number(invoice.sgst),
       igst: Number(invoice.igst),
       deliveryCharge: Number(invoice.deliveryCharge),
+      additionalCharges: (invoice.additionalCharges as any) ?? [],
       roundOff: Number(invoice.roundOff),
       grandTotal: Number(invoice.grandTotal),
       amountPaid: Number(invoice.amountPaid),

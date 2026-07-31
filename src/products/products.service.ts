@@ -261,6 +261,30 @@ export class ProductsService {
     });
   }
 
+  // Relevance score for a product against a search query (LOWER = better).
+  // A name prefix ("CALPOL" for "ca") beats a mid-word hit (advaCAn) which beats
+  // a match on generic/manufacturer/hsn/barcode — so the obvious name match
+  // leads instead of whatever sorts first alphabetically. Mirrors the fields
+  // matched in findAll's OR filter. Ties fall back to alphabetical.
+  private productRelevanceScore(
+    p: { name?: string | null; genericName?: string | null; manufacturer?: string | null; hsnCode?: string | null; barcode?: string | null },
+    q: string,
+  ): number {
+    const name = (p.name ?? '').toLowerCase();
+    const generic = (p.genericName ?? '').toLowerCase();
+    const mfr = (p.manufacturer ?? '').toLowerCase();
+    const hsn = (p.hsnCode ?? '').toLowerCase();
+    const barcode = (p.barcode ?? '').toLowerCase();
+    if (name === q) return 0;             // exact name
+    if (name.startsWith(q)) return 1;     // name prefix → "CALPOL" for "ca"
+    if (name.includes(q)) return 2;       // name contains → "advaCAn"
+    if (generic.startsWith(q)) return 3;
+    if (generic.includes(q)) return 4;
+    if (mfr.includes(q)) return 5;
+    if (hsn.includes(q) || barcode.includes(q)) return 6;
+    return 7;
+  }
+
   async findAll(opts: {
     query?: string;
     categoryId?: string;
@@ -284,12 +308,15 @@ export class ProductsService {
     else if (!includeInactive) where.isActive = true;
     if (branchId) where.branchId = branchId;
     if (query) {
+      // PREFIX search, not substring: typing "ca" matches products/names that
+      // START with "ca" — never every product where "ca" appears mid-word
+      // ("adva[ca]n", "amino[ca]re", "…[ca]ps"). Search by the beginning of the
+      // brand or generic name (or manufacturer / barcode).
       where.OR = [
-        { name: { contains: query, mode: 'insensitive' } },
-        { genericName: { contains: query, mode: 'insensitive' } },
-        { manufacturer: { contains: query, mode: 'insensitive' } },
-        { hsnCode: { contains: query, mode: 'insensitive' } },
-        { barcode: { contains: query, mode: 'insensitive' } },
+        { name: { startsWith: query, mode: 'insensitive' } },
+        { genericName: { startsWith: query, mode: 'insensitive' } },
+        { manufacturer: { startsWith: query, mode: 'insensitive' } },
+        { barcode: { startsWith: query, mode: 'insensitive' } },
       ];
     }
     if (categoryId) where.categoryId = categoryId;
@@ -318,6 +345,28 @@ export class ProductsService {
     if (take !== undefined) {
       const safeTake = Math.min(Math.max(0, take), 100);
       const safeSkip = Math.max(0, skip);
+      const q = (query ?? '').trim().toLowerCase();
+
+      if (q) {
+        // Relevance-ranked search. The DB can only sort alphabetically, which
+        // buries the obvious name match (searching "ca" lists "advaCAn" /
+        // "aminoCAre" before anything that STARTS with "ca"). Fetch the matching
+        // set (capped), rank by relevance, then paginate the ranked list.
+        const RANK_CAP = 200;
+        const [matches, total] = await Promise.all([
+          this.prisma.product.findMany({ where, include, orderBy: { name: 'asc' }, take: RANK_CAP }),
+          this.prisma.product.count({ where }),
+        ]);
+        const ranked = matches
+          .map((p) => ({ p, s: this.productRelevanceScore(p, q) }))
+          .sort((a, b) => a.s - b.s || String(a.p.name ?? '').localeCompare(String(b.p.name ?? '')))
+          .map((x) => x.p);
+        const page = ranked
+          .slice(safeSkip, safeSkip + safeTake)
+          .map((p) => this.reconcileProductBatches(p));
+        return { data: page, total, hasMore: safeSkip + page.length < total };
+      }
+
       const [data, total] = await Promise.all([
         this.prisma.product.findMany({ where, include, skip: safeSkip, take: safeTake, orderBy: { name: 'asc' } }),
         this.prisma.product.count({ where }),

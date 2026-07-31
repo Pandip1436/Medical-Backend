@@ -47,6 +47,7 @@ export interface InvoicePdfData {
   sgst: number;
   igst: number;
   deliveryCharge?: number;
+  additionalCharges?: Array<{ label: string; amount: number }>;
   roundOff: number;
   grandTotal: number;
   amountPaid: number;
@@ -196,6 +197,11 @@ export class InvoicePdfService implements OnModuleDestroy {
       showSgst: Number(d.sgst) > 0,
       showIgst: Number(d.igst) > 0,
       showDelivery: Number(d.deliveryCharge ?? 0) > 0,
+      // User-defined extra charges (Commission, Handling, …). Non-taxable
+      // add-ons already folded into grandTotal; shown as their own lines.
+      charges: (d.additionalCharges ?? [])
+        .filter((c) => c && (c.label ?? '').trim() !== '' && Number(c.amount) !== 0)
+        .map((c) => ({ label: c.label.trim(), amount: Number(c.amount) || 0 })),
       showRoundOff: Number(d.roundOff) !== 0,
       showPaid: Number(d.amountPaid) > 0,
       showOutstanding: outstanding > 0.01,

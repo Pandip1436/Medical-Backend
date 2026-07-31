@@ -39,6 +39,7 @@ export class QuotationsService {
           cgst: dto.cgst,
           sgst: dto.sgst,
           deliveryCharge: dto.deliveryCharge ?? 0,
+          additionalCharges: (dto.additionalCharges ?? []) as any,
           total: dto.total,
           validUntil: dto.validUntil ? new Date(dto.validUntil) : null,
           notes: dto.notes,
