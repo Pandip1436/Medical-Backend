@@ -661,6 +661,9 @@ export class ProductsService {
       quantity: b.quantity,
       mrp: b.mrp,
       purchaseRate: b.purchaseRate,
+      // Sale rate set for this batch at receipt (GRN). Drives the Batches tab's
+      // "Selling Price" column instead of falling back to MRP.
+      sellingRate: b.sellingRate,
       supplierId: b.supplierId,
       supplierName: b.supplier?.name ?? null,
       supplierPhone: b.supplier?.phone ?? null,

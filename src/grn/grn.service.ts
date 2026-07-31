@@ -950,12 +950,23 @@ export class GrnService {
   async findOne(id: string, branchId?: string) {
     const grn = await this.prisma.gRN.findUnique({
       where: { id },
-      include: { items: true, supplier: { select: { paymentTerms: true } } },
+      include: {
+        // Pull each line's batch so we can surface the per-batch sale rate — it
+        // lives on the Batch, not the GRNItem, and the edit form needs it to
+        // reload the saved value instead of the product master's rate.
+        items: { include: { batches: { select: { sellingRate: true } } } },
+        supplier: { select: { paymentTerms: true } },
+      },
     });
     if (!grn) throw new NotFoundException('Purchase Received record not found');
     if (branchId && grn.branchId && grn.branchId !== branchId) {
       throw new NotFoundException('Purchase Received record not found');
     }
+    // Flatten the batch sale rate onto each item; drop the nested batches array.
+    const items = grn.items.map(({ batches, ...it }) => ({
+      ...it,
+      sellingRate: batches?.[0]?.sellingRate != null ? Number(batches[0].sellingRate) : null,
+    }));
     // Effective payment due date: the explicit dueDate, else PE date + the
     // supplier's credit term (NET_30/45/60). Keeps the detail page in step with
     // the Supplier Payments Due report (suppliers.service.getPaymentsDue).
@@ -965,7 +976,7 @@ export class GrnService {
           new Date(grn.date).getTime() +
             this.termDays(grn.supplier?.paymentTerms) * 86400000,
         );
-    return { ...grn, effectiveDueDate };
+    return { ...grn, items, effectiveDueDate };
   }
 
   // Payment history for one PE — every SupplierPayment booked against this GRN
