@@ -14,6 +14,7 @@ import { CreateCreditNoteDto } from './dto/create-credit-note.dto';
 import { ApproveCreditNoteDto } from './dto/approve-credit-note.dto';
 import { RejectCreditNoteDto } from './dto/reject-credit-note.dto';
 import { syncPaymentDueForInvoice } from '../notifications/payment-due-sync';
+import { rankByRelevance } from '../common/search-rank.util';
 
 @Injectable()
 export class CreditNotesService {
@@ -703,6 +704,25 @@ export class CreditNotesService {
 
     const safeTake = Math.min(Math.max(opts!.take!, 1), 100);
     const safeSkip = Math.max(opts!.skip!, 0);
+
+    // With a search query, rank creditNoteNo / customerName matches ahead of
+    // rows that matched only via the related invoiceNumber, then slice for
+    // pagination (ranking must be global). Search sets are small.
+    if (query) {
+      const matches = await this.prisma.creditNote.findMany({
+        where,
+        include,
+        orderBy: { date: 'desc' },
+      });
+      const ranked = rankByRelevance(matches, query, (r: any) => [
+        r.creditNoteNo,
+        r.customerName,
+      ]);
+      const total = ranked.length;
+      const data = ranked.slice(safeSkip, safeSkip + safeTake).map(mapPhone);
+      return { data, total, hasMore: safeSkip + data.length < total };
+    }
+
     const [rows, total] = await Promise.all([
       this.prisma.creditNote.findMany({
         where,

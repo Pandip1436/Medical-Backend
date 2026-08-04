@@ -1,5 +1,6 @@
 import {
   Injectable,
+  Logger,
   NotFoundException,
   BadRequestException,
   ForbiddenException,
@@ -12,6 +13,7 @@ import { DocumentNumberingService } from '../common/services/document-numbering.
 import { isAdminRole } from '../common/roles.util';
 import { syncPaymentDueForInvoice } from '../notifications/payment-due-sync';
 import { CreditNotesService } from '../credit-notes/credit-notes.service';
+import { PartyLinkService } from '../party-link/party-link.service';
 
 // Builds the "<customer> (<phone>) — " prefix for approval notifications when
 // the request payload carries customer fields (e.g. SALES_RETURN stamps both
@@ -28,6 +30,8 @@ function approvalCustomerLead(payload: unknown): string {
 
 @Injectable()
 export class ApprovalsService {
+  private readonly logger = new Logger(ApprovalsService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly numbering: DocumentNumberingService,
@@ -35,6 +39,7 @@ export class ApprovalsService {
     // SALES_RETURN request). Resolved via forwardRef.
     @Inject(forwardRef(() => CreditNotesService))
     private readonly creditNotes: CreditNotesService,
+    private readonly partyLink: PartyLinkService,
   ) {}
 
   // ── Create a pending request ───────────────────────────────
@@ -226,7 +231,15 @@ export class ApprovalsService {
   ) {
     switch (type) {
       case 'NEW_CUSTOMER': {
-        await this.prisma.customer.create({ data: { ...payload, branchId: branchId ?? null } as any });
+        const created = await this.prisma.customer.create({ data: { ...payload, branchId: branchId ?? null } as any });
+        // A wholesale customer is also a supplier — mirror to a linked twin.
+        if (created.type === 'WHOLESALE') {
+          try {
+            await this.partyLink.ensureSupplierTwin(created.id);
+          } catch (e) {
+            this.logger.warn(`Party-link twin failed for approved customer ${created.id}: ${String(e)}`);
+          }
+        }
         break;
       }
 

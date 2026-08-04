@@ -60,6 +60,32 @@ export class CreateCustomerDto {
   @IsOptional()
   notes?: string;
 
+  // Shared "party" fields — captured on the WHOLESALE customer form (a wholesale
+  // customer is also a supplier) and synced to the linked supplier twin.
+  @IsString()
+  @IsOptional()
+  contactPerson?: string;
+
+  @IsString()
+  @IsOptional()
+  bankAccountName?: string;
+
+  @IsString()
+  @IsOptional()
+  bankName?: string;
+
+  @IsString()
+  @IsOptional()
+  bankAccountNumber?: string;
+
+  @IsString()
+  @IsOptional()
+  bankIfsc?: string;
+
+  @IsString()
+  @IsOptional()
+  bankUpiId?: string;
+
   @IsString()
   @IsOptional()
   referredBy?: string;

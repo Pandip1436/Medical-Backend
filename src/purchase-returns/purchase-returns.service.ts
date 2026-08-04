@@ -8,6 +8,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { ApprovalsService } from '../approvals/approvals.service';
 import { DocumentNumberingService } from '../common/services/document-numbering.service';
 import { CreatePurchaseReturnDto } from './dto/create-purchase-return.dto';
+import { rankByRelevance } from '../common/search-rank.util';
 
 @Injectable()
 export class PurchaseReturnsService {
@@ -238,7 +239,7 @@ export class PurchaseReturnsService {
     });
   }
 
-  findAll(query?: string, branchId?: string) {
+  async findAll(query?: string, branchId?: string, skip?: number, take?: number) {
     const where: Prisma.PurchaseReturnWhereInput = {};
     if (branchId) where.branchId = branchId;
     if (query) {
@@ -247,12 +248,52 @@ export class PurchaseReturnsService {
         { supplierName: { contains: query, mode: 'insensitive' } },
       ];
     }
-    return this.prisma.purchaseReturn.findMany({
-      where,
-      orderBy: { date: 'desc' },
-      take: 50,
-      include: { items: true, grn: true },
-    });
+
+    const paginated = typeof skip === 'number' && typeof take === 'number';
+    const safeTake = paginated ? Math.min(Math.max(take, 1), 100) : undefined;
+    const safeSkip = paginated ? Math.max(skip, 0) : undefined;
+
+    // With a search query, rank debit-note-NUMBER matches ahead of supplierName-
+    // only matches, then slice for pagination (ranking must be global). Debit
+    // notes are low-volume, so fetching the full match set is cheap.
+    if (query) {
+      const matches = await this.prisma.purchaseReturn.findMany({
+        where,
+        orderBy: { date: 'desc' },
+        include: { items: true, grn: true },
+      });
+      const ranked = rankByRelevance(matches, query, (r) => [r.debitNoteNo]);
+      const total = ranked.length;
+      const rows = paginated
+        ? ranked.slice(safeSkip!, safeSkip! + safeTake!)
+        : ranked;
+      return paginated
+        ? { data: rows, total, hasMore: (safeSkip ?? 0) + rows.length < total }
+        : rows;
+    }
+
+    // No cap in the non-paginated path anymore — the old `take: 50` silently
+    // hid every debit note older than the newest 50 (unsearchable). Callers
+    // that want pages pass skip/take; everyone else gets the full set.
+    if (!paginated) {
+      return this.prisma.purchaseReturn.findMany({
+        where,
+        orderBy: { date: 'desc' },
+        include: { items: true, grn: true },
+      });
+    }
+
+    const [data, total] = await Promise.all([
+      this.prisma.purchaseReturn.findMany({
+        where,
+        orderBy: { date: 'desc' },
+        skip: safeSkip,
+        take: safeTake,
+        include: { items: true, grn: true },
+      }),
+      this.prisma.purchaseReturn.count({ where }),
+    ]);
+    return { data, total, hasMore: (safeSkip ?? 0) + data.length < total };
   }
 
   async findOne(id: string, branchId?: string) {

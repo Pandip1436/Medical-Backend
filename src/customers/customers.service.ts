@@ -1,20 +1,25 @@
 import {
   Injectable,
+  Logger,
   NotFoundException,
   BadRequestException,
   ConflictException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { ApprovalsService } from '../approvals/approvals.service';
+import { PartyLinkService } from '../party-link/party-link.service';
 import { CreateCustomerDto } from './dto/create-customer.dto';
 import { UpdateCustomerDto } from './dto/update-customer.dto';
 import { syncPaymentDueForInvoice } from '../notifications/payment-due-sync';
 
 @Injectable()
 export class CustomersService {
+  private readonly logger = new Logger(CustomersService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly approvalsService: ApprovalsService,
+    private readonly partyLink: PartyLinkService,
   ) {}
 
   // Strip everything except digits so "9876543210", "(987) 654-3210", and
@@ -186,7 +191,17 @@ export class CustomersService {
       });
       return { approvalRequested: true, approvalRequestId: req.id };
     }
-    return this.prisma.customer.create({ data: dto });
+    const created = await this.prisma.customer.create({ data: dto });
+    // A wholesale customer is also a supplier — mirror to a linked supplier twin.
+    // Best-effort: never fail the customer create over a twin hiccup.
+    if (created.type === 'WHOLESALE') {
+      try {
+        await this.partyLink.ensureSupplierTwin(created.id);
+      } catch (e) {
+        this.logger.warn(`Party-link twin failed for customer ${created.id}: ${String(e)}`);
+      }
+    }
+    return created;
   }
 
   async bulkCreate(customers: CreateCustomerDto[], branchId?: string) {
@@ -823,7 +838,21 @@ export class CustomersService {
     // already trims via @Transform — guards admin tools that hit this
     // service with a raw object instead of going through the controller.
     if (typeof data.name === 'string') data.name = data.name.trim();
-    return this.prisma.customer.update({ where: { id }, data });
+    const updated = await this.prisma.customer.update({ where: { id }, data });
+    // Keep the supplier twin in step. WHOLESALE → ensure a twin exists + sync;
+    // otherwise just sync identity onto an already-linked supplier (no-op if
+    // there is none). We deliberately leave a wholesale→retail twin ACTIVE — it
+    // may still be a supplier you buy from — rather than deactivating it.
+    try {
+      if (updated.type === 'WHOLESALE') {
+        await this.partyLink.ensureSupplierTwin(updated.id);
+      } else {
+        await this.partyLink.syncTwinFields('customer', updated.id);
+      }
+    } catch (e) {
+      this.logger.warn(`Party-link sync failed for customer ${id}: ${String(e)}`);
+    }
+    return updated;
   }
 
   // Soft-disable / re-enable a customer. Preferred over hard delete: it keeps

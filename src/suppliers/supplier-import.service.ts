@@ -1638,6 +1638,13 @@ export class SupplierImportService {
       address: row.address?.trim() || '',
       paymentTerms: row.paymentTerms ?? PaymentTerms.NET_30,
       bankDetails: row.bankDetails?.trim() || null,
+      bankAccountName: row.bankAccountName?.trim() || null,
+      bankName: row.bankName?.trim() || null,
+      bankAccountNumber: row.bankAccountNumber?.trim() || null,
+      bankIfsc: row.bankIfsc?.trim() || null,
+      bankUpiId: row.bankUpiId?.trim() || null,
+      alternatePhone: row.alternatePhone?.trim() || null,
+      notes: row.notes?.trim() || null,
       isActive: row.isActive ?? true,
       currentOutstanding: new Prisma.Decimal(0), // overwritten by opening_balance pass
       ...(branchId ? { branch: { connect: { id: branchId } } } : {}),
@@ -1662,6 +1669,13 @@ export class SupplierImportService {
     if (row.paymentTerms !== undefined) data.paymentTerms = row.paymentTerms;
     if (row.bankDetails !== undefined)
       data.bankDetails = row.bankDetails?.trim() || null;
+    if (row.bankAccountName !== undefined) data.bankAccountName = row.bankAccountName?.trim() || null;
+    if (row.bankName !== undefined) data.bankName = row.bankName?.trim() || null;
+    if (row.bankAccountNumber !== undefined) data.bankAccountNumber = row.bankAccountNumber?.trim() || null;
+    if (row.bankIfsc !== undefined) data.bankIfsc = row.bankIfsc?.trim() || null;
+    if (row.bankUpiId !== undefined) data.bankUpiId = row.bankUpiId?.trim() || null;
+    if (row.alternatePhone !== undefined) data.alternatePhone = row.alternatePhone?.trim() || null;
+    if (row.notes !== undefined) data.notes = row.notes?.trim() || null;
     if (row.isActive !== undefined) data.isActive = row.isActive;
     return data;
   }

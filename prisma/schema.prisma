@@ -135,6 +135,15 @@ model Customer {
   dlNumber           String?
   registrationNumber String?   // For DOCTOR type: Medical Council Reg. No.
   notes              String?
+  // Shared "party" fields — populated for WHOLESALE customers (who are also
+  // suppliers) so the same details can be captured from either form and stay in
+  // sync with the linked supplier twin. See PartyLinkService.
+  contactPerson      String?
+  bankAccountName    String?
+  bankName           String?
+  bankAccountNumber  String?
+  bankIfsc           String?
+  bankUpiId          String?
   source             String?   // How the customer was acquired (Walk-in, Referral, IndiaMART, …). Optional.
   branchId           String?
   branch             Branch?        @relation(fields: [branchId], references: [id])
@@ -154,6 +163,11 @@ model Customer {
   reminders          CustomerReminder[]
   activities         CustomerActivity[]
   promotedFromContact Contact?           @relation("ContactPromotion")
+  // A WHOLESALE customer that is also a supplier is mirrored to a linked
+  // Supplier row (and vice versa). The FK lives on Supplier.customerId; this is
+  // the back-relation. See PartyLinkService. The two `currentOutstanding`
+  // ledgers stay independent (receivable here, payable on the supplier).
+  linkedSupplier     Supplier?          @relation("PartyTwin")
 }
 
 enum CustomerType {
@@ -332,7 +346,19 @@ model Supplier {
   drugLicense         String
   address             String
   paymentTerms        PaymentTerms
+  // Legacy single free-text bank field — superseded by the structured fields
+  // below. Kept for back-compat (old rows + import); shown as a fallback in the
+  // detail view only when the structured fields are empty.
   bankDetails         String?
+  // Structured bank details (all optional) — for making payments to the supplier.
+  bankAccountName     String?          // account holder name
+  bankName            String?
+  bankAccountNumber   String?
+  bankIfsc            String?
+  bankUpiId           String?
+  // Parity with the customer form (a supplier can be a wholesale customer's twin).
+  alternatePhone      String?
+  notes               String?
   isActive            Boolean          @default(true)
   // Money WE OWE this supplier — increases on GRN (received goods on credit), decreases on payment or ADJUST debit note
   currentOutstanding  Decimal          @default(0)
@@ -340,6 +366,12 @@ model Supplier {
   whatsappNumber      String?          // override of `phone` if WhatsApp lives on a different number
   branchId            String?
   branch              Branch?          @relation(fields: [branchId], references: [id])
+  // Linked wholesale-customer twin (the same real-world party). The FK is owned
+  // here (unique); Customer.linkedSupplier is the back-relation. onDelete:
+  // SetNull so removing one side only unlinks — never cascades away the twin,
+  // which may hold its own purchase/sales history. See PartyLinkService.
+  customerId          String?          @unique
+  customer            Customer?        @relation("PartyTwin", fields: [customerId], references: [id], onDelete: SetNull)
   batches             Batch[]
   purchaseOrders      PurchaseOrder[]
   grns                GRN[]

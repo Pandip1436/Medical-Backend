@@ -37,12 +37,46 @@ export class CreateSupplierDto {
   @IsNotEmpty()
   address: string;
 
+  // Removed from the Add-Supplier form; optional now and defaulted to NET_30 in
+  // the service so the required column + GRN due-date logic keep working.
   @IsEnum(PaymentTerms)
-  paymentTerms: PaymentTerms;
+  @IsOptional()
+  paymentTerms?: PaymentTerms;
 
+  // Legacy single free-text bank field (kept for back-compat / import).
   @IsString()
   @IsOptional()
   bankDetails?: string;
+
+  // Structured bank details (all optional).
+  @IsString()
+  @IsOptional()
+  bankAccountName?: string;
+
+  @IsString()
+  @IsOptional()
+  bankName?: string;
+
+  @IsString()
+  @IsOptional()
+  bankAccountNumber?: string;
+
+  @IsString()
+  @IsOptional()
+  bankIfsc?: string;
+
+  @IsString()
+  @IsOptional()
+  bankUpiId?: string;
+
+  // Parity with the customer form.
+  @IsString()
+  @IsOptional()
+  alternatePhone?: string;
+
+  @IsString()
+  @IsOptional()
+  notes?: string;
 
   @IsBoolean()
   @IsOptional()

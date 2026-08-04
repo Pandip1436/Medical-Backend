@@ -3,11 +3,12 @@ import { ApprovalsService } from './approvals.service';
 import { ApprovalsController } from './approvals.controller';
 import { PrismaModule } from '../prisma/prisma.module';
 import { CreditNotesModule } from '../credit-notes/credit-notes.module';
+import { PartyLinkModule } from '../party-link/party-link.module';
 
 @Module({
   // forwardRef: CreditNotesModule imports ApprovalsModule too (CN create files
   // a SALES_RETURN approval; the approval executor creates the CN).
-  imports: [PrismaModule, forwardRef(() => CreditNotesModule)],
+  imports: [PrismaModule, forwardRef(() => CreditNotesModule), PartyLinkModule],
   providers: [ApprovalsService],
   controllers: [ApprovalsController],
   exports: [ApprovalsService],

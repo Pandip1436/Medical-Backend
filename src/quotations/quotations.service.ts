@@ -123,14 +123,20 @@ export class QuotationsService {
 
     const paginated = typeof filters.skip === 'number' && typeof filters.take === 'number';
     if (!paginated) {
-      // Safety cap — same approach as billing.findAll. Quotations can grow
-      // unbounded over time (every sales lead generates one), so callers that
-      // don't paginate should never get more than 200 rows in a single response.
+      // The Quotations page runs its list, stat cards and search fully
+      // client-side, so a low cap silently truncated both the list AND the
+      // stats. It requests the full set via an explicit `take`; other callers
+      // keep the lightweight 200 default. A generous ceiling guards runaway
+      // responses.
+      const takeCap =
+        typeof filters.take === 'number' && filters.take > 0
+          ? Math.min(filters.take, 10000)
+          : 200;
       return this.prisma.quotation.findMany({
         where,
         orderBy: { date: 'desc' },
         include: { items: true },
-        take: 200,
+        take: takeCap,
       });
     }
 

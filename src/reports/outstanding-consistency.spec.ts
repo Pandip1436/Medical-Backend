@@ -63,7 +63,7 @@ describe('Outstanding KPI consistency (bugs #1 + #3)', () => {
 
   it('summary(), getOutstanding(), and reports.getDashboardKpis() all return the same totalOutstanding and customer count', async () => {
     const prisma = makePrismaMock();
-    const customers = new CustomersService(prisma, {} as any);
+    const customers = new CustomersService(prisma, {} as any, {} as any);
     const reports = new ReportsService(prisma, customers);
 
     const [summary, outstanding, dashboard] = await Promise.all([
@@ -88,7 +88,7 @@ describe('Outstanding KPI consistency (bugs #1 + #3)', () => {
 
   it('ignores invoices where grandTotal - amountPaid <= 0 even when status is PARTIAL', async () => {
     const prisma = makePrismaMock();
-    const customers = new CustomersService(prisma, {} as any);
+    const customers = new CustomersService(prisma, {} as any, {} as any);
     const { byCustomer } = await customers.computeLiveOutstanding();
     expect(byCustomer.has('cust5')).toBe(false);
   });
@@ -98,7 +98,7 @@ describe('Outstanding KPI consistency (bugs #1 + #3)', () => {
     // surfaces still reads it, the test in this block (and the equality test
     // above) would fail.
     const prisma = makePrismaMock();
-    const customers = new CustomersService(prisma, {} as any);
+    const customers = new CustomersService(prisma, {} as any, {} as any);
     const reports = new ReportsService(prisma, customers);
     await Promise.all([customers.summary(), reports.getDashboardKpis()]);
     // customer.aggregate may still be called by other code paths in summary,

@@ -194,6 +194,13 @@ export class ImportSupplierDto {
   @IsOptional() @IsString() address?: string;
   @IsOptional() @IsEnum(PaymentTerms) paymentTerms?: PaymentTerms;
   @IsOptional() @IsString() bankDetails?: string;
+  @IsOptional() @IsString() bankAccountName?: string;
+  @IsOptional() @IsString() bankName?: string;
+  @IsOptional() @IsString() bankAccountNumber?: string;
+  @IsOptional() @IsString() bankIfsc?: string;
+  @IsOptional() @IsString() bankUpiId?: string;
+  @IsOptional() @IsString() alternatePhone?: string;
+  @IsOptional() @IsString() notes?: string;
   @IsOptional() @IsBoolean() isActive?: boolean;
   // Opening payable — written verbatim to Supplier.currentOutstanding.
   @IsOptional() @IsNumber() openingBalance?: number;

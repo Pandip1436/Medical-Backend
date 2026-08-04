@@ -1,20 +1,25 @@
 import {
   Injectable,
+  Logger,
   NotFoundException,
   ConflictException,
   BadRequestException,
 } from '@nestjs/common';
-import { Prisma } from '@prisma/client';
+import { Prisma, PaymentTerms } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { DocumentNumberingService } from '../common/services/document-numbering.service';
+import { PartyLinkService } from '../party-link/party-link.service';
 import { CreateSupplierDto } from './dto/create-supplier.dto';
 import { UpdateSupplierDto } from './dto/update-supplier.dto';
 
 @Injectable()
 export class SuppliersService {
+  private readonly logger = new Logger(SuppliersService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly numbering: DocumentNumberingService,
+    private readonly partyLink: PartyLinkService,
   ) {}
 
   /** Derive a GRN's payment status from how much has been paid vs the invoice. */
@@ -127,6 +132,9 @@ export class SuppliersService {
       ...createSupplierDto,
       name: createSupplierDto.name.trim(),
       phone: this.normalizePhone(createSupplierDto.phone),
+      // Payment terms was removed from the Add-Supplier form; default it so the
+      // required column + the GRN due-date logic (termDays) keep working.
+      paymentTerms: createSupplierDto.paymentTerms ?? PaymentTerms.NET_30,
     };
     await this.assertNoDuplicate({
       phone: dto.phone,
@@ -134,7 +142,18 @@ export class SuppliersService {
       drugLicense: dto.drugLicense,
       branchId: dto.branchId ?? null,
     });
-    return this.prisma.supplier.create({ data: dto });
+    const created = await this.prisma.supplier.create({ data: dto });
+    // Mirror to a linked wholesale-customer twin. Best-effort — a twin hiccup
+    // must never fail the supplier create (the backfill script catches misses).
+    let twinCustomerId: string | null = created.customerId;
+    try {
+      twinCustomerId = (await this.partyLink.ensureCustomerTwin(created.id)) ?? twinCustomerId;
+    } catch (e) {
+      this.logger.warn(`Party-link twin failed for supplier ${created.id}: ${String(e)}`);
+    }
+    // Surface the twin's customerId in the response so the form can attach the
+    // party's documents (address proof, etc.) to the shared customer record.
+    return { ...created, customerId: twinCustomerId };
   }
 
   // Live availability check for the Add/Edit form — lets the UI flag a taken
@@ -222,6 +241,7 @@ export class SuppliersService {
           ...s,
           name: s.name.trim(),
           phone: normalizedPhone,
+          paymentTerms: s.paymentTerms ?? PaymentTerms.NET_30,
           branchId: branchId ?? null,
         });
       } catch (err: any) {
@@ -335,7 +355,29 @@ export class SuppliersService {
         where,
         orderBy: { name: 'asc' },
       });
-      return this.withLiveOutstanding(all, branchId);
+      return this.withLiveOutstanding(this.rankByRelevance(all, query), branchId);
+    }
+
+    // With a search query, rank NAME matches ahead of matches that only hit
+    // another field (address, email, contact person, …). The `where` OR-clause
+    // still lets those through, but a supplier whose name doesn't contain the
+    // query — e.g. "ABHAY PHARMA" surfacing for "hospital" because its address
+    // reads "NR.SM HOSPITAL" — sorts below every real name match. Search result
+    // sets are small, so we rank the full match set in memory and slice it for
+    // pagination; that keeps page order stable across infinite scroll.
+    if (query) {
+      const matches = await this.prisma.supplier.findMany({
+        where,
+        orderBy: { name: 'asc' },
+      });
+      const ranked = this.rankByRelevance(matches, query);
+      const total = ranked.length;
+      const pageRows = ranked.slice(safeSkip!, safeSkip! + safeTake!);
+      return {
+        data: await this.withLiveOutstanding(pageRows, branchId),
+        total,
+        hasMore: (safeSkip ?? 0) + pageRows.length < total,
+      };
     }
 
     const [data, total] = await Promise.all([
@@ -353,6 +395,27 @@ export class SuppliersService {
       total,
       hasMore: (safeSkip ?? 0) + data.length < total,
     };
+  }
+
+  // Stable relevance ordering for search results. Lower score = more relevant:
+  //   0 = name is exactly the query
+  //   1 = name STARTS WITH the query   (e.g. "Santhosh" for "santh")
+  //   2 = name CONTAINS the query      (e.g. "JayaSANTHi" for "santh")
+  //   3 = matched only via another field (address / email / phone / GSTIN /
+  //       contact person)
+  // Input is already sorted by name and Array.sort is stable, so ties break
+  // alphabetically within each tier. No-op without a query.
+  private rankByRelevance<T extends { name: string }>(rows: T[], query?: string): T[] {
+    const q = (query ?? '').trim().toLowerCase();
+    if (!q) return rows;
+    const score = (s: T): number => {
+      const name = (s.name ?? '').toLowerCase();
+      if (name === q) return 0;
+      if (name.startsWith(q)) return 1;
+      if (name.includes(q)) return 2;
+      return 3;
+    };
+    return [...rows].sort((a, b) => score(a) - score(b));
   }
 
   // Overrides each supplier's `currentOutstanding` with the LIVE balance
@@ -1166,10 +1229,17 @@ export class SuppliersService {
         id,
       );
     }
-    return this.prisma.supplier.update({
+    const updated = await this.prisma.supplier.update({
       where: { id },
       data,
     });
+    // Propagate shared identity fields to the linked customer twin (if any).
+    try {
+      await this.partyLink.syncTwinFields('supplier', id);
+    } catch (e) {
+      this.logger.warn(`Party-link sync failed for supplier ${id}: ${String(e)}`);
+    }
+    return updated;
   }
 
   async remove(id: string, branchId?: string) {

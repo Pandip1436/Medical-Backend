@@ -907,12 +907,19 @@ export class BillingService {
 
     if (!paginated) {
       // Legacy callers (NewSale, dashboard, customer detail) — keep the
-      // lightweight array contract. Capped at 200 to avoid runaway responses.
+      // lightweight array contract, default-capped at 200. The Sales List page
+      // is architected fully client-side (period filter, stat cards, tab
+      // counts, search all run over the loaded array), so a low cap silently
+      // truncated BOTH the list AND the stats once a branch had >200 invoices.
+      // It requests the full set via an explicit `take`; a generous ceiling
+      // still guards against a runaway response.
+      const takeCap =
+        typeof take === 'number' && take > 0 ? Math.min(take, 10000) : 200;
       const rows = await this.prisma.invoice.findMany({
         where,
         include: listInclude,
         orderBy: { date: 'desc' },
-        take: 200,
+        take: takeCap,
       });
       return withReplacementFlag(rows.map(mapPhone));
     }
