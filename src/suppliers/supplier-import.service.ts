@@ -12,6 +12,7 @@ import {
 } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { DocumentNumberingService } from '../common/services/document-numbering.service';
+import { PartyLinkService } from '../party-link/party-link.service';
 import {
   ImportBatchDto,
   ImportDebitNoteDto,
@@ -63,6 +64,7 @@ function emptySummary(): ImportSummary {
     payments: { created: 0, failed: 0 },
     activities: { created: 0, failed: 0 },
     batches: { created: 0, skipped: 0, failed: 0 },
+    documents: { created: 0, skipped: 0, failed: 0 },
     openingBalanceApplied: 0,
   };
 }
@@ -101,6 +103,7 @@ export class SupplierImportService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly numbering: DocumentNumberingService,
+    private readonly partyLink: PartyLinkService,
   ) {}
 
   // Reserve a document number in its OWN committed transaction. Used when a
@@ -525,6 +528,34 @@ export class SupplierImportService {
       }
     }
 
+    // ── Party twin (supplier ↔ WHOLESALE customer) ──
+    // A supplier is also a wholesale customer. Link this row to an existing
+    // wholesale customer by GSTIN → phone (or create the twin) and sync shared
+    // fields — the SAME logic the live create/edit path uses. This stops a dual
+    // import (supplier list + customer list) from leaving the same party as two
+    // unlinked records. Best-effort: a twin hiccup must never fail an
+    // otherwise-good supplier row.
+    let twinCustomerId: string | null = null;
+    try {
+      twinCustomerId = await this.partyLink.ensureCustomerTwin(supplierId);
+    } catch (err) {
+      this.pushWarning(result, {
+        kind: 'missing-link',
+        sheet: 'Suppliers',
+        row: row.sourceRow ?? 0,
+        supplierCode: row.supplierCode,
+        field: 'linkedCustomer',
+        message: `Supplier imported, but linking/creating its customer twin failed: ${this.errMsg(err, 'unknown error')}. Re-run the party-twin backfill to reconcile.`,
+      });
+    }
+
+    // ── Documents ──
+    // Uploaded files are Prescription rows on the twin customer (link in R2).
+    // Re-attach each from the Documents sheet so they round-trip on export→import.
+    if (twinCustomerId && row.prescriptions?.length) {
+      await this.createDocuments(row, twinCustomerId, ctx.branchId ?? null, result);
+    }
+
     // ── Purchase Orders + items ──
     for (const po of row.purchaseOrders ?? []) {
       await this.createPurchaseOrder(po, row, supplierId, ctx, result);
@@ -651,6 +682,63 @@ export class SupplierImportService {
     // provided) or by exact product-name match in the active branch.
     for (const b of row.batches ?? []) {
       await this.createBatch(b, row, supplierId, ctx, result);
+    }
+  }
+
+  // ── Documents → Prescription rows on the customer twin ────────────────────
+  // Supplier documents physically live on the linked customer twin (file in R2,
+  // link in imageUrl). Mirror the customer import: idempotent by
+  // (customerId, doctorName, validUntil) so re-import doesn't duplicate.
+  private async createDocuments(
+    parent: ImportSupplierDto,
+    customerId: string,
+    branchId: string | null,
+    result: ImportResult,
+  ) {
+    for (const doc of parent.prescriptions ?? []) {
+      try {
+        const validUntil = parseDate(doc.validUntil);
+        const existing = await this.prisma.prescription.findFirst({
+          where: {
+            customerId,
+            doctorName: doc.doctorName,
+            ...(validUntil ? { validUntil } : { validUntil: null }),
+          },
+          select: { id: true },
+        });
+        if (existing) {
+          result.summary.documents.skipped++;
+          this.pushWarning(result, {
+            kind: 'duplicate',
+            sheet: 'Documents',
+            row: doc.sourceRow ?? 0,
+            supplierCode: parent.supplierCode,
+            message: `Document "${doc.doctorName}" already exists for this party — left untouched.`,
+          });
+          continue;
+        }
+        await this.prisma.prescription.create({
+          data: {
+            customer: { connect: { id: customerId } },
+            doctorName: doc.doctorName,
+            notes: doc.notes ?? null,
+            validUntil,
+            // Preserve the R2 link on export→re-import (the file stays in R2).
+            imageUrl: doc.imageUrl?.trim() || null,
+            isActive: true,
+            ...(branchId ? { branch: { connect: { id: branchId } } } : {}),
+          },
+        });
+        result.summary.documents.created++;
+      } catch (err) {
+        result.summary.documents.failed++;
+        this.pushError(result, {
+          sheet: 'Documents',
+          row: doc.sourceRow ?? 0,
+          supplierCode: parent.supplierCode,
+          message: this.errMsg(err, 'Failed to create document'),
+        });
+      }
     }
   }
 

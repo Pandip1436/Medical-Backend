@@ -1121,6 +1121,13 @@ export class SuppliersService {
       orderBy: { name: 'asc' },
     });
     const supplierIds = suppliers.map((s) => s.id);
+    // Supplier documents (GST cert, drug licence, bank proof, etc.) are stored
+    // as Prescription rows on the linked CUSTOMER twin (file in R2, link in
+    // imageUrl). Gather the twin customer ids so we can include them in the
+    // export, mirroring the customer export's Documents sheet.
+    const twinCustomerIds = suppliers
+      .map((s) => s.customerId)
+      .filter((id): id is string => !!id);
     if (supplierIds.length === 0) {
       return {
         suppliers,
@@ -1133,13 +1140,21 @@ export class SuppliersService {
         payments: [],
         activities: [],
         batches: [],
+        prescriptions: [],
       };
     }
 
     // Parallel batched queries, one per child entity. Same pattern as the
     // customers exportData method.
-    const [purchaseOrders, grns, debitNotes, payments, activities, batches] =
-      await Promise.all([
+    const [
+      purchaseOrders,
+      grns,
+      debitNotes,
+      payments,
+      activities,
+      batches,
+      prescriptions,
+    ] = await Promise.all([
         this.prisma.purchaseOrder.findMany({
           where: { supplierId: { in: supplierIds } },
           include: { items: true },
@@ -1167,6 +1182,12 @@ export class SuppliersService {
           where: { supplierId: { in: supplierIds } },
           include: { product: { select: { id: true, name: true } } },
           orderBy: { expiryDate: 'asc' },
+        }),
+        // Documents live on the twin customer — keyed by customerId, not
+        // supplierId. Empty twinCustomerIds → returns [].
+        this.prisma.prescription.findMany({
+          where: { customerId: { in: twinCustomerIds } },
+          orderBy: { createdAt: 'desc' },
         }),
       ]);
 
@@ -1197,6 +1218,7 @@ export class SuppliersService {
       payments,
       activities,
       batches,
+      prescriptions,
     };
   }
 

@@ -127,6 +127,9 @@ export class ImportPrescriptionDto {
   @IsString() doctorName!: string;
   @IsOptional() @IsString() notes?: string;
   @IsOptional() @IsString() validUntil?: string;
+  // R2 link to the uploaded file — preserved on export→re-import so the document
+  // reference isn't lost (the file itself already lives in R2).
+  @IsOptional() @IsString() imageUrl?: string;
 }
 
 export class ImportCreditNoteItemDto {
@@ -211,6 +214,7 @@ export class ImportCustomerDto {
   @IsString() phone!: string;
 
   @IsOptional() @IsString() alternatePhone?: string;
+  @IsOptional() @IsString() contactPerson?: string;
   @IsOptional() @IsString() email?: string;
   @IsOptional() @IsString() address?: string;
   @IsOptional() @IsEnum(CustomerType) type?: CustomerType;
@@ -225,6 +229,11 @@ export class ImportCustomerDto {
   @IsOptional() @IsString() gstin?: string;
   @IsOptional() @IsString() dlNumber?: string;
   @IsOptional() @IsString() registrationNumber?: string;
+  @IsOptional() @IsString() bankAccountName?: string;
+  @IsOptional() @IsString() bankName?: string;
+  @IsOptional() @IsString() bankAccountNumber?: string;
+  @IsOptional() @IsString() bankIfsc?: string;
+  @IsOptional() @IsString() bankUpiId?: string;
   @IsOptional() @IsString() notes?: string;
   @IsOptional() @IsBoolean() whatsappOptIn?: boolean;
   @IsOptional() @IsString() whatsappNumber?: string;
@@ -313,7 +322,7 @@ export interface ImportRowError {
 }
 
 export interface ImportRowWarning extends ImportRowError {
-  kind: 'duplicate' | 'missing-link' | 'coerced';
+  kind: 'duplicate' | 'missing-link' | 'coerced' | 'skipped-history';
 }
 
 export interface ImportDuplicateMatch {
@@ -348,6 +357,23 @@ export interface ImportSummary {
   quotationItems: { created: number };
   creditNotes: { created: number; skipped: number; failed: number };
   creditNoteItems: { created: number };
+  // Duplicate rows under SKIP are intentionally left unwritten — but so is
+  // their history. When a wholesale party already exists as a supplier twin,
+  // that is exactly how a supplier-first then customer-SKIP import silently
+  // loses a customer's entire ledger. We surface the dropped totals here so
+  // the UI can prompt the operator to re-run as UPDATE instead of guessing
+  // the data was never there.
+  skippedHistory: {
+    parties: number;
+    invoices: number;
+    payments: number;
+    creditNotes: number;
+  };
+  // Bare supplier-created wholesale twins (linked to a supplier, no history of
+  // their own) whose history we imported ONTO them under SKIP instead of
+  // dropping it. Surfaced so the summary can reassure the operator that a
+  // supplier-first import lost no wholesale ledger. See processRow's adopt path.
+  adoptedTwins: number;
   openingBalanceApplied: number;
 }
 

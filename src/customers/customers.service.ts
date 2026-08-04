@@ -316,12 +316,35 @@ export class CustomersService {
       // earlier-alphabet customer whose ADDRESS happens to contain "bab"). So
       // fetch the matching set (capped), rank it by how well each row matches
       // the query, then paginate the RANKED list — closest name match first.
+      //
+      // A single capped-and-alphabetical fetch isn't enough on its own: once
+      // more than RANK_CAP rows match `where` at all (common for a short,
+      // frequent query like "m"), the top RANK_CAP alphabetically can be
+      // entirely earlier-alphabet "contains" hits in some other field —
+      // pushing every genuine name-prefix match (e.g. every "M..." customer)
+      // out of the fetched window before it's ever scored. Fetch the
+      // name-prefix tier in its own dedicated, unbounded-by-alphabet query so
+      // it's never crowded out, then merge with the general candidate pool.
       const RANK_CAP = 200;
-      const [matches, cnt] = await Promise.all([
+      const priorityWhere = {
+        ...where,
+        OR: [
+          { name: { equals: q, mode: 'insensitive' as const } },
+          { name: { startsWith: q, mode: 'insensitive' as const } },
+        ],
+      };
+      const [priorityMatches, restMatches, cnt] = await Promise.all([
+        this.prisma.customer.findMany({ ...findArgs, where: priorityWhere, take: RANK_CAP }),
         this.prisma.customer.findMany({ ...findArgs, take: RANK_CAP }),
         this.prisma.customer.count({ where }),
       ]);
-      const ranked = matches
+      const seen = new Set<string>();
+      const pool = [...priorityMatches, ...restMatches].filter((c) => {
+        if (seen.has(c.id)) return false;
+        seen.add(c.id);
+        return true;
+      });
+      const ranked = pool
         .map((c) => ({ c, s: this.customerRelevanceScore(c, q) }))
         .sort((a, b) => a.s - b.s || String(a.c.name ?? '').localeCompare(String(b.c.name ?? '')))
         .map((x) => x.c);
@@ -416,10 +439,28 @@ export class CustomersService {
       hasOutstanding?: boolean;
       hasGstin?: boolean;
       source?: string;
+      createdFrom?: string;
+      createdTo?: string;
+      isActive?: boolean;
+      paymentStatus?: 'PAID' | 'PARTIAL' | 'UNPAID';
       q?: string;
     },
   ) {
     const where = this.buildCustomerWhere(branchId, filters);
+
+    // Payment-status folder (Paid / Partial / Unpaid) is derived from invoice
+    // totals, not a column, so resolve the matching ids first — identical to
+    // findAll() — otherwise a filtered export would ignore that filter.
+    if (filters?.paymentStatus) {
+      const buckets = await this.customerPaymentStatusIds(where);
+      const ids =
+        filters.paymentStatus === 'PAID'
+          ? buckets.paid
+          : filters.paymentStatus === 'PARTIAL'
+            ? buckets.partial
+            : buckets.unpaid;
+      where.id = { in: ids };
+    }
 
     const customers = await this.prisma.customer.findMany({
       where,

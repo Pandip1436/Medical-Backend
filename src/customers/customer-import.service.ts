@@ -8,6 +8,7 @@ import {
 } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { DocumentNumberingService } from '../common/services/document-numbering.service';
+import { PartyLinkService } from '../party-link/party-link.service';
 import {
   ImportCreditNoteDto,
   ImportCustomerDto,
@@ -74,6 +75,8 @@ function emptySummary(): ImportSummary {
     quotationItems: { created: 0 },
     creditNotes: { created: 0, skipped: 0, failed: 0 },
     creditNoteItems: { created: 0 },
+    skippedHistory: { parties: 0, invoices: 0, payments: 0, creditNotes: 0 },
+    adoptedTwins: 0,
     openingBalanceApplied: 0,
   };
 }
@@ -126,6 +129,7 @@ export class CustomerImportService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly numbering: DocumentNumberingService,
+    private readonly partyLink: PartyLinkService,
   ) {}
 
   // Reserve a document number in its OWN committed transaction. Used when a
@@ -179,7 +183,14 @@ export class CustomerImportService {
     const existing = await this.findExistingByPhones(phoneKeys, ctx.branchId);
     const existingByKey = new Map<
       string,
-      { id: string; name: string; phone: string; branchId: string | null }
+      {
+        id: string;
+        name: string;
+        phone: string;
+        branchId: string | null;
+        linkedSupplierId: string | null;
+        hasHistory: boolean;
+      }
     >();
     for (const e of existing) {
       existingByKey.set(phoneKey(e.phone), e);
@@ -358,6 +369,8 @@ export class CustomerImportService {
         name: string;
         phone: string;
         branchId: string | null;
+        linkedSupplierId: string | null;
+        hasHistory: boolean;
       }>;
 
     // We can't index by the last-10 view in Postgres without an extra column,
@@ -376,40 +389,75 @@ export class CustomerImportService {
     };
     const candidates = await this.prisma.customer.findMany({
       where,
-      select: { id: true, name: true, phone: true, branchId: true },
+      select: {
+        id: true,
+        name: true,
+        phone: true,
+        branchId: true,
+        // Back-relation: present only when this customer is the twin of a
+        // supplier. Lets us tailor the SKIP-drops-history warning so the
+        // operator knows *why* the row already existed (supplier-first import).
+        linkedSupplier: { select: { id: true } },
+        // History counts: a "bare twin" (linked to a supplier but with no
+        // ledger of its own) is safe to adopt under SKIP — there's nothing to
+        // protect. A customer that already carries invoices/payments/credit
+        // notes is NOT bare and must still be honoured as a SKIP.
+        _count: {
+          select: { invoices: true, payments: true, creditNotes: true },
+        },
+      },
     });
     // Filter strictly by last10 — `contains` would match 11+ digit overlaps.
-    return candidates.filter((c) => last10Keys.includes(phoneKey(c.phone)));
+    return candidates
+      .filter((c) => last10Keys.includes(phoneKey(c.phone)))
+      .map((c) => ({
+        id: c.id,
+        name: c.name,
+        phone: c.phone,
+        branchId: c.branchId,
+        linkedSupplierId: c.linkedSupplier?.id ?? null,
+        hasHistory:
+          c._count.invoices > 0 ||
+          c._count.payments > 0 ||
+          c._count.creditNotes > 0,
+      }));
   }
 
   // ── Phase 3a: dry-run simulation ───────────────────────────────────────────
 
   private simulate(
     rows: ImportCustomerDto[],
-    existingByKey: Map<string, { id: string; name: string; phone: string }>,
+    existingByKey: Map<
+      string,
+      {
+        id: string;
+        name: string;
+        phone: string;
+        branchId: string | null;
+        linkedSupplierId: string | null;
+        hasHistory: boolean;
+      }
+    >,
     handling: ImportDuplicateHandling,
     result: ImportResult,
   ) {
     for (const row of rows) {
-      const isDup = existingByKey.has(phoneKey(row.phone));
-      if (isDup) {
+      const existing = existingByKey.get(phoneKey(row.phone));
+      if (existing) {
         if (handling === 'SKIP') {
-          result.summary.customers.skipped++;
-          // History rows attached to a skipped customer never get written —
-          // surface that clearly so the user isn't surprised post-commit.
-          if (
-            row.invoices?.length ||
-            row.payments?.length ||
-            row.activities?.length ||
-            row.prescriptions?.length
-          ) {
-            this.pushWarning(result, {
-              kind: 'duplicate',
-              sheet: 'Customers',
-              row: row.sourceRow ?? 0,
-              customerCode: row.customerCode,
-              message: `Customer is a duplicate and you chose SKIP — its ${row.invoices?.length ?? 0} invoices, ${row.payments?.length ?? 0} payments, ${row.activities?.length ?? 0} activities, ${row.prescriptions?.length ?? 0} prescriptions will also be skipped.`,
-            });
+          // Mirror processRow's adopt logic so the PREVIEW is accurate: a bare
+          // supplier-created twin (linked, no ledger of its own) carrying
+          // history is adopted — its history imports rather than being dropped.
+          // Everything else is a genuine SKIP whose dropped history we surface
+          // so the preview already prompts a re-run as UPDATE before commit.
+          const bareTwin =
+            existing.linkedSupplierId != null && !existing.hasHistory;
+          if (bareTwin && this.hasImportableHistory(row)) {
+            result.summary.customers.updated++;
+            result.summary.adoptedTwins++;
+          } else {
+            result.summary.customers.skipped++;
+            this.warnSkippedHistory(row, existing, result);
           }
           continue;
         }
@@ -500,11 +548,79 @@ export class CustomerImportService {
 
   // ── Phase 3b: real import ──────────────────────────────────────────────────
 
+  // True when the workbook row carries any history worth importing. Drives the
+  // adopt-a-bare-twin decision and keeps the SKIP-drops-history warning quiet
+  // when there was nothing to drop.
+  private hasImportableHistory(row: ImportCustomerDto): boolean {
+    return !!(
+      row.invoices?.length ||
+      row.payments?.length ||
+      row.creditNotes?.length ||
+      row.quotations?.length ||
+      row.activities?.length ||
+      row.prescriptions?.length ||
+      row.refunds?.length
+    );
+  }
+
+  // A duplicate row under SKIP is left untouched — and so is everything that
+  // hangs off it. When that party already exists as a supplier-linked
+  // (wholesale) twin, this is exactly how a supplier-first → customer-SKIP
+  // import silently drops a wholesale customer's entire ledger. Surface the
+  // loss loudly: a per-row warning *and* running summary totals, plus the exact
+  // recovery step (re-run as UPDATE). No-op when the skipped row has no history.
+  private warnSkippedHistory(
+    row: ImportCustomerDto,
+    existing: { name: string; linkedSupplierId: string | null },
+    result: ImportResult,
+  ): void {
+    const invoices = row.invoices?.length ?? 0;
+    const payments = row.payments?.length ?? 0;
+    const creditNotes = row.creditNotes?.length ?? 0;
+    const quotations = row.quotations?.length ?? 0;
+    const activities = row.activities?.length ?? 0;
+    const prescriptions = row.prescriptions?.length ?? 0;
+    if (
+      !invoices &&
+      !payments &&
+      !creditNotes &&
+      !quotations &&
+      !activities &&
+      !prescriptions
+    ) {
+      return; // nothing was dropped — stay quiet
+    }
+
+    result.summary.skippedHistory.parties++;
+    result.summary.skippedHistory.invoices += invoices;
+    result.summary.skippedHistory.payments += payments;
+    result.summary.skippedHistory.creditNotes += creditNotes;
+
+    const who = existing.linkedSupplierId
+      ? `"${existing.name}" already exists as a supplier-linked (wholesale) record`
+      : `"${existing.name}" already exists`;
+
+    this.pushWarning(result, {
+      kind: 'skipped-history',
+      sheet: 'Customers',
+      row: row.sourceRow ?? 0,
+      customerCode: row.customerCode,
+      message: `${who}, so under SKIP it was left untouched — and its history in this file was NOT imported: ${invoices} invoices, ${payments} payments, ${creditNotes} credit notes, ${quotations} quotations, ${activities} activities, ${prescriptions} prescriptions. Re-run this import with duplicate handling = UPDATE to bring them in.`,
+    });
+  }
+
   private async processRow(
     row: ImportCustomerDto,
     existingByKey: Map<
       string,
-      { id: string; name: string; phone: string; branchId: string | null }
+      {
+        id: string;
+        name: string;
+        phone: string;
+        branchId: string | null;
+        linkedSupplierId: string | null;
+        hasHistory: boolean;
+      }
     >,
     handling: ImportDuplicateHandling,
     ctx: { userId: string; branchId?: string | null },
@@ -516,8 +632,25 @@ export class CustomerImportService {
     let customerId: string;
     if (existing) {
       if (handling === 'SKIP') {
-        result.summary.customers.skipped++;
-        return; // children skipped along with parent
+        // A "bare twin" — a wholesale customer that exists ONLY because the
+        // supplier import auto-created it (linkedSupplierId set) and has no
+        // ledger of its own yet — has nothing to protect under SKIP, and
+        // skipping it is exactly how a supplier-first import loses a wholesale
+        // customer's history. When such a row arrives WITH history, adopt it:
+        // fall through to the UPDATE path below so that history imports onto the
+        // shell. Genuine customers that already carry their own history, and
+        // non-twins, are still honoured as SKIP (and warned).
+        const bareTwin =
+          existing.linkedSupplierId != null && !existing.hasHistory;
+        if (bareTwin && this.hasImportableHistory(row)) {
+          result.summary.adoptedTwins++;
+          // no return — falls through to the UPDATE branch, which sets
+          // customerId and imports the children onto this twin.
+        } else {
+          result.summary.customers.skipped++;
+          this.warnSkippedHistory(row, existing, result);
+          return;
+        }
       }
       if (handling === 'CREATE') {
         // We don't auto-fork a second customer with a mangled phone — the rest
@@ -629,6 +762,26 @@ export class CustomerImportService {
           message: this.errMsg(err, 'Failed to apply opening balance'),
         });
       }
+    }
+
+    // ── Party twin (WHOLESALE customer ↔ supplier) ──
+    // A wholesale customer is also a supplier. Link this row to an existing
+    // supplier by GSTIN → phone (or create the twin), and sync shared fields —
+    // the SAME logic the live create/edit path uses. This stops a dual import
+    // (customer list + supplier list) from leaving the same party as two
+    // unlinked records. No-op for RETAIL/DOCTOR. Best-effort: a twin hiccup
+    // must never fail an otherwise-good customer row.
+    try {
+      await this.partyLink.ensureSupplierTwin(customerId);
+    } catch (err) {
+      this.pushWarning(result, {
+        kind: 'missing-link',
+        sheet: 'Customers',
+        row: row.sourceRow ?? 0,
+        customerCode: row.customerCode,
+        field: 'linkedSupplier',
+        message: `Customer imported, but linking/creating its supplier twin failed: ${this.errMsg(err, 'unknown error')}. Re-run the party-twin backfill to reconcile.`,
+      });
     }
 
     // ── Invoices + items ──
@@ -770,6 +923,8 @@ export class CustomerImportService {
             doctorName: rx.doctorName,
             notes: rx.notes ?? null,
             validUntil: resolvedValidUntil,
+            // Preserve the R2 link on export→re-import (the file stays in R2).
+            imageUrl: rx.imageUrl?.trim() || null,
             isActive: true,
             ...(ctx.branchId
               ? { branch: { connect: { id: ctx.branchId } } }
@@ -1882,6 +2037,7 @@ export class CustomerImportService {
       name: row.name.trim(),
       phone: normalizePhone(row.phone),
       alternatePhone: row.alternatePhone?.trim() || null,
+      contactPerson: row.contactPerson?.trim() || null,
       email: row.email?.trim() || null,
       address: row.address?.trim() || null,
       type: row.type ?? CustomerType.RETAIL,
@@ -1893,6 +2049,11 @@ export class CustomerImportService {
       gstin: row.gstin?.trim() || null,
       dlNumber: row.dlNumber?.trim() || null,
       registrationNumber: row.registrationNumber?.trim() || null,
+      bankAccountName: row.bankAccountName?.trim() || null,
+      bankName: row.bankName?.trim() || null,
+      bankAccountNumber: row.bankAccountNumber?.trim() || null,
+      bankIfsc: row.bankIfsc?.trim() || null,
+      bankUpiId: row.bankUpiId?.trim() || null,
       notes: row.notes?.trim() || null,
       whatsappOptIn: row.whatsappOptIn ?? true,
       whatsappNumber: row.whatsappNumber?.trim() || null,
@@ -1911,6 +2072,8 @@ export class CustomerImportService {
     if (row.name?.trim()) data.name = row.name.trim();
     if (row.alternatePhone !== undefined)
       data.alternatePhone = row.alternatePhone?.trim() || null;
+    if (row.contactPerson !== undefined)
+      data.contactPerson = row.contactPerson?.trim() || null;
     if (row.email !== undefined) data.email = row.email?.trim() || null;
     if (row.address !== undefined) data.address = row.address?.trim() || null;
     if (row.type !== undefined) data.type = row.type;
@@ -1926,6 +2089,14 @@ export class CustomerImportService {
       data.dlNumber = row.dlNumber?.trim() || null;
     if (row.registrationNumber !== undefined)
       data.registrationNumber = row.registrationNumber?.trim() || null;
+    if (row.bankAccountName !== undefined)
+      data.bankAccountName = row.bankAccountName?.trim() || null;
+    if (row.bankName !== undefined) data.bankName = row.bankName?.trim() || null;
+    if (row.bankAccountNumber !== undefined)
+      data.bankAccountNumber = row.bankAccountNumber?.trim() || null;
+    if (row.bankIfsc !== undefined) data.bankIfsc = row.bankIfsc?.trim() || null;
+    if (row.bankUpiId !== undefined)
+      data.bankUpiId = row.bankUpiId?.trim() || null;
     if (row.notes !== undefined) data.notes = row.notes?.trim() || null;
     if (row.whatsappOptIn !== undefined) data.whatsappOptIn = row.whatsappOptIn;
     if (row.whatsappNumber !== undefined)

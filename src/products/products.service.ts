@@ -352,12 +352,33 @@ export class ProductsService {
         // buries the obvious name match (searching "ca" lists "advaCAn" /
         // "aminoCAre" before anything that STARTS with "ca"). Fetch the matching
         // set (capped), rank by relevance, then paginate the ranked list.
+        //
+        // A single capped-and-alphabetical fetch isn't enough on its own: once
+        // more than RANK_CAP rows match `where` (e.g. many products whose
+        // generic name/manufacturer/barcode start with the query), the top
+        // RANK_CAP by product-name order can exclude every genuine name-prefix
+        // match entirely. Fetch that tier in its own dedicated query so it's
+        // never crowded out, then merge with the general candidate pool.
         const RANK_CAP = 200;
-        const [matches, total] = await Promise.all([
+        const priorityWhere = {
+          ...where,
+          OR: [
+            { name: { equals: q, mode: 'insensitive' as const } },
+            { name: { startsWith: q, mode: 'insensitive' as const } },
+          ],
+        };
+        const [priorityMatches, restMatches, total] = await Promise.all([
+          this.prisma.product.findMany({ where: priorityWhere, include, orderBy: { name: 'asc' }, take: RANK_CAP }),
           this.prisma.product.findMany({ where, include, orderBy: { name: 'asc' }, take: RANK_CAP }),
           this.prisma.product.count({ where }),
         ]);
-        const ranked = matches
+        const seen = new Set<string>();
+        const pool = [...priorityMatches, ...restMatches].filter((p) => {
+          if (seen.has(p.id)) return false;
+          seen.add(p.id);
+          return true;
+        });
+        const ranked = pool
           .map((p) => ({ p, s: this.productRelevanceScore(p, q) }))
           .sort((a, b) => a.s - b.s || String(a.p.name ?? '').localeCompare(String(b.p.name ?? '')))
           .map((x) => x.p);

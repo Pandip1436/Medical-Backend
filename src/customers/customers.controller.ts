@@ -218,6 +218,10 @@ export class CustomersController {
     @Query('hasOutstanding') hasOutstanding?: string,
     @Query('hasGstin') hasGstin?: string,
     @Query('customerSource') customerSource?: string,
+    @Query('createdFrom') createdFrom?: string,
+    @Query('createdTo') createdTo?: string,
+    @Query('active') active?: string,
+    @Query('paymentStatus') paymentStatus?: string,
   ) {
     const effectiveBranchId = req.user.branchId ?? branchId ?? undefined;
     return this.customersService.exportData(effectiveBranchId, {
@@ -235,6 +239,21 @@ export class CustomersController {
       hasGstin:
         typeof hasGstin === 'string' ? hasGstin === 'true' : undefined,
       source: customerSource?.trim() || undefined,
+      // Mirror findAll()/summary() so a filtered export matches the on-screen list.
+      createdFrom: /^\d{4}-\d{2}-\d{2}$/.test(createdFrom ?? '')
+        ? createdFrom
+        : undefined,
+      createdTo: /^\d{4}-\d{2}-\d{2}$/.test(createdTo ?? '')
+        ? createdTo
+        : undefined,
+      isActive:
+        active === 'true' ? true : active === 'false' ? false : undefined,
+      paymentStatus:
+        paymentStatus === 'PAID' ||
+        paymentStatus === 'PARTIAL' ||
+        paymentStatus === 'UNPAID'
+          ? paymentStatus
+          : undefined,
     });
   }
 

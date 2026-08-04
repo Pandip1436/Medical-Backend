@@ -175,6 +175,17 @@ export class ImportSupplierActivityDto {
   @IsOptional() @IsString() subject?: string;
 }
 
+// ── Document ──────────────────────────────────────────────────────────────
+// An uploaded document/file. Re-attached to the supplier's linked customer twin
+// as a Prescription row; imageUrl is the R2 link (the file already lives in R2).
+export class ImportSupplierDocumentDto {
+  @IsOptional() @IsInt() sourceRow?: number;
+  @IsString() doctorName!: string; // document title (Prescription.doctorName)
+  @IsOptional() @IsString() notes?: string;
+  @IsOptional() @IsString() validUntil?: string;
+  @IsOptional() @IsString() imageUrl?: string;
+}
+
 // ── Supplier ──────────────────────────────────────────────────────────────
 // Supplier base fields are REQUIRED in the Prisma schema (contactPerson, gstin,
 // drugLicense, address, paymentTerms etc.). For legacy migrations with sparse
@@ -240,6 +251,12 @@ export class ImportSupplierDto {
   @ValidateNested({ each: true })
   @Type(() => ImportBatchDto)
   batches?: ImportBatchDto[];
+
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => ImportSupplierDocumentDto)
+  prescriptions?: ImportSupplierDocumentDto[];
 }
 
 export class ImportSuppliersDto {
@@ -268,7 +285,8 @@ export interface ImportRowError {
     | 'Debit Note Items'
     | 'Payments'
     | 'Activities'
-    | 'Batches';
+    | 'Batches'
+    | 'Documents';
   row: number;
   supplierCode?: string;
   field?: string;
@@ -306,6 +324,7 @@ export interface ImportSummary {
   payments: { created: number; failed: number };
   activities: { created: number; failed: number };
   batches: { created: number; skipped: number; failed: number };
+  documents: { created: number; skipped: number; failed: number };
   openingBalanceApplied: number;
 }
 
