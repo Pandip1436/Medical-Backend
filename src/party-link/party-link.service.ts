@@ -195,7 +195,10 @@ export class PartyLinkService {
       bankIfsc: c.bankIfsc ?? null,
       bankUpiId: c.bankUpiId ?? null,
       whatsappOptIn: c.whatsappOptIn,
-      whatsappNumber: c.whatsappNumber ?? null,
+      // blankToNull, not `?? null`: a blank override must not propagate to the
+      // twin as "", which the WhatsApp senders would read as a real recipient
+      // and use in place of `phone`. See common/utils/whatsapp-phone.util.
+      whatsappNumber: blankToNull(c.whatsappNumber),
       branchId: c.branchId ?? null,
       currentOutstanding: 0, // fresh payable ledger
       customerId: c.id,
@@ -220,7 +223,8 @@ export class PartyLinkService {
       bankIfsc: s.bankIfsc ?? null,
       bankUpiId: s.bankUpiId ?? null,
       whatsappOptIn: s.whatsappOptIn,
-      whatsappNumber: s.whatsappNumber ?? null,
+      // See customerDataFromSupplier's twin above — blank never propagates.
+      whatsappNumber: blankToNull(s.whatsappNumber),
       branchId: s.branchId ?? null,
       currentOutstanding: 0, // fresh receivable ledger
     };
@@ -250,7 +254,7 @@ export class PartyLinkService {
     if ((s.bankIfsc ?? null) !== (c.bankIfsc ?? null)) patch.bankIfsc = c.bankIfsc ?? null;
     if ((s.bankUpiId ?? null) !== (c.bankUpiId ?? null)) patch.bankUpiId = c.bankUpiId ?? null;
     if (s.whatsappOptIn !== c.whatsappOptIn) patch.whatsappOptIn = c.whatsappOptIn;
-    if ((s.whatsappNumber ?? null) !== (c.whatsappNumber ?? null)) patch.whatsappNumber = c.whatsappNumber ?? null;
+    if ((s.whatsappNumber ?? null) !== blankToNull(c.whatsappNumber)) patch.whatsappNumber = blankToNull(c.whatsappNumber);
     if (Object.keys(patch).length) await db.supplier.update({ where: { id: s.id }, data: patch });
   }
 
@@ -276,7 +280,7 @@ export class PartyLinkService {
     if ((c.bankIfsc ?? null) !== (s.bankIfsc ?? null)) patch.bankIfsc = s.bankIfsc ?? null;
     if ((c.bankUpiId ?? null) !== (s.bankUpiId ?? null)) patch.bankUpiId = s.bankUpiId ?? null;
     if (c.whatsappOptIn !== s.whatsappOptIn) patch.whatsappOptIn = s.whatsappOptIn;
-    if ((c.whatsappNumber ?? null) !== (s.whatsappNumber ?? null)) patch.whatsappNumber = s.whatsappNumber ?? null;
+    if ((c.whatsappNumber ?? null) !== blankToNull(s.whatsappNumber)) patch.whatsappNumber = blankToNull(s.whatsappNumber);
     if (Object.keys(patch).length) await db.customer.update({ where: { id: c.id }, data: patch });
   }
 }

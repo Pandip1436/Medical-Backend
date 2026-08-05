@@ -3,6 +3,7 @@ import { OnEvent } from '@nestjs/event-emitter';
 import { ReminderContactStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { WhatsAppService } from '../whatsapp/whatsapp.service';
+import { resolveWhatsAppPhone } from '../common/utils/whatsapp-phone.util';
 import {
   customerSaleReminderTemplate,
   type CustomerSaleReminderVars,
@@ -86,7 +87,7 @@ export class ReminderDueNotificationListener {
       this.logger.log(`customer ${reminder.customer.id} opted out of WhatsApp`);
       return;
     }
-    const phone = reminder.customer.whatsappNumber ?? reminder.customer.phone;
+    const phone = resolveWhatsAppPhone(reminder.customer);
     if (!phone) {
       this.logger.log(`customer ${reminder.customer.id} has no phone for WhatsApp`);
       return;

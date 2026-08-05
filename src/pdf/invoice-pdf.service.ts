@@ -68,6 +68,11 @@ const BROWSER_IDLE_MS = 60_000;
 // Keep this low: 3 pages is roughly 0.5-0.75 GB of headroom.
 const MAX_CONCURRENT_RENDERS = 3;
 
+// How long a queued render may wait for a slot before giving up. Generous
+// enough for a full queue of legitimate renders ahead of it, finite so a caller
+// can never park here indefinitely — see acquireSlot.
+const SLOT_WAIT_MS = 60_000;
+
 @Injectable()
 export class InvoicePdfService implements OnModuleDestroy {
   private readonly logger = new Logger(InvoicePdfService.name);
@@ -128,7 +133,25 @@ export class InvoicePdfService implements OnModuleDestroy {
     }
     // The slot is handed over directly by releaseSlot(), which is why this path
     // doesn't increment: the count already includes the slot we're inheriting.
-    await new Promise<void>((resolve) => this.waiting.push(resolve));
+    //
+    // Bounded, because callers upstream now time out: an abandoned caller left
+    // parked here forever would still be handed a slot by releaseSlot(), and
+    // MAX_CONCURRENT_RENDERS such handovers would wedge PDF rendering for the
+    // whole process. On expiry the waiter removes ITSELF from the queue, so the
+    // slot goes to a live caller instead.
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        const i = this.waiting.indexOf(waiter);
+        if (i >= 0) this.waiting.splice(i, 1);
+        reject(new Error(`PDF render queue wait exceeded ${SLOT_WAIT_MS}ms`));
+      }, SLOT_WAIT_MS);
+      timer.unref?.();
+      const waiter = () => {
+        clearTimeout(timer);
+        resolve();
+      };
+      this.waiting.push(waiter);
+    });
   }
 
   // Hand the slot straight to the next waiter rather than decrementing and

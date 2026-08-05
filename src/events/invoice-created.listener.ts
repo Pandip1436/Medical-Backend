@@ -9,6 +9,38 @@ import { invoicePaymentRequestTemplate } from '../whatsapp/templates';
 import { INVOICE_CREATED, PAYMENT_RECEIVED } from './invoice-events';
 import type { InvoiceCreatedPayload, PaymentReceivedPayload } from './invoice-events';
 import { PaymentLinkStatus } from '@prisma/client';
+import { withTimeout, TimeoutError } from '../common/utils/with-timeout.util';
+import { resolveWhatsAppPhone } from '../common/utils/whatsapp-phone.util';
+
+// Why the send did (or didn't) happen. Returned to the manual
+// POST /billing/:id/send-whatsapp endpoint so the operator gets the actual
+// reason instead of a generic "skipped" — see BillingService.emitInvoiceCreatedById.
+export type SendOutcome =
+  | 'SENT'
+  | 'RECEIPT_QUEUED'         // fully paid at counter → PaymentReceivedListener sends
+  | 'ALREADY_IN_PROGRESS'
+  | 'AUTO_SEND_DISABLED'
+  | 'NOT_AN_INVOICE'
+  | 'INVOICE_NOT_ELIGIBLE'
+  | 'INVOICE_NOT_FOUND'
+  | 'NO_CUSTOMER'
+  | 'CUSTOMER_OPTED_OUT'
+  | 'NO_PHONE'
+  | 'ALREADY_SENT'
+  | 'PDF_FAILED'
+  | 'SEND_FAILED'
+  | 'TIMED_OUT';
+
+export interface SendResult {
+  outcome: SendOutcome;
+  detail?: string;
+}
+
+// Hard ceiling on one end-to-end run (payment link + PDF render + upload + the
+// Meta call). Each individual call is bounded too; this is the backstop that
+// guarantees handle() always settles, so the in-flight guard below always
+// unwinds and the operator's request always gets an answer.
+const HANDLE_TIMEOUT_MS = 90_000;
 
 // Fires AFTER the BillingService.create transaction commits. Orchestrates
 // the full "send invoice + payment QR to WhatsApp" flow.
@@ -27,7 +59,14 @@ export class InvoiceCreatedListener {
   // from racing through the idempotency check simultaneously. This covers both
   // the listener-accumulation scenario (duplicate @OnEvent registrations due to
   // double module import) and rapid concurrent API calls to POST /send-whatsapp.
-  private readonly processing = new Set<string>();
+  //
+  // Keyed by start time, not a bare Set: entries used to be removed only in the
+  // `finally` below, so a run that never settled (an external call with no
+  // timeout) left its invoice marked in-flight for the life of the process —
+  // every later attempt was dropped here and surfaced to the operator as an
+  // unexplained "skipped". Timeouts should make that unreachable; the staleness
+  // sweep is the belt-and-braces that keeps one wedged run from being permanent.
+  private readonly processing = new Map<string, number>();
 
   constructor(
     private readonly prisma: PrismaService,
@@ -39,26 +78,47 @@ export class InvoiceCreatedListener {
   ) {}
 
   @OnEvent(INVOICE_CREATED, { async: true })
-  async handle(payload: InvoiceCreatedPayload) {
-    if (this.processing.has(payload.invoiceId)) {
-      this.logger.warn(`duplicate handle() for invoice ${payload.invoiceId} — dropped (listener registered multiple times?)`);
-      return;
+  async handle(payload: InvoiceCreatedPayload): Promise<SendResult> {
+    const startedAt = this.processing.get(payload.invoiceId);
+    if (startedAt !== undefined) {
+      const ageMs = Date.now() - startedAt;
+      // Only a genuinely concurrent run blocks. Anything older than the hard
+      // timeout can't still be running, so treat it as debris and take over.
+      if (ageMs < HANDLE_TIMEOUT_MS) {
+        this.logger.warn(
+          `duplicate handle() for invoice ${payload.invoiceId} — dropped, a run started ${Math.round(ageMs / 1000)}s ago is still in flight`,
+        );
+        return { outcome: 'ALREADY_IN_PROGRESS', detail: `in flight for ${Math.round(ageMs / 1000)}s` };
+      }
+      this.logger.warn(
+        `stale in-flight marker for invoice ${payload.invoiceId} (${Math.round(ageMs / 1000)}s old) — clearing and retrying`,
+      );
     }
-    this.processing.add(payload.invoiceId);
+    this.processing.set(payload.invoiceId, Date.now());
     try {
-      return await this._handle(payload);
+      return await withTimeout(this._handle(payload), HANDLE_TIMEOUT_MS, `invoice.created ${payload.invoiceId}`);
+    } catch (e: any) {
+      // _handle catches its own step failures, so reaching here means the whole
+      // run blew its budget. Report it rather than leaving the caller guessing.
+      this.logger.error(`handle() failed for invoice ${payload.invoiceId}: ${e?.message ?? e}`);
+      return {
+        outcome: e instanceof TimeoutError ? 'TIMED_OUT' : 'SEND_FAILED',
+        detail: e?.message ?? String(e),
+      };
     } finally {
       this.processing.delete(payload.invoiceId);
     }
   }
 
-  private async _handle(payload: InvoiceCreatedPayload) {
+  private async _handle(payload: InvoiceCreatedPayload): Promise<SendResult> {
     if (process.env.WHATSAPP_AUTO_SEND_ENABLED !== 'true') {
       this.logger.debug(`auto-send disabled, skipping invoice ${payload.invoiceId}`);
-      return;
+      return { outcome: 'AUTO_SEND_DISABLED' };
     }
-    if (payload.type !== 'INVOICE') return;
-    if (payload.status === 'DRAFT' || payload.status === 'CANCELLED') return;
+    if (payload.type !== 'INVOICE') return { outcome: 'NOT_AN_INVOICE' };
+    if (payload.status === 'DRAFT' || payload.status === 'CANCELLED') {
+      return { outcome: 'INVOICE_NOT_ELIGIBLE', detail: payload.status };
+    }
 
     const invoice = await this.prisma.invoice.findUnique({
       where: { id: payload.invoiceId },
@@ -66,21 +126,21 @@ export class InvoiceCreatedListener {
     });
     if (!invoice) {
       this.logger.warn(`invoice ${payload.invoiceId} vanished before listener ran`);
-      return;
+      return { outcome: 'INVOICE_NOT_FOUND' };
     }
     const customer = invoice.customer;
     if (!customer) {
       this.logger.log(`invoice ${invoice.invoiceNumber} has no customer — no WhatsApp send`);
-      return;
+      return { outcome: 'NO_CUSTOMER' };
     }
     if (!customer.whatsappOptIn) {
       this.logger.log(`customer ${customer.id} opted out of WhatsApp`);
-      return;
+      return { outcome: 'CUSTOMER_OPTED_OUT' };
     }
-    const phone = customer.whatsappNumber ?? customer.phone;
+    const phone = resolveWhatsAppPhone(customer);
     if (!phone) {
       this.logger.log(`customer ${customer.id} has no phone for WhatsApp`);
-      return;
+      return { outcome: 'NO_PHONE' };
     }
 
     // Idempotency: if this invoice already has a WhatsApp message that reached
@@ -108,7 +168,7 @@ export class InvoiceCreatedListener {
         this.logger.log(
           `invoice ${invoice.invoiceNumber} already accepted by Meta — skipping resend`,
         );
-        return;
+        return { outcome: 'ALREADY_SENT' };
       }
     }
 
@@ -199,10 +259,10 @@ export class InvoiceCreatedListener {
       });
     } catch (e: any) {
       this.logger.error(`PDF render/upload failed for ${invoice.id}: ${e?.message ?? e}`);
-      return;
+      return { outcome: 'PDF_FAILED', detail: e?.message ?? String(e) };
     }
 
-    if (!pdfUrl) return;
+    if (!pdfUrl) return { outcome: 'PDF_FAILED', detail: 'no PDF URL produced' };
 
     // Step 3: send WhatsApp — receipt if fully paid at counter, payment
     // request with QR if there is still an outstanding balance.
@@ -221,6 +281,7 @@ export class InvoiceCreatedListener {
           referenceNumber: null,
           pdfUrl,
         } satisfies PaymentReceivedPayload);
+        return { outcome: 'RECEIPT_QUEUED' };
       } else {
         // Credit or partial payment — send invoice with payment QR and Pay Now button.
         const pharmacyName = invoice.branch?.name ?? 'Pharmacy';
@@ -267,9 +328,11 @@ export class InvoiceCreatedListener {
             data: { status: PaymentLinkStatus.SENT },
           });
         }
+        return { outcome: 'SENT' };
       }
     } catch (e: any) {
       this.logger.error(`WhatsApp send failed for ${invoice.id}: ${e?.message ?? e}`);
+      return { outcome: 'SEND_FAILED', detail: e?.message ?? String(e) };
     }
   }
 }

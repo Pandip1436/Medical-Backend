@@ -780,8 +780,15 @@ export class BillingService {
       orderBy: { createdAt: 'desc' },
     });
     if (recentAttempt) {
-      this.logger.warn(`resend throttled for ${inv.invoiceNumber} — a message was created ${Math.round((Date.now() - recentAttempt.createdAt.getTime()) / 1000)}s ago`);
-      return { ok: false, status: 'SKIPPED', invoiceNumber: inv.invoiceNumber };
+      const agoSec = Math.round((Date.now() - recentAttempt.createdAt.getTime()) / 1000);
+      this.logger.warn(`resend throttled for ${inv.invoiceNumber} — a message was created ${agoSec}s ago`);
+      return {
+        ok: false,
+        status: 'SKIPPED',
+        reason: 'THROTTLED',
+        detail: `last attempt was ${agoSec}s ago`,
+        invoiceNumber: inv.invoiceNumber,
+      };
     }
 
     const payload: InvoiceCreatedPayload = {
@@ -804,7 +811,7 @@ export class BillingService {
       select: { id: true },
     });
     const beforeIds = new Set(before.map((m) => m.id));
-    await this.invoiceCreatedListener.handle(payload);
+    const result = await this.invoiceCreatedListener.handle(payload);
     const candidates = await this.prisma.whatsAppMessage.findMany({
       where: { relatedEntityId: inv.id, relatedEntityType: 'invoice' },
       orderBy: { createdAt: 'desc' },
@@ -812,13 +819,23 @@ export class BillingService {
     });
     const sent = candidates.find((m) => !beforeIds.has(m.id));
     if (!sent) {
-      // Listener returned without creating a message — opted out, no phone,
-      // WHATSAPP_AUTO_SEND_ENABLED off, or PDF render failed before send.
-      return { ok: false, status: 'SKIPPED', invoiceNumber: inv.invoiceNumber };
+      // Listener returned without creating a message. It now tells us WHICH of
+      // the dozen possible reasons applied — opted out, no phone, master switch
+      // off, PDF render failed, a concurrent run still in flight, … — so the UI
+      // can name the real cause instead of guessing at the three most common.
+      return {
+        ok: false,
+        status: 'SKIPPED',
+        reason: result?.outcome ?? 'UNKNOWN',
+        detail: result?.detail,
+        invoiceNumber: inv.invoiceNumber,
+      };
     }
     return {
       ok: sent.status === 'SENT',
       status: sent.status,
+      reason: result?.outcome,
+      detail: result?.detail,
       invoiceNumber: inv.invoiceNumber,
       errorMessage: sent.errorMessage ?? undefined,
     };

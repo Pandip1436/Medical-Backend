@@ -3,6 +3,7 @@ import * as crypto from 'crypto';
 import * as QRCode from 'qrcode';
 import Razorpay from 'razorpay';
 import { R2UploadService } from '../../common/services/r2-upload.service';
+import { withTimeout, timeoutFromEnv } from '../../common/utils/with-timeout.util';
 import type {
   CreateQrInput,
   CreateQrResult,
@@ -43,6 +44,12 @@ export class RazorpayProvider implements PaymentProvider, OnModuleInit {
     this.client = new Razorpay({ key_id: keyId, key_secret: keySecret });
   }
 
+  // The Razorpay SDK sets no socket timeout, so a stalled request hangs the
+  // caller indefinitely. Every call below is bounded; see with-timeout.util.
+  private get callTimeoutMs(): number {
+    return timeoutFromEnv('RAZORPAY_TIMEOUT_MS', 20_000);
+  }
+
   private requireClient(): Razorpay {
     if (!this.client) {
       throw new Error(
@@ -77,27 +84,31 @@ export class RazorpayProvider implements PaymentProvider, OnModuleInit {
     }
     if (input.customerEmail) customer.email = input.customerEmail;
 
-    const link = await (client.paymentLink as any).create({
-      amount: paise,
-      currency: 'INR',
-      accept_partial: false,
-      description: `Invoice ${input.invoiceNumber}`,
-      reference_id: referenceId,
-      expire_by: expireBy,
-      customer: Object.keys(customer).length ? customer : undefined,
-      // We handle WhatsApp delivery ourselves via Meta Cloud API — disable
-      // Razorpay's built-in SMS/email so customers don't get duplicate
-      // messages from Razorpay's domain.
-      notify: { sms: false, email: false },
-      reminder_enable: false,
-      notes: {
-        invoice_id: input.invoiceId,
-        invoice_number: input.invoiceNumber,
-        branch_id: input.branchId ?? '',
-        customer_name: input.customerName ?? '',
-        customer_phone: input.customerPhone ?? '',
-      },
-    });
+    const link = await withTimeout<any>(
+      (client.paymentLink as any).create({
+        amount: paise,
+        currency: 'INR',
+        accept_partial: false,
+        description: `Invoice ${input.invoiceNumber}`,
+        reference_id: referenceId,
+        expire_by: expireBy,
+        customer: Object.keys(customer).length ? customer : undefined,
+        // We handle WhatsApp delivery ourselves via Meta Cloud API — disable
+        // Razorpay's built-in SMS/email so customers don't get duplicate
+        // messages from Razorpay's domain.
+        notify: { sms: false, email: false },
+        reminder_enable: false,
+        notes: {
+          invoice_id: input.invoiceId,
+          invoice_number: input.invoiceNumber,
+          branch_id: input.branchId ?? '',
+          customer_name: input.customerName ?? '',
+          customer_phone: input.customerPhone ?? '',
+        },
+      }),
+      this.callTimeoutMs,
+      'razorpay.paymentLink.create',
+    );
 
     // Generate the UPI QR ourselves from the short_url. Customer scans →
     // phone opens the URL → Razorpay's hosted page detects mobile UA and
@@ -122,14 +133,22 @@ export class RazorpayProvider implements PaymentProvider, OnModuleInit {
     // Cancel the payment link so it can no longer accept payments. Used when
     // a fresh QR is generated for the same invoice after partial cash
     // collection (so two open links can't both be paid).
-    await (client.paymentLink as any).cancel(providerQrId);
+    await withTimeout(
+      (client.paymentLink as any).cancel(providerQrId),
+      this.callTimeoutMs,
+      'razorpay.paymentLink.cancel',
+    );
   }
 
   async listPaymentsForQr(providerQrId: string): Promise<QrPayment[]> {
     const client = this.requireClient();
     // Manual reconciliation: fetch the payment link, look at its `payments`
     // array. Used when a webhook was missed.
-    const link: any = await (client.paymentLink as any).fetch(providerQrId);
+    const link: any = await withTimeout<any>(
+      (client.paymentLink as any).fetch(providerQrId),
+      this.callTimeoutMs,
+      'razorpay.paymentLink.fetch',
+    );
     const items: any[] = link?.payments ?? [];
     return items.map((p) => ({
       providerPaymentId: p.payment_id ?? p.id,

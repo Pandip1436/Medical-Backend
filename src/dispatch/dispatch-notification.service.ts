@@ -2,6 +2,7 @@ import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { InvoicePdfService } from '../pdf/invoice-pdf.service';
 import { R2UploadService } from '../common/services/r2-upload.service';
+import { resolveWhatsAppPhone } from '../common/utils/whatsapp-phone.util';
 import { WhatsAppService } from '../whatsapp/whatsapp.service';
 import { orderDispatchedTemplate } from '../whatsapp/templates';
 
@@ -55,7 +56,7 @@ export class DispatchNotificationService {
       this.logger.log(`hospital ${hospital.id} opted out of WhatsApp — skipping dispatch notice`);
       return { ok: false, skipped: 'opted-out' };
     }
-    const phone = hospital.whatsappNumber ?? hospital.phone;
+    const phone = resolveWhatsAppPhone(hospital);
     if (!phone) {
       this.logger.log(`hospital ${hospital.id} has no phone — skipping dispatch notice`);
       return { ok: false, skipped: 'no-phone' };

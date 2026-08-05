@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { WhatsAppMessageStatus } from '@prisma/client';
+import { timeoutFromEnv } from '../common/utils/with-timeout.util';
 
 // Thin wrapper around Meta Graph API for WhatsApp Cloud.
 //   https://developers.facebook.com/docs/whatsapp/cloud-api/reference/messages
@@ -98,6 +99,11 @@ export class WhatsAppService {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify(payload),
+        // fetch() has no default timeout: a stalled connection to Graph would
+        // otherwise hang the whole send flow (and its in-flight guard) forever.
+        // On abort we land in the catch below and the row is marked FAILED, so
+        // the retry sweeper picks it up normally.
+        signal: AbortSignal.timeout(timeoutFromEnv('META_TIMEOUT_MS', 30_000)),
       });
     } catch (e: any) {
       await this.prisma.whatsAppMessage.update({

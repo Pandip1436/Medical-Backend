@@ -11,6 +11,7 @@ import { DocumentNumberingService } from '../common/services/document-numbering.
 import { PartyLinkService } from '../party-link/party-link.service';
 import { CreateSupplierDto } from './dto/create-supplier.dto';
 import { UpdateSupplierDto } from './dto/update-supplier.dto';
+import { normalizeWhatsAppNumber } from '../common/utils/whatsapp-phone.util';
 
 @Injectable()
 export class SuppliersService {
@@ -128,10 +129,14 @@ export class SuppliersService {
 
   async create(createSupplierDto: CreateSupplierDto & { branchId?: string }) {
     this.assertNameNonEmpty(createSupplierDto.name);
+    // Blank `whatsappNumber` → null, same reason as on the customer side: an
+    // empty override string beats `phone` in the senders' coalesce and mutes
+    // WhatsApp for that party. See whatsapp-phone.util.
     const dto = {
       ...createSupplierDto,
       name: createSupplierDto.name.trim(),
       phone: this.normalizePhone(createSupplierDto.phone),
+      whatsappNumber: normalizeWhatsAppNumber(createSupplierDto.whatsappNumber),
       // Payment terms was removed from the Add-Supplier form; default it so the
       // required column + the GRN due-date logic (termDays) keep working.
       paymentTerms: createSupplierDto.paymentTerms ?? PaymentTerms.NET_30,
@@ -1228,7 +1233,9 @@ export class SuppliersService {
     branchId?: string,
   ) {
     const existing = await this.findOne(id, branchId);
-    const data = { ...updateSupplierDto } as UpdateSupplierDto;
+    // See create(): a blank override must be stored as null, not "".
+    const data: Omit<UpdateSupplierDto, 'whatsappNumber'> & { whatsappNumber?: string | null } = { ...updateSupplierDto };
+    data.whatsappNumber = normalizeWhatsAppNumber(data.whatsappNumber);
     if (data.name !== undefined) {
       this.assertNameNonEmpty(data.name);
       data.name = data.name.trim();

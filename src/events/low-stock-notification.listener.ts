@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { OnEvent } from '@nestjs/event-emitter';
 import { PrismaService } from '../prisma/prisma.service';
 import { WhatsAppService } from '../whatsapp/whatsapp.service';
+import { resolveWhatsAppPhone } from '../common/utils/whatsapp-phone.util';
 import {
   lowStockSupplierTemplate,
   type LowStockSupplierVars,
@@ -102,7 +103,7 @@ export class LowStockNotificationListener {
       this.logger.log(`supplier ${supplier.id} opted out of WhatsApp`);
       return;
     }
-    const phone = supplier.whatsappNumber ?? supplier.phone;
+    const phone = resolveWhatsAppPhone(supplier);
     if (!phone) {
       this.logger.log(`supplier ${supplier.id} has no phone for WhatsApp`);
       return;

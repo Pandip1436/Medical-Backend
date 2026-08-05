@@ -6,6 +6,7 @@ import {
   GetObjectCommand,
 } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
+import { timeoutFromEnv } from '../utils/with-timeout.util';
 
 // Generic Cloudflare R2 (S3-compatible) upload client. Intended to be shared
 // across modules that need to persist user-uploaded artefacts — currently
@@ -31,6 +32,14 @@ export class R2UploadService implements OnModuleInit {
         accessKeyId: R2_ACCESS_KEY_ID,
         secretAccessKey: R2_SECRET_ACCESS_KEY,
       },
+      // Without these a stalled socket never rejects, and callers that await an
+      // upload (the invoice WhatsApp flow) hang forever rather than failing.
+      // maxAttempts covers the transient blips these timeouts now surface.
+      requestHandler: {
+        connectionTimeout: timeoutFromEnv('R2_CONNECT_TIMEOUT_MS', 5_000),
+        requestTimeout: timeoutFromEnv('R2_REQUEST_TIMEOUT_MS', 30_000),
+      },
+      maxAttempts: 3,
     });
   }
 

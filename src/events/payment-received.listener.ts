@@ -7,6 +7,7 @@ import { WhatsAppService } from '../whatsapp/whatsapp.service';
 import { paymentReceivedTemplate } from '../whatsapp/templates';
 import { PAYMENT_RECEIVED } from './invoice-events';
 import type { PaymentReceivedPayload } from './invoice-events';
+import { resolveWhatsAppPhone } from '../common/utils/whatsapp-phone.util';
 
 // Fires after a payment is confirmed — either at invoice creation (counter
 // cash/UPI/card) or when a Razorpay QR payment is reconciled via webhook.
@@ -44,7 +45,7 @@ export class PaymentReceivedListener {
       this.logger.log(`payment-received: customer opted out or missing — ${payload.invoiceId}`);
       return;
     }
-    const phone = customer.whatsappNumber ?? customer.phone;
+    const phone = resolveWhatsAppPhone(customer);
     if (!phone) return;
 
     // Resolve the PDF to attach. Counter sales pass the already-generated
