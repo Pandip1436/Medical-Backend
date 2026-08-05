@@ -1582,7 +1582,7 @@ export class BillingService {
     userId: string,
     branchId?: string,
   ) {
-    return this.prisma.$transaction(async (tx) => {
+    const updated = await this.prisma.$transaction(async (tx) => {
       const existing = await tx.invoice.findUnique({
         where: { id },
         include: { items: true, creditNotes: { select: { id: true } } },
@@ -1800,6 +1800,31 @@ export class BillingService {
 
       return updated;
     });
+
+    // An edit rewrites the items and totals the customer was already sent, so
+    // the PDF sitting in their WhatsApp thread is now wrong. Re-queue delivery
+    // of the corrected invoice AFTER the transaction commits, through the same
+    // listener that handles creation — it still honours WHATSAPP_AUTO_SEND_ENABLED,
+    // the customer's opt-in, and the type/status gating, so this sends nothing
+    // that a fresh invoice wouldn't.
+    //
+    // forceResend is required: the idempotency guard drops any invoice Meta has
+    // already accepted, which is exactly this case. Emitting is fire-and-forget
+    // — the listener catches its own failures, so a WhatsApp outage can never
+    // fail an edit that is already committed.
+    const editPayload: InvoiceCreatedPayload = {
+      invoiceId: updated.id,
+      branchId: updated.branchId ?? null,
+      customerId: updated.customerId ?? null,
+      type: updated.type as InvoiceCreatedPayload['type'],
+      status: updated.status as InvoiceCreatedPayload['status'],
+      grandTotal: Number(updated.grandTotal),
+      amountPaid: Number(updated.amountPaid),
+      forceResend: true,
+    };
+    this.events.emit(INVOICE_CREATED, editPayload);
+
+    return updated;
   }
 
   async collectPayment(id: string, amountReceived: number, paymentMode: string, branchId?: string, referenceNumber?: string) {
