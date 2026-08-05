@@ -1398,7 +1398,13 @@ export class ReportsService {
   // ── Customer Ledger ────────────────────────────────────────────
   async getCustomerLedger(
     customerId: string,
-    query: PeriodQuery & { branchId?: string; skip?: number; take?: number },
+    query: PeriodQuery & {
+      branchId?: string;
+      skip?: number;
+      take?: number;
+      /** Row order. 'asc' (default) = oldest first; 'desc' = newest first. */
+      order?: 'asc' | 'desc';
+    },
   ) {
     // Custom period handling — `resolvePeriod()` defaults `from` to
     // start-of-current-month when none is supplied, which silently truncates
@@ -1725,14 +1731,24 @@ export class ReportsService {
     // above, then we return only the requested page of rows. Each page row
     // already carries its correct cumulative balance, so page 2 continues
     // contiguously from page 1. KPIs stay whole-period regardless of page.
-    const total = ledger.length;
+    // `order=desc` = newest first. Reversed HERE, after the running balance has
+    // been accumulated in chronological order — every row keeps the cumulative
+    // balance it genuinely had at that point in time. Sorting the entries
+    // descending before the accumulation would compute the balance backwards
+    // and produce figures that reconcile with nothing.
+    //
+    // It also has to happen before the slice: reversing only the current page
+    // would just shuffle 10 of 79 rows, leaving the newest transactions
+    // stranded on the last page.
+    const ordered = query.order === 'desc' ? [...ledger].reverse() : ledger;
+    const total = ordered.length;
     const paginated = typeof query.skip === 'number' && typeof query.take === 'number';
     const tableData = paginated
-      ? ledger.slice(
+      ? ordered.slice(
           Math.max(query.skip!, 0),
           Math.max(query.skip!, 0) + Math.min(Math.max(query.take!, 1), 100),
         )
-      : ledger;
+      : ordered;
 
     return {
       customer,

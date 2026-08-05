@@ -2,11 +2,26 @@ import {
   Injectable,
   NotFoundException,
   BadRequestException,
+  Inject,
+  forwardRef,
 } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { DocumentNumberingService } from '../common/services/document-numbering.service';
+import { ApprovalsService } from '../approvals/approvals.service';
+import { isAdminRole } from '../common/roles.util';
 import { CreateGrnDto } from './dto/create-grn.dto';
+
+// Purchase Entries carrying an item that expires within this window need admin
+// approval when raised by a non-admin (near-expiry stock is a write-off risk).
+const NEAR_EXPIRY_APPROVAL_MONTHS = 6;
+
+// Minimal shape of the authenticated user the create-approval gate needs.
+export interface GrnActor {
+  userId: string;
+  role?: string | null;
+  name?: string | null;
+}
 
 // GRN create/edit run many sequential writes (item + batch + stock per line,
 // plus PO/supplier recompute and audit) inside one interactive transaction.
@@ -25,6 +40,10 @@ export class GrnService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly numbering: DocumentNumberingService,
+    // Circular: ApprovalsService injects GrnService (to create the GRN once a
+    // PURCHASE_ENTRY request is approved). Resolved via forwardRef.
+    @Inject(forwardRef(() => ApprovalsService))
+    private readonly approvals: ApprovalsService,
   ) {}
 
   /** Derive a GRN's payment status from how much has been paid vs the invoice. */
@@ -37,7 +56,50 @@ export class GrnService {
     return 'PARTIAL';
   }
 
-  async create(createGrnDto: CreateGrnDto, branchId?: string) {
+  async create(
+    createGrnDto: CreateGrnDto,
+    branchId?: string,
+    actor?: GrnActor,
+    opts?: { skipApproval?: boolean },
+  ) {
+    // Near-expiry admin gate: a non-admin raising a Purchase Entry with any item
+    // expiring within NEAR_EXPIRY_APPROVAL_MONTHS must have it approved first.
+    // Admins create directly; the approval executor calls back with
+    // skipApproval=true so an approved request isn't re-gated into a loop.
+    if (!opts?.skipApproval && actor && !isAdminRole(actor.role)) {
+      const cutoff = new Date();
+      cutoff.setMonth(cutoff.getMonth() + NEAR_EXPIRY_APPROVAL_MONTHS);
+      const nearExpiry = (createGrnDto.items ?? []).filter(
+        (it) => it.expiryDate && new Date(it.expiryDate) < cutoff,
+      );
+      if (nearExpiry.length > 0) {
+        const effectiveBranchId = branchId ?? createGrnDto.branchId ?? undefined;
+        const req = await this.approvals.createRequest({
+          type: 'PURCHASE_ENTRY',
+          payload: {
+            createGrnDto,
+            branchId: effectiveBranchId ?? null,
+            requestedByName: actor.name ?? null,
+            // Human-readable summary for the Approvals screen.
+            supplierName: createGrnDto.supplierName ?? null,
+            supplierInvoiceNo: createGrnDto.supplierInvoiceNo ?? null,
+            supplierInvoiceAmount: createGrnDto.supplierInvoiceAmount ?? null,
+            nearExpiryItems: nearExpiry.map((it) => ({
+              productName: it.productName,
+              batchNumber: it.batchNumber,
+              expiryDate: it.expiryDate,
+            })),
+          },
+          requestedById: actor.userId,
+          branchId: effectiveBranchId,
+        });
+        return {
+          approvalRequested: true,
+          approvalRequestId: req.id,
+          nearExpiryCount: nearExpiry.length,
+        };
+      }
+    }
     return this.numbering.retryOnCollision(() =>
       this.createInternal(createGrnDto, branchId),
     );

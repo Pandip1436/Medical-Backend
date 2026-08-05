@@ -41,7 +41,11 @@ export class GrnController {
     @Query('branchId') branchId?: string,
   ) {
     const effectiveBranchId = req.user.branchId ?? branchId ?? undefined;
-    return this.grnService.create(createGrnDto, effectiveBranchId);
+    return this.grnService.create(createGrnDto, effectiveBranchId, {
+      userId: req.user.userId,
+      role: (req.user as { role?: string }).role ?? null,
+      name: (req.user as { name?: string }).name ?? req.user.email ?? null,
+    });
   }
 
   @Get()

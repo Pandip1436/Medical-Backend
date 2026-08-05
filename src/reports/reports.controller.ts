@@ -295,12 +295,14 @@ export class ReportsController {
   @ApiOperation({ summary: 'Customer ledger with debits/credits and running balance' })
   @ApiQuery({ name: 'from', required: false })
   @ApiQuery({ name: 'to', required: false })
+  @ApiQuery({ name: 'order', required: false, enum: ['asc', 'desc'] })
   getCustomerLedger(
     @Param('customerId') customerId: string,
     @Query('from') from?: string,
     @Query('to') to?: string,
     @Query('skip') skip?: string,
     @Query('take') take?: string,
+    @Query('order') order?: string,
   ) {
     const skipNum = skip !== undefined ? Number(skip) : undefined;
     const takeNum = take !== undefined ? Number(take) : undefined;
@@ -309,6 +311,8 @@ export class ReportsController {
       to,
       skip: Number.isFinite(skipNum) ? skipNum : undefined,
       take: Number.isFinite(takeNum) ? takeNum : undefined,
+      // Anything other than an explicit 'desc' keeps the chronological default.
+      order: order === 'desc' ? 'desc' : 'asc',
     });
   }
 

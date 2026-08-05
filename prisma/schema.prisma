@@ -1272,6 +1272,9 @@ enum ApprovalType {
   SALES_RETURN
   PURCHASE_RETURN
   INVENTORY_ADJUSTMENT
+  // Purchase Entry (GRN) carrying an item that expires within 6 months —
+  // non-admins must have it approved before stock is created.
+  PURCHASE_ENTRY
 }
 
 enum ApprovalStatus {

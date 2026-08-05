@@ -14,6 +14,7 @@ import { isAdminRole } from '../common/roles.util';
 import { syncPaymentDueForInvoice } from '../notifications/payment-due-sync';
 import { CreditNotesService } from '../credit-notes/credit-notes.service';
 import { PartyLinkService } from '../party-link/party-link.service';
+import { GrnService } from '../grn/grn.service';
 
 // Builds the "<customer> (<phone>) — " prefix for approval notifications when
 // the request payload carries customer fields (e.g. SALES_RETURN stamps both
@@ -40,6 +41,10 @@ export class ApprovalsService {
     @Inject(forwardRef(() => CreditNotesService))
     private readonly creditNotes: CreditNotesService,
     private readonly partyLink: PartyLinkService,
+    // Circular: GrnService injects ApprovalsService (a near-expiry PE files a
+    // PURCHASE_ENTRY request). This executor creates the GRN on approval.
+    @Inject(forwardRef(() => GrnService))
+    private readonly grnService: GrnService,
   ) {}
 
   // ── Create a pending request ───────────────────────────────
@@ -541,6 +546,20 @@ export class ApprovalsService {
             }
           }
         });
+        break;
+      }
+
+      case 'PURCHASE_ENTRY': {
+        // Approved near-expiry Purchase Entry — create the real GRN now from the
+        // stored dto. skipApproval prevents the gate from re-filing a request.
+        const dto = payload.createGrnDto;
+        if (!dto) break;
+        await this.grnService.create(
+          dto,
+          payload.branchId ?? branchId ?? undefined,
+          undefined,
+          { skipApproval: true },
+        );
         break;
       }
     }
