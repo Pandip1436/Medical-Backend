@@ -45,10 +45,16 @@ export class SuppliersController {
     const effectiveBranchId =
       req.user.branchId ?? createSupplierDto.branchId ?? qBranchId ?? undefined;
 
-    return this.suppliersService.create({
-      ...createSupplierDto,
-      branchId: effectiveBranchId,
-    });
+    return this.suppliersService.create(
+      {
+        ...createSupplierDto,
+        branchId: effectiveBranchId,
+      },
+      {
+        userId: req.user.userId,
+        role: (req.user as { role?: string }).role ?? null,
+      },
+    );
   }
 
   @Post('bulk')

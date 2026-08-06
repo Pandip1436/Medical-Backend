@@ -15,6 +15,7 @@ import { syncPaymentDueForInvoice } from '../notifications/payment-due-sync';
 import { CreditNotesService } from '../credit-notes/credit-notes.service';
 import { PartyLinkService } from '../party-link/party-link.service';
 import { GrnService } from '../grn/grn.service';
+import { SuppliersService } from '../suppliers/suppliers.service';
 
 // Builds the "<customer> (<phone>) — " prefix for approval notifications when
 // the request payload carries customer fields (e.g. SALES_RETURN stamps both
@@ -45,6 +46,11 @@ export class ApprovalsService {
     // PURCHASE_ENTRY request). This executor creates the GRN on approval.
     @Inject(forwardRef(() => GrnService))
     private readonly grnService: GrnService,
+    // Circular: SuppliersService injects ApprovalsService (an inventory-manager
+    // new supplier files a NEW_SUPPLIER request). This executor creates the
+    // supplier on approval.
+    @Inject(forwardRef(() => SuppliersService))
+    private readonly suppliersService: SuppliersService,
   ) {}
 
   // ── Create a pending request ───────────────────────────────
@@ -252,6 +258,13 @@ export class ApprovalsService {
             this.logger.warn(`Party-link twin failed for approved customer ${created.id}: ${String(e)}`);
           }
         }
+        break;
+      }
+
+      case 'NEW_SUPPLIER': {
+        // Re-run the normal create (dedup + customer twin) with no actor, so it
+        // creates directly instead of filing another approval.
+        await this.suppliersService.create({ ...payload, branchId: branchId ?? undefined } as any);
         break;
       }
 

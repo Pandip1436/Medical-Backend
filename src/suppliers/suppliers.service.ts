@@ -4,11 +4,14 @@ import {
   NotFoundException,
   ConflictException,
   BadRequestException,
+  Inject,
+  forwardRef,
 } from '@nestjs/common';
 import { Prisma, PaymentTerms } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { DocumentNumberingService } from '../common/services/document-numbering.service';
 import { PartyLinkService } from '../party-link/party-link.service';
+import { ApprovalsService } from '../approvals/approvals.service';
 import { CreateSupplierDto } from './dto/create-supplier.dto';
 import { UpdateSupplierDto } from './dto/update-supplier.dto';
 import { normalizeWhatsAppNumber } from '../common/utils/whatsapp-phone.util';
@@ -21,6 +24,8 @@ export class SuppliersService {
     private readonly prisma: PrismaService,
     private readonly numbering: DocumentNumberingService,
     private readonly partyLink: PartyLinkService,
+    @Inject(forwardRef(() => ApprovalsService))
+    private readonly approvals: ApprovalsService,
   ) {}
 
   /** Derive a GRN's payment status from how much has been paid vs the invoice. */
@@ -127,7 +132,10 @@ export class SuppliersService {
     }
   }
 
-  async create(createSupplierDto: CreateSupplierDto & { branchId?: string }) {
+  async create(
+    createSupplierDto: CreateSupplierDto & { branchId?: string },
+    user?: { userId: string; role?: string | null },
+  ) {
     this.assertNameNonEmpty(createSupplierDto.name);
     // Blank `whatsappNumber` → null, same reason as on the customer side: an
     // empty override string beats `phone` in the senders' coalesce and mutes
@@ -147,6 +155,22 @@ export class SuppliersService {
       drugLicense: dto.drugLicense,
       branchId: dto.branchId ?? null,
     });
+
+    // Inventory Managers must have new suppliers approved by an admin; admins
+    // (and other roles) create directly. Duplicate/name checks run above so the
+    // requester sees a conflict immediately rather than admin discovering it
+    // later. The approval executor re-invokes create() without an actor.
+    if (user?.role === 'INVENTORY_MANAGER') {
+      const { branchId, ...payload } = dto;
+      const req = await this.approvals.createRequest({
+        type: 'NEW_SUPPLIER',
+        payload: payload as Record<string, any>,
+        requestedById: user.userId,
+        branchId,
+      });
+      return { approvalRequested: true, approvalRequestId: req.id };
+    }
+
     const created = await this.prisma.supplier.create({ data: dto });
     // Mirror to a linked wholesale-customer twin. Best-effort — a twin hiccup
     // must never fail the supplier create (the backfill script catches misses).
