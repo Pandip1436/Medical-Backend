@@ -554,14 +554,18 @@ export class NotificationsService {
     const year = today.getFullYear();
 
     // A reminder fires today if it hits its monthly day-of-month, OR if it
-    // carries a one-off follow-up date that lands today.
+    // carries a one-off follow-up date that lands today. Days 29–31 clamp to the
+    // month's last day: on that day, sweep in any dayOfMonth >= today so an
+    // end-of-month reminder (e.g. day 31) still fires on Feb 28 / Apr 30.
     const startOfToday = new Date(year, today.getMonth(), todayDay);
     const endOfToday = new Date(year, today.getMonth(), todayDay, 23, 59, 59, 999);
+    const lastDay = new Date(year, today.getMonth() + 1, 0).getDate();
+    const dayMatch = todayDay === lastDay ? { gte: todayDay } : todayDay;
     const reminders = await this.prisma.customerReminder.findMany({
       where: {
         isActive: true,
         OR: [
-          { dayOfMonth: todayDay },
+          { dayOfMonth: dayMatch },
           { followUpDate: { gte: startOfToday, lte: endOfToday } },
         ],
       },

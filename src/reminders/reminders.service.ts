@@ -6,15 +6,12 @@ import { CreateReminderDto, UpdateReminderDto, CreateContactLogDto } from './dto
 export class RemindersService {
   constructor(private prisma: PrismaService) {}
 
-  // Reject day-of-month values that don't fire in every month. 31 is missing
-  // in 4 months, 30 is missing in Feb, 29 is missing in non-leap Feb. Cap at
-  // 28 so reminders fire reliably year-round; for true "last day of month"
-  // semantics we'd need a separate flag, which we don't have today.
+  // Day-of-month for a monthly reminder. Days 29–31 don't exist in every month,
+  // so they CLAMP to the month's last day when firing (see findDueToday) — e.g.
+  // a day-31 reminder fires on Feb 28 / Apr 30. So the full 1–31 range is valid.
   private validateDayOfMonth(day: number) {
-    if (day < 1 || day > 28) {
-      throw new BadRequestException(
-        'dayOfMonth must be between 1 and 28 so the reminder fires every month (use 28 for end-of-month).',
-      );
+    if (day < 1 || day > 31) {
+      throw new BadRequestException('dayOfMonth must be between 1 and 31.');
     }
   }
 
@@ -49,9 +46,15 @@ export class RemindersService {
   }
 
   async findDueToday(branchId?: string) {
-    const today = new Date().getDate()
+    const now = new Date()
+    const today = now.getDate()
+    // Last day of the current month. On that day, sweep in any reminder whose
+    // scheduled day is >= today (i.e. 29/30/31 that don't exist this month) so
+    // end-of-month reminders fire — clamp-to-end-of-month semantics.
+    const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate()
+    const dayMatch = today === lastDay ? { gte: today } : today
     return this.prisma.customerReminder.findMany({
-      where: { dayOfMonth: today, isActive: true, ...(branchId ? { branchId } : {}) },
+      where: { dayOfMonth: dayMatch, isActive: true, ...(branchId ? { branchId } : {}) },
       include: {
         customer: { select: { id: true, name: true, phone: true, type: true, email: true, address: true } },
         contacts: { orderBy: { contactedAt: 'desc' }, take: 1 },
@@ -101,9 +104,9 @@ export class RemindersService {
     options: { title?: string; dayOfMonth?: number; branchId?: string } = {},
   ) {
     const title = options.title?.trim() || 'Payment follow-up'
-    // Cap dayOfMonth at 28 (matches validateDayOfMonth) so the reminder fires every month.
+    // Clamp into the valid 1–31 range (days 29–31 clamp to end-of-month at fire time).
     const rawDay = options.dayOfMonth ?? new Date().getDate()
-    const dayOfMonth = Math.min(Math.max(rawDay, 1), 28)
+    const dayOfMonth = Math.min(Math.max(rawDay, 1), 31)
     const branchId = options.branchId
 
     // Look up existing reminders for these customers + title so we don't
