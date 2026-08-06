@@ -19,6 +19,31 @@ const RESOLVED_SUPPRESS_DAYS = Number(process.env.NOTIFICATION_RESOLVED_DAYS ?? 
 // Marking as read (without resolving) is a softer signal: suppress for a few days.
 const READ_SUPPRESS_DAYS = Number(process.env.NOTIFICATION_READ_DAYS ?? 3);
 
+// Which roles a notification TYPE is relevant to — mirrors the Notifications
+// page's per-folder `roles` map so the list matches the folders a role is shown.
+// Financial/inventory alerts only reach the roles that act on them. Types NOT
+// listed here (SYSTEM/reminders, and APPROVAL — governed by recipientId/
+// recipientRole) are visible to everyone. Admins bypass this entirely.
+const TYPE_ROLE_VISIBILITY: Record<string, string[]> = {
+  LOW_STOCK: ['PHARMACIST', 'INVENTORY_MANAGER'],
+  EXPIRY: ['PHARMACIST', 'INVENTORY_MANAGER'],
+  PAYMENT_DUE: ['PHARMACIST', 'ACCOUNTANT'],
+  SUPPLIER_PAYMENT_DUE: ['ACCOUNTANT', 'INVENTORY_MANAGER'],
+};
+
+// A Prisma `where` fragment that hides notification types the role may not see.
+// Returns null when there's nothing to hide (no role context, or an admin — both
+// see everything). Used by findAll AND markAllAsRead so a non-admin can neither
+// view nor mark-read another role's alerts (e.g. an inventory manager clearing
+// the accountant's Payment Due).
+function roleTypeExclusion(role?: string | null): { NOT: { type: { in: string[] } } } | null {
+  if (!role || isAdminRole(role)) return null;
+  const hidden = Object.entries(TYPE_ROLE_VISIBILITY)
+    .filter(([, roles]) => !roles.includes(role))
+    .map(([type]) => type);
+  return hidden.length ? { NOT: { type: { in: hidden } } } : null;
+}
+
 function dedupSince(): Date {
   const d = new Date();
   d.setHours(d.getHours() - DEDUP_WINDOW_HOURS);
@@ -192,6 +217,10 @@ export class NotificationsService {
     if (!isAdminRole(opts.role ?? undefined)) {
       and.push({ recipientRole: null });
     }
+    // Type visibility: hide alert types this role doesn't act on (e.g. Payment
+    // Due for an inventory manager), matching the folders the page shows them.
+    const typeExclusion = roleTypeExclusion(opts.role);
+    if (typeExclusion) and.push(typeExclusion);
     if (opts.onlyUnread) and.push({ isRead: false });
     if (opts.onlyRead) and.push({ isRead: true });
     if (opts.type) and.push({ type: opts.type });
@@ -268,6 +297,8 @@ export class NotificationsService {
           ? { OR: [{ recipientId: null }, { recipientId: userId }] }
           : { recipientId: null }),
         ...(isAdminRole(role ?? undefined) ? {} : { recipientRole: null }),
+        // Never let a non-admin mark another role's alert types read.
+        ...((roleTypeExclusion(role) ?? {}) as any),
       },
       data: { isRead: true },
     });
