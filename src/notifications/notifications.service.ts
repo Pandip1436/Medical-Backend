@@ -8,6 +8,7 @@ import {
   type NotificationKind,
 } from '../events/notification-events';
 import { buildPaymentDueMessage, buildPaymentDueState } from './payment-due-sync';
+import { isAdminRole } from '../common/roles.util';
 
 // Window-based dedup: don't fire the same alert again within this many hours
 // when there's no stronger signal (user hasn't read/resolved/snoozed).
@@ -151,6 +152,8 @@ export class NotificationsService {
     branchId?: string;
     /** The requesting user — sees branch-wide rows PLUS their own personal ones. */
     userId?: string;
+    /** The requesting user's role — governs role-targeted rows (e.g. admin-only). */
+    role?: string | null;
     onlyUnread?: boolean;
     /** Mirror of onlyUnread for the opposite filter — only ALREADY-read rows. */
     onlyRead?: boolean;
@@ -176,13 +179,19 @@ export class NotificationsService {
       and.push({ OR: [{ branchId: opts.branchId }, { branchId: null }] });
     }
     // Personal targeting: a row with recipientId set is visible ONLY to that
-    // user; a null recipient is branch-wide (everyone). Without a user context
-    // fall back to branch-wide only, so personal notifications never leak.
+    // user; a null recipient is not user-specific. Without a user context fall
+    // back to recipient-null only, so personal notifications never leak.
     and.push(
       opts.userId
         ? { OR: [{ recipientId: null }, { recipientId: opts.userId }] }
         : { recipientId: null },
     );
+    // Role targeting: rows tagged with a recipientRole (e.g. 'ADMIN' for
+    // approval requests) are visible only to admins. Non-admins see only
+    // role-unrestricted rows.
+    if (!isAdminRole(opts.role ?? undefined)) {
+      and.push({ recipientRole: null });
+    }
     if (opts.onlyUnread) and.push({ isRead: false });
     if (opts.onlyRead) and.push({ isRead: true });
     if (opts.type) and.push({ type: opts.type });
@@ -248,16 +257,17 @@ export class NotificationsService {
     return this.prisma.notification.update({ where: { id }, data: { isRead: true } });
   }
 
-  async markAllAsRead(branchId?: string, userId?: string) {
+  async markAllAsRead(branchId?: string, userId?: string, role?: string | null) {
     return this.prisma.notification.updateMany({
-      // Only touch rows this user can actually see: branch-wide OR their own
-      // personal ones — never another user's personal notifications.
+      // Only touch rows this user can actually see: never another user's
+      // personal ones, and — for non-admins — never role-restricted (admin) ones.
       where: {
         isRead: false,
         ...(branchId ? { branchId } : {}),
         ...(userId
           ? { OR: [{ recipientId: null }, { recipientId: userId }] }
           : { recipientId: null }),
+        ...(isAdminRole(role ?? undefined) ? {} : { recipientRole: null }),
       },
       data: { isRead: true },
     });

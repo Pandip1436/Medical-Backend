@@ -68,6 +68,7 @@ export class NotificationsController {
     return this.service.findAll({
       branchId,
       userId: req.user.userId,
+      role: (req.user as { role?: string }).role ?? null,
       onlyUnread: unread === 'true',
       onlyRead: read === 'true',
       type: typedType,
@@ -105,7 +106,7 @@ export class NotificationsController {
     @Query('branchId') queryBranchId?: string,
   ) {
     const branchId = req.user.branchId ?? queryBranchId ?? undefined;
-    return this.service.markAllAsRead(branchId, req.user.userId);
+    return this.service.markAllAsRead(branchId, req.user.userId, (req.user as { role?: string }).role ?? null);
   }
 
   @Patch('read-bulk')

@@ -66,7 +66,8 @@ export class ApprovalsService {
       include: { requestedBy: { select: { id: true, name: true, role: true } } },
     });
 
-    // Fire an APPROVAL notification for admins in the branch
+    // Fire an APPROVAL notification for admins in the branch. recipientRole
+    // 'ADMIN' keeps it out of non-admins' lists — only approvers act on it.
     await this.prisma.notification.create({
       data: {
         type: 'APPROVAL',
@@ -74,6 +75,7 @@ export class ApprovalsService {
         message: `${request.requestedBy.name} requested approval for ${opts.type.replace(/_/g, ' ').toLowerCase()}.`,
         actionUrl: `/admin/approvals/detail?id=${request.id}`,
         branchId: opts.branchId ?? null,
+        recipientRole: 'ADMIN',
       },
     });
 

@@ -1153,11 +1153,15 @@ model Notification {
   actionUrl     String?
   branchId      String?
   branch        Branch?          @relation(fields: [branchId], references: [id])
-  // Personal targeting. null = branch-wide (everyone in the branch sees it —
-  // Low Stock, Expiry, Payment Due, and approval *requests* for approvers).
-  // Set = only this user sees it (personal results, e.g. "Your credit bill
-  // request was approved/rejected" belong to the requester alone).
+  // Personal targeting. null = not tied to one user; set = only this user sees
+  // it (personal results, e.g. "Your credit bill request was approved/rejected"
+  // belong to the requester alone).
   recipientId   String?
+  // Role targeting. null = no role restriction (everyone, subject to recipientId
+  // + branch). 'ADMIN' = only admins see it — used for approval *requests*
+  // ("X requested approval for …"), which are the approvers' business, not
+  // every user's. Combined with recipientId via AND.
+  recipientRole String?
   snoozedUntil  DateTime?
   // Stamped when the user takes the corrective action (e.g. records payment
   // for a Payment Due alert). Independent of isRead so we can show audit info.
