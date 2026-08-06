@@ -159,6 +159,9 @@ export class ApprovalsService {
         message: `${approvalCustomerLead(req.payload)}Your ${req.type.replace(/_/g, ' ').toLowerCase()} request has been approved.${reviewNote ? ` Note: ${reviewNote}` : ''}`,
         actionUrl: `/admin/approvals/detail?id=${id}`,
         branchId: req.branchId ?? null,
+        // Personal result — only the requester should see "Your request was
+        // approved", never every admin/user in the branch.
+        recipientId: req.requestedById,
       },
     });
 
@@ -214,6 +217,8 @@ export class ApprovalsService {
         message: `${approvalCustomerLead(req.payload)}Your ${req.type.replace(/_/g, ' ').toLowerCase()} request was rejected.${reviewNote ? ` Reason: ${reviewNote}` : ''}`,
         actionUrl: `/admin/approvals/detail?id=${id}`,
         branchId: req.branchId ?? null,
+        // Personal result — only the requester should see the rejection.
+        recipientId: req.requestedById,
       },
     });
 

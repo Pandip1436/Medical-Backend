@@ -149,6 +149,8 @@ export class NotificationsService {
   //   existing store fetch + 60s poller that don't know about pagination.
   async findAll(opts: {
     branchId?: string;
+    /** The requesting user — sees branch-wide rows PLUS their own personal ones. */
+    userId?: string;
     onlyUnread?: boolean;
     /** Mirror of onlyUnread for the opposite filter — only ALREADY-read rows. */
     onlyRead?: boolean;
@@ -173,6 +175,14 @@ export class NotificationsService {
     if (opts.branchId) {
       and.push({ OR: [{ branchId: opts.branchId }, { branchId: null }] });
     }
+    // Personal targeting: a row with recipientId set is visible ONLY to that
+    // user; a null recipient is branch-wide (everyone). Without a user context
+    // fall back to branch-wide only, so personal notifications never leak.
+    and.push(
+      opts.userId
+        ? { OR: [{ recipientId: null }, { recipientId: opts.userId }] }
+        : { recipientId: null },
+    );
     if (opts.onlyUnread) and.push({ isRead: false });
     if (opts.onlyRead) and.push({ isRead: true });
     if (opts.type) and.push({ type: opts.type });
@@ -238,9 +248,17 @@ export class NotificationsService {
     return this.prisma.notification.update({ where: { id }, data: { isRead: true } });
   }
 
-  async markAllAsRead(branchId?: string) {
+  async markAllAsRead(branchId?: string, userId?: string) {
     return this.prisma.notification.updateMany({
-      where: { isRead: false, ...(branchId ? { branchId } : {}) },
+      // Only touch rows this user can actually see: branch-wide OR their own
+      // personal ones — never another user's personal notifications.
+      where: {
+        isRead: false,
+        ...(branchId ? { branchId } : {}),
+        ...(userId
+          ? { OR: [{ recipientId: null }, { recipientId: userId }] }
+          : { recipientId: null }),
+      },
       data: { isRead: true },
     });
   }

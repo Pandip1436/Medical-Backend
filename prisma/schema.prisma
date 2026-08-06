@@ -1153,6 +1153,11 @@ model Notification {
   actionUrl     String?
   branchId      String?
   branch        Branch?          @relation(fields: [branchId], references: [id])
+  // Personal targeting. null = branch-wide (everyone in the branch sees it —
+  // Low Stock, Expiry, Payment Due, and approval *requests* for approvers).
+  // Set = only this user sees it (personal results, e.g. "Your credit bill
+  // request was approved/rejected" belong to the requester alone).
+  recipientId   String?
   snoozedUntil  DateTime?
   // Stamped when the user takes the corrective action (e.g. records payment
   // for a Payment Due alert). Independent of isRead so we can show audit info.
@@ -1165,6 +1170,7 @@ model Notification {
   createdAt     DateTime         @default(now())
 
   @@index([branchId, isRead, snoozedUntil])
+  @@index([recipientId])
 }
 
 enum NotificationType {
