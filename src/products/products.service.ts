@@ -982,8 +982,16 @@ export class ProductsService {
       throw new NotFoundException('Product not found');
     }
 
+    // A sale only affects stock once its invoice is finalized. DRAFT invoices
+    // (e.g. a credit bill parked for admin approval) haven't deducted stock, and
+    // CANCELLED ones had their deduction reversed — so both must be excluded or
+    // the timeline shows a phantom stock-out for goods that never left. Mirrors
+    // the sold-qty filter in computeBatchMovements so the history, the Batches
+    // tab and the real stock all agree.
+    const SALE_STOCK_FILTER = { status: { notIn: ['DRAFT', 'CANCELLED'] as any } };
+
     const [totalSalesCount, totalPurchaseCount, totalSalesReturnCount, totalPurchaseReturnCount] = await Promise.all([
-      this.prisma.invoiceItem.count({ where: { productId } }),
+      this.prisma.invoiceItem.count({ where: { productId, invoice: SALE_STOCK_FILTER } }),
       this.prisma.gRNItem.count({ where: { productId } }),
       // Only APPROVED credit notes actually restock inventory — PENDING_REVIEW
       // holds goods without restoring stock and REJECTED touches nothing. Match
@@ -995,7 +1003,7 @@ export class ProductsService {
 
     const [salesItems, purchaseItems, salesReturnItems, purchaseReturnItems] = await Promise.all([
       this.prisma.invoiceItem.findMany({
-        where: { productId },
+        where: { productId, invoice: SALE_STOCK_FILTER },
         include: {
           invoice: { select: { id: true, invoiceNumber: true, date: true, customerName: true, customerId: true, status: true, customer: { select: { phone: true } } } },
         },
