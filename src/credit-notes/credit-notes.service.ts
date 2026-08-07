@@ -29,6 +29,12 @@ export class CreditNotesService {
     private readonly approvals: ApprovalsService,
   ) {}
 
+  // Non-consuming preview of the next credit-note number, for the Sales-Return
+  // UI. Best-effort — the authoritative number is assigned at creation.
+  previewNextNumber(branchId?: string | null): Promise<string> {
+    return this.numbering.peekNextNumber('CN', branchId ?? null);
+  }
+
   /**
    * Gate 1 — Super-Admin authorization. A non-super-admin's credit note is
    * filed as a SALES_RETURN ApprovalRequest and only becomes a real

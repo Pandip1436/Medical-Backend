@@ -124,6 +124,38 @@ export class DocumentNumberingService {
     });
   }
 
+  // ── Non-consuming preview ────────────────────────────────────────────────
+  // Renders what the NEXT number WOULD be without advancing the counter — for
+  // UI previews (e.g. the Sales-Return credit-note screen). Best-effort only:
+  // the real number is assigned at creation time, so a concurrent create can
+  // shift it. Never use the returned value as the stored number.
+  async peekNextNumber(docType: DocType, branchId?: string | null): Promise<string> {
+    const fy = DocumentNumberingService.getFinancialYear();
+    const scope = branchId ?? 'GLOBAL';
+    const key = `${docType}:${scope}:${fy}`;
+
+    const seq = await this.prisma.documentSequence.findUnique({ where: { key } });
+    const nextCounter = (seq?.counter ?? 0) + 1;
+
+    const config = await this.prisma.numberingConfig.findFirst({
+      where: { branchId: branchId ?? null, docType },
+    });
+    if (!config) {
+      return `${DOC_PREFIX[docType]}/${fy}/${String(nextCounter).padStart(5, '0')}`;
+    }
+    const { fyStart, fyEnd } = DocumentNumberingService.getFyParts();
+    const renderedFy = DocumentNumberingService.formatFy(
+      fyStart,
+      fyEnd,
+      config.fyFormat as FyFormat,
+    );
+    const renderedNn = String(nextCounter).padStart(config.padding, '0');
+    return DocumentNumberingService.applyTemplate(config.template, {
+      FY: renderedFy,
+      NN: renderedNn,
+    });
+  }
+
   // ── Collision defense for live (non-import) creation paths ────────────────
   // Document numbers are branch-scoped unique (see migration
   // 20260703000000_branch_scope_document_numbers), so a collision here should

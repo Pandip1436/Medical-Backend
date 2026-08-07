@@ -18,6 +18,12 @@ export class PurchaseReturnsService {
     private readonly numbering: DocumentNumberingService,
   ) {}
 
+  // Non-consuming preview of the next debit-note number, for the Purchase-Return
+  // UI. Best-effort — the authoritative number is assigned at creation.
+  previewNextNumber(branchId?: string | null): Promise<string> {
+    return this.numbering.peekNextNumber('DN', branchId ?? null);
+  }
+
   async create(
     dto: CreatePurchaseReturnDto,
     userId: string,

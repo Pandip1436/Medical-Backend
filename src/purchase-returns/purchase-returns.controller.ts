@@ -63,6 +63,15 @@ export class PurchaseReturnsController {
     return this.purchaseReturnsService.findAll(q, effectiveBranchId);
   }
 
+  // Declared before @Get(':id') so "next-number" isn't captured as an id.
+  @Get('next-number')
+  @Roles('ADMIN', 'INVENTORY_MANAGER', 'ACCOUNTANT', 'PHARMACIST')
+  @ApiOperation({ summary: 'Preview the next debit-note number (non-consuming)' })
+  async nextNumber(@Request() req: AuthenticatedRequest, @Query('branchId') branchId?: string) {
+    const effectiveBranchId = req.user.branchId ?? branchId ?? null;
+    return { number: await this.purchaseReturnsService.previewNextNumber(effectiveBranchId) };
+  }
+
   @Get(':id')
   @Roles('ADMIN', 'INVENTORY_MANAGER', 'ACCOUNTANT', 'PHARMACIST')
   @ApiOperation({ summary: 'Get specific purchase return by ID' })

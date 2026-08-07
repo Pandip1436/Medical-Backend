@@ -128,6 +128,15 @@ export class CreditNotesController {
     });
   }
 
+  // Declared before @Get(':id') so "next-number" isn't captured as an id.
+  @Get('next-number')
+  @Roles('ADMIN', 'PHARMACIST', 'ACCOUNTANT')
+  @ApiOperation({ summary: 'Preview the next credit-note number (non-consuming)' })
+  async nextNumber(@Request() req: any, @Query('branchId') branchId?: string) {
+    const effectiveBranchId = req.user.branchId ?? branchId ?? null;
+    return { number: await this.creditNotesService.previewNextNumber(effectiveBranchId) };
+  }
+
   @Get('invoice/:invoiceId/returned-qty')
   @Roles('ADMIN', 'PHARMACIST', 'ACCOUNTANT')
   @ApiOperation({
