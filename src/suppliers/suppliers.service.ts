@@ -15,6 +15,7 @@ import { ApprovalsService } from '../approvals/approvals.service';
 import { CreateSupplierDto } from './dto/create-supplier.dto';
 import { UpdateSupplierDto } from './dto/update-supplier.dto';
 import { normalizeWhatsAppNumber } from '../common/utils/whatsapp-phone.util';
+import { resolvePhoneWrite } from '../common/utils/party-phones.util';
 
 @Injectable()
 export class SuppliersService {
@@ -140,10 +141,24 @@ export class SuppliersService {
     // Blank `whatsappNumber` → null, same reason as on the customer side: an
     // empty override string beats `phone` in the senders' coalesce and mutes
     // WhatsApp for that party. See whatsapp-phone.util.
+    // Settle the phone list and its `phone` mirror together — `phones` wins when
+    // supplied, else the flat phone + alternatePhone pair is folded into a list.
+    const phoneWrite = resolvePhoneWrite(
+      createSupplierDto.phones,
+      createSupplierDto.phone,
+      createSupplierDto.alternatePhone,
+    );
+    if (!phoneWrite) {
+      throw new BadRequestException('At least one phone number is required');
+    }
+    // `phones` is pulled out of the spread: the DTO's typed array isn't
+    // assignable to Prisma's Json input, and the normalised list replaces it.
+    const { phones: _incomingPhones, ...restOfDto } = createSupplierDto;
     const dto = {
-      ...createSupplierDto,
+      ...restOfDto,
       name: createSupplierDto.name.trim(),
-      phone: this.normalizePhone(createSupplierDto.phone),
+      phones: phoneWrite.phones as unknown as Prisma.InputJsonValue,
+      phone: this.normalizePhone(phoneWrite.phone),
       whatsappNumber: normalizeWhatsAppNumber(createSupplierDto.whatsappNumber),
       // Payment terms was removed from the Add-Supplier form; default it so the
       // required column + the GRN due-date logic (termDays) keep working.
@@ -249,7 +264,13 @@ export class SuppliersService {
     for (const [index, s] of suppliers.entries()) {
       try {
         this.assertNameNonEmpty(s.name);
-        const normalizedPhone = this.normalizePhone(s.phone);
+        const { phones: _incomingPhones, ...rest } = s;
+        // Same rule as create(): the list settles the primary, the primary is
+        // mirrored into `phone`. Destructured out of the spread below because
+        // the DTO's typed array isn't assignable to Prisma's Json input.
+        const phoneWrite = resolvePhoneWrite(s.phones, s.phone, s.alternatePhone);
+        if (!phoneWrite) throw new BadRequestException('At least one phone number is required');
+        const normalizedPhone = this.normalizePhone(phoneWrite.phone);
 
         if (s.gstin && existingGstins.has(s.gstin)) {
           throw new ConflictException(`GSTIN ${s.gstin} already exists.`);
@@ -267,8 +288,9 @@ export class SuppliersService {
         if (normalizedPhone) existingPhones.add(normalizedPhone);
         
         toCreate.push({
-          ...s,
+          ...rest,
           name: s.name.trim(),
+          phones: phoneWrite.phones as unknown as Prisma.InputJsonValue,
           phone: normalizedPhone,
           paymentTerms: s.paymentTerms ?? PaymentTerms.NET_30,
           branchId: branchId ?? null,
@@ -1258,14 +1280,30 @@ export class SuppliersService {
   ) {
     const existing = await this.findOne(id, branchId);
     // See create(): a blank override must be stored as null, not "".
-    const data: Omit<UpdateSupplierDto, 'whatsappNumber'> & { whatsappNumber?: string | null } = { ...updateSupplierDto };
+    const { phones: _incomingPhones, ...restOfDto } = updateSupplierDto;
+    const data: Omit<UpdateSupplierDto, 'whatsappNumber' | 'phones'> & {
+      whatsappNumber?: string | null;
+      phones?: Prisma.InputJsonValue;
+    } = { ...restOfDto };
     data.whatsappNumber = normalizeWhatsAppNumber(data.whatsappNumber);
     if (data.name !== undefined) {
       this.assertNameNonEmpty(data.name);
       data.name = data.name.trim();
     }
-    if (data.phone !== undefined) {
-      data.phone = this.normalizePhone(data.phone);
+    // `phones` supplied → source of truth, `phone` re-derived from its primary.
+    // Only `phone` supplied → older client, fold it into a list. Neither → leave
+    // both columns alone so an unrelated PATCH can't blank the numbers.
+    if (updateSupplierDto.phones !== undefined || data.phone !== undefined) {
+      const phoneWrite = resolvePhoneWrite(
+        updateSupplierDto.phones,
+        data.phone ?? existing.phone,
+        updateSupplierDto.alternatePhone ?? existing.alternatePhone,
+      );
+      if (!phoneWrite) {
+        throw new BadRequestException('At least one phone number is required');
+      }
+      data.phone = this.normalizePhone(phoneWrite.phone);
+      data.phones = phoneWrite.phones as unknown as Prisma.InputJsonValue;
     }
     if (
       data.phone !== undefined ||

@@ -1,6 +1,7 @@
-import { IsString, IsNotEmpty, IsOptional, IsEnum, IsNumber, Min, IsBoolean } from 'class-validator';
-import { Transform } from 'class-transformer';
+import { IsString, IsNotEmpty, IsOptional, IsEnum, IsNumber, Min, IsBoolean, IsArray, ValidateNested } from 'class-validator';
+import { Transform, Type } from 'class-transformer';
 import { CustomerType } from '@prisma/client';
+import { PartyPhoneDto } from '../../common/dto/party-phone.dto';
 
 // Trim every string at the DTO boundary so a stray trailing space typed by
 // the operator (or pasted in from a spreadsheet) doesn't survive into the
@@ -15,10 +16,23 @@ export class CreateCustomerDto {
   @Transform(trim)
   name!: string;
 
+  // The PRIMARY number. Optional when `phones` is supplied — the service mirrors
+  // the primary entry of that list into this field, so a client sending the list
+  // must not have to keep a duplicate in step by hand.
   @IsString()
-  @IsNotEmpty()
-  phone!: string;
+  @IsOptional()
+  phone?: string;
 
+  // Every number for this customer. When present it is the source of truth and
+  // `phone` is derived from it; when absent the service falls back to the flat
+  // `phone` + `alternatePhone` pair so older clients keep working.
+  @IsArray()
+  @IsOptional()
+  @ValidateNested({ each: true })
+  @Type(() => PartyPhoneDto)
+  phones?: PartyPhoneDto[];
+
+  /** @deprecated Superseded by `phones`. Still accepted so older clients keep working. */
   @IsString()
   @IsOptional()
   alternatePhone?: string;

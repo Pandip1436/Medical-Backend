@@ -4,6 +4,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { ReceiptPdfService } from '../pdf/receipt-pdf.service';
 import { R2UploadService } from '../common/services/r2-upload.service';
 import { WhatsAppService } from '../whatsapp/whatsapp.service';
+import { WhatsAppSettingsService } from '../whatsapp/whatsapp-settings.service';
 import { paymentReceivedTemplate } from '../whatsapp/templates';
 import { PAYMENT_RECEIVED } from './invoice-events';
 import type { PaymentReceivedPayload } from './invoice-events';
@@ -25,11 +26,12 @@ export class PaymentReceivedListener {
     private readonly receiptPdf: ReceiptPdfService,
     private readonly r2: R2UploadService,
     private readonly whatsapp: WhatsAppService,
+    private readonly whatsappSettings: WhatsAppSettingsService,
   ) {}
 
   @OnEvent(PAYMENT_RECEIVED, { async: true })
   async handle(payload: PaymentReceivedPayload) {
-    if (process.env.WHATSAPP_AUTO_SEND_ENABLED !== 'true') return;
+    if (!(await this.whatsappSettings.isEnabled('paymentReceipt'))) return;
 
     const invoice = await this.prisma.invoice.findUnique({
       where: { id: payload.invoiceId },

@@ -1,3 +1,5 @@
+import { normalizePartyPhones, whatsappCapable } from './party-phones.util';
+
 // Resolve which number a WhatsApp message should go to.
 //
 // `whatsappNumber` is an OPTIONAL override of `phone`, used when a party's
@@ -10,11 +12,24 @@
 //
 // Blank, whitespace, and null all mean "no override" — hence `||` on trimmed
 // values, and one shared helper so the five call sites can't drift again.
+// Since parties can hold several numbers, `phone` is no longer guaranteed to be
+// a mobile: a customer whose only contact is an office landline has that landline
+// as their primary, and it is what shows under their name. Sending there would be
+// rejected by Meta, so the order is: explicit override → first WhatsApp-capable
+// number in the list → `phone`. The last step keeps behaviour identical for the
+// parties that have a single mobile, which is nearly all of them.
 export function resolveWhatsAppPhone(party: {
   whatsappNumber?: string | null;
   phone?: string | null;
+  phones?: unknown;
 }): string | null {
-  return party.whatsappNumber?.trim() || party.phone?.trim() || null;
+  const override = party.whatsappNumber?.trim();
+  if (override) return override;
+
+  const capable = whatsappCapable(normalizePartyPhones(party.phones));
+  if (capable.length) return capable[0].number;
+
+  return party.phone?.trim() || null;
 }
 
 // Normalise an optional override for STORAGE: blank becomes null, so the column

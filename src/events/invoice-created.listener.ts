@@ -5,6 +5,7 @@ import { PaymentsService } from '../payments/payments.service';
 import { InvoicePdfService } from '../pdf/invoice-pdf.service';
 import { R2UploadService } from '../common/services/r2-upload.service';
 import { WhatsAppService } from '../whatsapp/whatsapp.service';
+import { WhatsAppSettingsService } from '../whatsapp/whatsapp-settings.service';
 import { invoicePaymentRequestTemplate } from '../whatsapp/templates';
 import { INVOICE_CREATED, PAYMENT_RECEIVED } from './invoice-events';
 import type { InvoiceCreatedPayload, PaymentReceivedPayload } from './invoice-events';
@@ -74,6 +75,7 @@ export class InvoiceCreatedListener {
     private readonly pdf: InvoicePdfService,
     private readonly r2: R2UploadService,
     private readonly whatsapp: WhatsAppService,
+    private readonly whatsappSettings: WhatsAppSettingsService,
     private readonly eventEmitter: EventEmitter2,
   ) {}
 
@@ -111,7 +113,7 @@ export class InvoiceCreatedListener {
   }
 
   private async _handle(payload: InvoiceCreatedPayload): Promise<SendResult> {
-    if (process.env.WHATSAPP_AUTO_SEND_ENABLED !== 'true') {
+    if (!(await this.whatsappSettings.isEnabled('invoiceAutoSend'))) {
       this.logger.debug(`auto-send disabled, skipping invoice ${payload.invoiceId}`);
       return { outcome: 'AUTO_SEND_DISABLED' };
     }

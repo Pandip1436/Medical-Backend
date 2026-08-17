@@ -5,8 +5,12 @@ import {
   IsEmail,
   IsOptional,
   IsBoolean,
+  IsArray,
+  ValidateNested,
 } from 'class-validator';
+import { Type } from 'class-transformer';
 import { PaymentTerms } from '@prisma/client';
+import { PartyPhoneDto } from '../../common/dto/party-phone.dto';
 
 export class CreateSupplierDto {
   @IsString()
@@ -17,9 +21,12 @@ export class CreateSupplierDto {
   @IsNotEmpty()
   contactPerson: string;
 
+  // The PRIMARY number. Optional when `phones` is supplied — the service mirrors
+  // that list's primary entry here, so a client sending the list never has to
+  // keep a duplicate in step by hand.
   @IsString()
-  @IsNotEmpty()
-  phone: string;
+  @IsOptional()
+  phone?: string;
 
   @IsEmail()
   @IsNotEmpty()
@@ -69,7 +76,17 @@ export class CreateSupplierDto {
   @IsOptional()
   bankUpiId?: string;
 
-  // Parity with the customer form.
+  // Every number for this supplier. When present it is the source of truth and
+  // `phone` is derived from its primary entry; when absent the service falls
+  // back to the flat `phone` + `alternatePhone` pair. Same contract as the
+  // customer side — see common/utils/party-phones.util.
+  @IsArray()
+  @IsOptional()
+  @ValidateNested({ each: true })
+  @Type(() => PartyPhoneDto)
+  phones?: PartyPhoneDto[];
+
+  /** @deprecated Superseded by `phones`. Still accepted so older clients keep working. */
   @IsString()
   @IsOptional()
   alternatePhone?: string;

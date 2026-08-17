@@ -13,6 +13,7 @@ import {
 import { PrismaService } from '../prisma/prisma.service';
 import { DocumentNumberingService } from '../common/services/document-numbering.service';
 import { PartyLinkService } from '../party-link/party-link.service';
+import { normalizePartyPhones, resolvePhoneWrite } from '../common/utils/party-phones.util';
 import {
   ImportBatchDto,
   ImportDebitNoteDto,
@@ -151,7 +152,7 @@ export class SupplierImportService {
     const existing = await this.findExistingByPhones(phoneKeys, ctx.branchId);
     const existingByKey = new Map<
       string,
-      { id: string; name: string; phone: string; branchId: string | null }
+      { id: string; name: string; phone: string; phones: Prisma.JsonValue; branchId: string | null }
     >();
     for (const e of existing) existingByKey.set(phoneKey(e.phone), e);
 
@@ -274,6 +275,7 @@ export class SupplierImportService {
         id: string;
         name: string;
         phone: string;
+        phones: Prisma.JsonValue;
         branchId: string | null;
       }>;
 
@@ -289,7 +291,9 @@ export class SupplierImportService {
     };
     const candidates = await this.prisma.supplier.findMany({
       where,
-      select: { id: true, name: true, phone: true, branchId: true },
+      // `phones` is needed on the UPDATE path so a re-import merges newly
+      // discovered numbers into the list this supplier already has.
+      select: { id: true, name: true, phone: true, phones: true, branchId: true },
     });
     return candidates.filter((c) => last10Keys.includes(phoneKey(c.phone)));
   }
@@ -413,7 +417,7 @@ export class SupplierImportService {
     row: ImportSupplierDto,
     existingByKey: Map<
       string,
-      { id: string; name: string; phone: string; branchId: string | null }
+      { id: string; name: string; phone: string; phones: Prisma.JsonValue; branchId: string | null }
     >,
     handling: ImportDuplicateHandling,
     ctx: { userId: string; branchId?: string | null },
@@ -442,7 +446,7 @@ export class SupplierImportService {
       // UPDATE strategy
       try {
         supplierId = existing.id;
-        const updateData = this.buildSupplierUpdateData(row);
+        const updateData = this.buildSupplierUpdateData(row, existing.phones);
 
         // Branch-claim: if existing has no branch but this import is scoped,
         // attach it. UPDATE strategy explicitly opts into rewriting fields.
@@ -1731,6 +1735,11 @@ export class SupplierImportService {
       bankAccountNumber: row.bankAccountNumber?.trim() || null,
       bankIfsc: row.bankIfsc?.trim() || null,
       bankUpiId: row.bankUpiId?.trim() || null,
+      // The workbook may carry several numbers per row. `phones` settles them;
+      // `phone` above is the primary mirrored out of that list, which is also
+      // the key this importer matches duplicates on.
+      phones: (resolvePhoneWrite(row.phones, row.phone, row.alternatePhone)?.phones ??
+        []) as unknown as Prisma.InputJsonValue,
       alternatePhone: row.alternatePhone?.trim() || null,
       notes: row.notes?.trim() || null,
       isActive: row.isActive ?? true,
@@ -1741,6 +1750,7 @@ export class SupplierImportService {
 
   private buildSupplierUpdateData(
     row: ImportSupplierDto,
+    existingPhones?: Prisma.JsonValue,
   ): Prisma.SupplierUpdateInput {
     // UPDATE rewrites mutable fields. We do NOT touch phone (it's the match
     // key) or currentOutstanding (handled via opening_balance) to avoid
@@ -1762,6 +1772,17 @@ export class SupplierImportService {
     if (row.bankAccountNumber !== undefined) data.bankAccountNumber = row.bankAccountNumber?.trim() || null;
     if (row.bankIfsc !== undefined) data.bankIfsc = row.bankIfsc?.trim() || null;
     if (row.bankUpiId !== undefined) data.bankUpiId = row.bankUpiId?.trim() || null;
+    // MERGE, don't replace — a re-import adds numbers the workbook knows about
+    // without dropping ones captured in the app, and the existing entries stay
+    // first so the current primary (this importer's `phone` match key) keeps it.
+    const incomingPhones = normalizePartyPhones(row.phones);
+    if (incomingPhones.length) {
+      const merged = normalizePartyPhones([
+        ...normalizePartyPhones(existingPhones),
+        ...incomingPhones.map((p) => ({ ...p, isPrimary: false })),
+      ]);
+      if (merged.length) data.phones = merged as unknown as Prisma.InputJsonValue;
+    }
     if (row.alternatePhone !== undefined) data.alternatePhone = row.alternatePhone?.trim() || null;
     if (row.notes !== undefined) data.notes = row.notes?.trim() || null;
     if (row.isActive !== undefined) data.isActive = row.isActive;

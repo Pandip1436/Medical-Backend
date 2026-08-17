@@ -6,7 +6,12 @@ import { DocumentNumberingService } from '../common/services/document-numbering.
 import { CreateInvoiceDto } from './dto/create-invoice.dto';
 import { CreateInvoiceItemDto } from './dto/create-invoice-item.dto';
 import { PaymentMode, Prisma, InvoiceStatus } from '@prisma/client';
-import { INVOICE_CREATED, InvoiceCreatedPayload } from '../events/invoice-events';
+import {
+  INVOICE_CREATED,
+  PAYMENT_RECEIVED,
+  InvoiceCreatedPayload,
+  PaymentReceivedPayload,
+} from '../events/invoice-events';
 import { InvoiceCreatedListener } from '../events/invoice-created.listener';
 import { syncPaymentDueForInvoice } from '../notifications/payment-due-sync';
 
@@ -1857,7 +1862,15 @@ export class BillingService {
     if (paymentMode && paymentMode.toUpperCase() !== 'CASH' && !ref) {
       throw new BadRequestException(`A reference number is required for ${paymentMode} payments`);
     }
-    return this.prisma.$transaction(async (tx) => {
+    // Receipt number minted inside the transaction, emitted after it commits.
+    // Counter payments taken from the invoice-detail / outstanding screens land
+    // here, and until now this path emitted nothing — so the customer got a
+    // WhatsApp receipt only when the invoice was paid in full on the New Sale
+    // page (InvoiceCreatedListener) or online via Razorpay. Same money, same
+    // receipt row, no message. See the emit below.
+    let receiptNumber: string | null = null;
+
+    const updated = await this.prisma.$transaction(async (tx) => {
       const invoice = await tx.invoice.findUnique({ where: { id } });
       if (!invoice) throw new NotFoundException('Invoice not found');
       if (branchId && invoice.branchId && invoice.branchId !== branchId) {
@@ -1900,7 +1913,7 @@ export class BillingService {
           data: { currentOutstanding: { decrement: amountReceived } },
         });
 
-        const receiptNumber = await this.numbering.nextNumber(
+        receiptNumber = await this.numbering.nextNumber(
           tx,
           'RCPT',
           invoice.branchId ?? branchId ?? null,
@@ -1933,6 +1946,23 @@ export class BillingService {
 
       return updated;
     });
+
+    // AFTER commit, so a WhatsApp/PDF hiccup can never roll back a recorded
+    // payment. Fire-and-forget like the other emitters — PaymentReceivedListener
+    // catches its own failures. Emitted for partial payments too, matching the
+    // Razorpay webhook path (which emits on `payment_link.partially_paid`); the
+    // receipt PDF the listener renders carries the remaining balance.
+    if (receiptNumber) {
+      this.events.emit(PAYMENT_RECEIVED, {
+        invoiceId: id,
+        receiptNumber,
+        amount: amountReceived,
+        paymentMode,
+        referenceNumber: ref ?? null,
+      } satisfies PaymentReceivedPayload);
+    }
+
+    return updated;
   }
 
   async update(id: string, data: any, branchId?: string) {

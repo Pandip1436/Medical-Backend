@@ -20,6 +20,7 @@ import {
   SupplierActivityStatus,
   SupplierActivityType,
 } from '@prisma/client';
+import { PartyPhoneDto } from '../../common/dto/party-phone.dto';
 
 // Mirrors the customer-import DTO model: one workbook row → one supplier +
 // nested PO/GRN/DN/Payment/Activity collections. The frontend parses the
@@ -210,6 +211,15 @@ export class ImportSupplierDto {
   @IsOptional() @IsString() bankAccountNumber?: string;
   @IsOptional() @IsString() bankIfsc?: string;
   @IsOptional() @IsString() bankUpiId?: string;
+  // Every number the workbook row carried (mobile / phone1 / phone2 / resi all
+  // folded into one list by the frontend parser).
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => PartyPhoneDto)
+  phones?: PartyPhoneDto[];
+
+  /** @deprecated Superseded by `phones`; still read from legacy sheets. */
   @IsOptional() @IsString() alternatePhone?: string;
   @IsOptional() @IsString() notes?: string;
   @IsOptional() @IsBoolean() isActive?: boolean;

@@ -2,6 +2,12 @@ import { IsString, IsNotEmpty, IsEnum, IsNumber, IsBoolean, IsOptional, Min } fr
 import { Schedule, StorageCondition } from '@prisma/client';
 
 export class CreateProductDto {
+  // Operator's own item code (MARG ItemCode / supplier SKU). Optional: most
+  // products don't have one, and it's unique per branch only when set.
+  @IsString()
+  @IsOptional()
+  productCode?: string;
+
   @IsString()
   @IsNotEmpty()
   name: string;

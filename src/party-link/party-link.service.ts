@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Prisma, Customer, Supplier } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { normalizePartyPhones, phonesFromLegacy } from '../common/utils/party-phones.util';
 
 /**
  * Keeps a WHOLESALE customer and its supplier "twin" in lock-step so the same
@@ -24,6 +25,22 @@ const blankToNull = (v?: string | null): string | null => {
 const nullToBlank = (v?: string | null): string => (v ?? '').trim();
 const isP2002 = (e: unknown): boolean =>
   e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002';
+
+// The phone list a twin should carry. Normalised on the way across so a list
+// hand-written into one side (or left over from before `phones` existed) can't
+// reach the twin with two primaries, none, or duplicate numbers. Falls back to
+// the flat columns for rows the backfill couldn't populate.
+const twinPhones = (p: { phones: Prisma.JsonValue; phone: string; alternatePhone: string | null }): Prisma.InputJsonValue => {
+  const list = normalizePartyPhones(p.phones);
+  const resolved = list.length ? list : phonesFromLegacy(p.phone, p.alternatePhone);
+  return resolved as unknown as Prisma.InputJsonValue;
+};
+
+// Compare two stored lists by value. Ordering is significant (it's the order the
+// operator arranged them in) so a plain JSON compare of the normalised form is
+// exactly the "did this actually change" test the only-if-changed sync needs.
+const samePhones = (a: Prisma.JsonValue, b: Prisma.JsonValue): boolean =>
+  JSON.stringify(normalizePartyPhones(a)) === JSON.stringify(normalizePartyPhones(b));
 
 type Db = PrismaService | Prisma.TransactionClient;
 
@@ -187,6 +204,10 @@ export class PartyLinkService {
       drugLicense: nullToBlank(c.dlNumber),
       address: nullToBlank(c.address),
       paymentTerms: 'NET_30', // required enum; sane default (drives GRN due-date)
+      // The twin is the same real-world party, so it gets the same numbers.
+      // Normalised on the way across so a hand-edited list can't reach the twin
+      // with two primaries (or none).
+      phones: twinPhones(c),
       alternatePhone: c.alternatePhone ?? null,
       notes: c.notes ?? null,
       bankAccountName: c.bankAccountName ?? null,
@@ -215,6 +236,8 @@ export class PartyLinkService {
       dlNumber: blankToNull(s.drugLicense),
       address: blankToNull(s.address),
       contactPerson: (s.contactPerson ?? '').trim() || null,
+      // See supplierDataFromCustomer — same numbers, same normalisation.
+      phones: twinPhones(s),
       alternatePhone: s.alternatePhone ?? null,
       notes: s.notes ?? null,
       bankAccountName: s.bankAccountName ?? null,
@@ -244,6 +267,7 @@ export class PartyLinkService {
     if ((s.gstin ?? '') !== nullToBlank(c.gstin)) patch.gstin = nullToBlank(c.gstin);
     if ((s.drugLicense ?? '') !== nullToBlank(c.dlNumber)) patch.drugLicense = nullToBlank(c.dlNumber);
     if ((s.address ?? '') !== nullToBlank(c.address)) patch.address = nullToBlank(c.address);
+    if (!samePhones(s.phones, c.phones)) patch.phones = twinPhones(c);
     if ((s.alternatePhone ?? null) !== (c.alternatePhone ?? null)) patch.alternatePhone = c.alternatePhone ?? null;
     if ((s.notes ?? null) !== (c.notes ?? null)) patch.notes = c.notes ?? null;
     const wantContact = (c.contactPerson ?? '').trim() || c.name; // supplier NOT NULL
@@ -270,6 +294,7 @@ export class PartyLinkService {
     if ((c.gstin ?? null) !== blankToNull(s.gstin)) patch.gstin = blankToNull(s.gstin);
     if ((c.dlNumber ?? null) !== blankToNull(s.drugLicense)) patch.dlNumber = blankToNull(s.drugLicense);
     if ((c.address ?? null) !== blankToNull(s.address)) patch.address = blankToNull(s.address);
+    if (!samePhones(c.phones, s.phones)) patch.phones = twinPhones(s);
     if ((c.alternatePhone ?? null) !== (s.alternatePhone ?? null)) patch.alternatePhone = s.alternatePhone ?? null;
     if ((c.notes ?? null) !== (s.notes ?? null)) patch.notes = s.notes ?? null;
     const wantContact = (s.contactPerson ?? '').trim() || null;

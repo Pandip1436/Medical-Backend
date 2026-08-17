@@ -1,11 +1,9 @@
-import { Controller, Get, Post, Body, Patch, Param, Delete, Query, UseGuards, UseInterceptors, UploadedFile, BadRequestException, Request } from '@nestjs/common';
-import { FileInterceptor } from '@nestjs/platform-express';
-import { memoryStorage } from 'multer';
+import { Controller, Get, Post, Body, Patch, Param, Delete, Query, UseGuards, Request } from '@nestjs/common';
 import { ProductsService } from './products.service';
 import { CreateProductDto } from './dto/create-product.dto';
 import { UpdateProductDto } from './dto/update-product.dto';
 import { AdjustStockDto, BulkAdjustStockDto } from './dto/adjust-stock.dto';
-import { ApiTags, ApiOperation, ApiBearerAuth, ApiQuery, ApiConsumes } from '@nestjs/swagger';
+import { ApiTags, ApiOperation, ApiBearerAuth, ApiQuery } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
 import { Roles } from '../common/decorators/roles.decorator';
@@ -17,24 +15,6 @@ import { resolveBranchScope } from '../common/branch-scope.util';
 @Controller('api/v1/products')
 export class ProductsController {
   constructor(private readonly productsService: ProductsService) {}
-
-  @Post('import-csv')
-  @Roles('ADMIN', 'INVENTORY_MANAGER')
-  @ApiOperation({ summary: 'Bulk import products from a CSV file' })
-  @ApiConsumes('multipart/form-data')
-  @UseInterceptors(FileInterceptor('file', { storage: memoryStorage() }))
-  importCsv(
-    @UploadedFile() file: Express.Multer.File,
-    @Request() req: any,
-    @Query('branchId') branchId?: string,
-  ) {
-    if (!file) throw new BadRequestException('No file uploaded');
-    if (!file.originalname.endsWith('.csv') && file.mimetype !== 'text/csv') {
-      throw new BadRequestException('Only CSV files are accepted');
-    }
-    const effectiveBranchId = req.user.branchId ?? branchId;
-    return this.productsService.importCsv(file.buffer, effectiveBranchId);
-  }
 
   @Post()
   @Roles('ADMIN', 'PHARMACIST', 'INVENTORY_MANAGER')

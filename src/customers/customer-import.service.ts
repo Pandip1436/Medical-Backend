@@ -9,6 +9,7 @@ import {
 import { PrismaService } from '../prisma/prisma.service';
 import { DocumentNumberingService } from '../common/services/document-numbering.service';
 import { PartyLinkService } from '../party-link/party-link.service';
+import { normalizePartyPhones, resolvePhoneWrite } from '../common/utils/party-phones.util';
 import {
   ImportCreditNoteDto,
   ImportCustomerDto,
@@ -187,6 +188,7 @@ export class CustomerImportService {
         id: string;
         name: string;
         phone: string;
+        phones: Prisma.JsonValue;
         branchId: string | null;
         linkedSupplierId: string | null;
         hasHistory: boolean;
@@ -368,6 +370,7 @@ export class CustomerImportService {
         id: string;
         name: string;
         phone: string;
+        phones: Prisma.JsonValue;
         branchId: string | null;
         linkedSupplierId: string | null;
         hasHistory: boolean;
@@ -393,6 +396,9 @@ export class CustomerImportService {
         id: true,
         name: true,
         phone: true,
+        // Needed on the UPDATE path so a re-import can merge newly-discovered
+        // numbers into the list this customer already has.
+        phones: true,
         branchId: true,
         // Back-relation: present only when this customer is the twin of a
         // supplier. Lets us tailor the SKIP-drops-history warning so the
@@ -414,6 +420,7 @@ export class CustomerImportService {
         id: c.id,
         name: c.name,
         phone: c.phone,
+        phones: c.phones,
         branchId: c.branchId,
         linkedSupplierId: c.linkedSupplier?.id ?? null,
         hasHistory:
@@ -433,6 +440,7 @@ export class CustomerImportService {
         id: string;
         name: string;
         phone: string;
+        phones: Prisma.JsonValue;
         branchId: string | null;
         linkedSupplierId: string | null;
         hasHistory: boolean;
@@ -617,6 +625,7 @@ export class CustomerImportService {
         id: string;
         name: string;
         phone: string;
+        phones: Prisma.JsonValue;
         branchId: string | null;
         linkedSupplierId: string | null;
         hasHistory: boolean;
@@ -670,7 +679,7 @@ export class CustomerImportService {
       // handling === 'UPDATE'
       try {
         customerId = existing.id;
-        const updateData = this.buildCustomerUpdateData(row);
+        const updateData = this.buildCustomerUpdateData(row, existing.phones);
 
         // Branch-claim: if the existing record was created without a branch
         // (e.g. by an earlier import path that didn't resolve the branch
@@ -2033,9 +2042,14 @@ export class CustomerImportService {
     row: ImportCustomerDto,
     branchId: string | null,
   ): Prisma.CustomerCreateInput {
+    // The workbook may carry several numbers per row (mobile / phone1 / resi).
+    // `phones` settles them; `phone` is the primary mirrored out of that list,
+    // which is also the key this importer matches duplicates on.
+    const phoneWrite = resolvePhoneWrite(row.phones, row.phone, row.alternatePhone);
     return {
       name: row.name.trim(),
-      phone: normalizePhone(row.phone),
+      phone: normalizePhone(phoneWrite?.phone ?? row.phone),
+      phones: (phoneWrite?.phones ?? []) as unknown as Prisma.InputJsonValue,
       alternatePhone: row.alternatePhone?.trim() || null,
       contactPerson: row.contactPerson?.trim() || null,
       email: row.email?.trim() || null,
@@ -2063,6 +2077,7 @@ export class CustomerImportService {
 
   private buildCustomerUpdateData(
     row: ImportCustomerDto,
+    existingPhones?: Prisma.JsonValue,
   ): Prisma.CustomerUpdateInput {
     // UPDATE strategy: rewrite mutable fields from the workbook so the user
     // can correct stale customer details by re-importing. We do NOT touch
@@ -2070,6 +2085,18 @@ export class CustomerImportService {
     // via opening_balance) to avoid surprising side effects.
     const data: Prisma.CustomerUpdateInput = {};
     if (row.name?.trim()) data.name = row.name.trim();
+    // MERGE, don't replace: a re-import adds numbers the workbook knows about
+    // without dropping ones captured in the app, and the existing entries stay
+    // first so the current primary — which is the `phone` match key this
+    // importer relies on — is the one that stays primary.
+    const incomingPhones = normalizePartyPhones(row.phones);
+    if (incomingPhones.length) {
+      const merged = normalizePartyPhones([
+        ...normalizePartyPhones(existingPhones),
+        ...incomingPhones.map((p) => ({ ...p, isPrimary: false })),
+      ]);
+      if (merged.length) data.phones = merged as unknown as Prisma.InputJsonValue;
+    }
     if (row.alternatePhone !== undefined)
       data.alternatePhone = row.alternatePhone?.trim() || null;
     if (row.contactPerson !== undefined)

@@ -1,10 +1,16 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common'
+import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common'
 import { PrismaService } from '../prisma/prisma.service'
+import { NotificationsService } from '../notifications/notifications.service'
 import { CreateReminderDto, UpdateReminderDto, CreateContactLogDto } from './dto/reminder.dto'
 
 @Injectable()
 export class RemindersService {
-  constructor(private prisma: PrismaService) {}
+  private readonly logger = new Logger(RemindersService.name)
+
+  constructor(
+    private prisma: PrismaService,
+    private readonly notifications: NotificationsService,
+  ) {}
 
   // Day-of-month for a monthly reminder. Days 29–31 don't exist in every month,
   // so they CLAMP to the month's last day when firing (see findDueToday) — e.g.
@@ -78,7 +84,7 @@ export class RemindersService {
   async create(dto: CreateReminderDto) {
     this.validateDayOfMonth(dto.dayOfMonth)
     const productLinks = await this.buildProductLinks(dto.productIds)
-    return this.prisma.customerReminder.create({
+    const created = await this.prisma.customerReminder.create({
       data: {
         customerId: dto.customerId,
         dayOfMonth: dto.dayOfMonth,
@@ -93,6 +99,30 @@ export class RemindersService {
         products: { select: { productId: true, productName: true } },
       },
     })
+
+    // A reminder created for TODAY has already missed today's cron, and the
+    // sweep only ever looks at `dayOfMonth === today` — so without this it
+    // would sit silent until the same day next month, which reads as "reminders
+    // don't work". Generation is dedup'd per reminder+month, so re-running the
+    // sweep here can't double-send. Best-effort: never fail the create over it.
+    if (this.isDueToday(created.dayOfMonth)) {
+      try {
+        await this.notifications.generateReminderAlerts()
+      } catch (e) {
+        this.logger.warn(`immediate reminder sweep failed for ${created.id}: ${String(e)}`)
+      }
+    }
+    return created
+  }
+
+  // Mirrors generateReminderAlerts' clamping: on the last day of a short month,
+  // day 29/30/31 reminders are due today too.
+  private isDueToday(dayOfMonth: number | null): boolean {
+    if (!dayOfMonth) return false
+    const now = new Date()
+    const today = now.getDate()
+    const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate()
+    return today === lastDay ? dayOfMonth >= today : dayOfMonth === today
   }
 
   // Bulk-create reminders for a list of customers. Used by the Outstanding

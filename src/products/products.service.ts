@@ -67,6 +67,40 @@ export class ProductsService {
   // Two products with identical names break FEFO selection (which one to ship?)
   // and confuse stock reporting. Barcode uniqueness alone isn't enough — many
   // products are entered without barcodes.
+  // Product codes are unique per branch, but only when set. Blank arrives as
+  // '' from form payloads and '' is a real value in Postgres — two products
+  // saved with '' would trip the unique index, while NULLs never collide. So
+  // normalise empty to null before it reaches Prisma.
+  private normaliseProductCode<T extends { productCode?: string | null }>(
+    dto: T,
+  ): T {
+    if (dto.productCode !== undefined) {
+      dto.productCode = dto.productCode?.trim() || null;
+    }
+    return dto;
+  }
+
+  private async assertUniqueProductCode(
+    productCode: string | null | undefined,
+    branchId?: string,
+    ignoreId?: string,
+  ) {
+    if (!productCode) return;
+    const existing = await this.prisma.product.findFirst({
+      where: {
+        productCode,
+        branchId: branchId ?? null,
+        ...(ignoreId ? { NOT: { id: ignoreId } } : {}),
+      },
+      select: { id: true, name: true },
+    });
+    if (existing) {
+      throw new ConflictException(
+        `Item code "${productCode}" already exists in this branch on "${existing.name}"`,
+      );
+    }
+  }
+
   private async assertUniqueName(name: string, branchId?: string, ignoreId?: string) {
     const existing = await this.prisma.product.findFirst({
       where: {
@@ -83,9 +117,12 @@ export class ProductsService {
   }
 
   async create(createProductDto: CreateProductDto & { branchId?: string }) {
-    const { categoryId, branchId, ...rest } = createProductDto;
+    const { categoryId, branchId, ...rest } = this.normaliseProductCode(
+      createProductDto,
+    );
     this.assertPricingSane(rest.sellingRate, rest.mrp, rest.purchaseRate, rest.wholesaleRate);
     await this.assertUniqueName(rest.name, branchId);
+    await this.assertUniqueProductCode(rest.productCode, branchId);
     return this.prisma.product.create({
       data: { ...rest, categoryId, ...(branchId ? { branchId } : {}) } as unknown as Prisma.ProductUncheckedCreateInput,
     });
@@ -796,6 +833,18 @@ export class ProductsService {
 
   async update(id: string, updateProductDto: UpdateProductDto, branchId?: string) {
     const existing = await this.findOne(id, branchId);
+    this.normaliseProductCode(updateProductDto);
+    // Same branch-scoping rationale as the name check below.
+    if (
+      updateProductDto.productCode !== undefined &&
+      updateProductDto.productCode !== existing.productCode
+    ) {
+      await this.assertUniqueProductCode(
+        updateProductDto.productCode,
+        existing.branchId ?? undefined,
+        id,
+      );
+    }
     // Re-check name uniqueness only when the name is actually changing, and
     // scope the check to the product's own branch rather than the requester's:
     // Super Admins editing a branch-scoped product would otherwise look in the
@@ -826,93 +875,6 @@ export class ProductsService {
   async remove(id: string, branchId?: string) {
     await this.findOne(id, branchId);
     return this.prisma.product.delete({ where: { id } });
-  }
-
-  async importCsv(buffer: Buffer, branchId?: string): Promise<{ created: number; skipped: number; errors: string[]; warnings: string[] }> {
-    const text = buffer.toString('utf-8');
-    const lines = text.split(/\r?\n/).filter((l) => l.trim());
-    if (lines.length < 2) throw new BadRequestException('CSV must have a header row and at least one data row');
-
-    const headers = lines[0].split(',').map((h) => h.trim().toLowerCase().replace(/\s+/g, ''));
-    const required = ['name', 'genericname', 'manufacturer', 'category', 'packsize', 'unitofmeasure',
-      'schedule', 'hsncode', 'storagecondition', 'mrp', 'purchaserate', 'sellingrate',
-      'wholesalerate', 'gstrate', 'minstock', 'maxstock', 'reorderqty', 'racklocation'];
-    const missing = required.filter((r) => !headers.includes(r));
-    if (missing.length) throw new BadRequestException(`Missing columns: ${missing.join(', ')}`);
-
-    // Pre-load all categories for name→id lookup
-    const allCategories = await this.prisma.category.findMany({ select: { id: true, name: true } });
-    const categoryByName = new Map(allCategories.map((c) => [c.name.toLowerCase().trim(), c.id]));
-
-    let created = 0;
-    let skipped = 0;
-    const errors: string[] = [];
-
-    for (let i = 1; i < lines.length; i++) {
-      const cells = lines[i].split(',').map((c) => c.trim());
-      const row: Record<string, string> = {};
-      headers.forEach((h, idx) => { row[h] = cells[idx] ?? ''; });
-
-      const rowNum = i + 1;
-      try {
-        const barcode = row['barcode'] || undefined;
-        if (barcode && branchId) {
-          const existing = await this.prisma.product.findUnique({
-            where: { barcode_branchId: { barcode, branchId } },
-          });
-          if (existing) { skipped++; continue; }
-        }
-        // Skip rows whose name already exists in this branch
-        const dupName = await this.prisma.product.findFirst({
-          where: {
-            name: { equals: row['name'], mode: 'insensitive' },
-            branchId: branchId ?? null,
-          },
-          select: { id: true },
-        });
-        if (dupName) { skipped++; continue; }
-
-        const categoryId = row['category']
-          ? categoryByName.get(row['category'].toLowerCase().trim()) ?? undefined
-          : undefined;
-
-        await this.prisma.product.create({
-          data: {
-            name: row['name'],
-            genericName: row['genericname'],
-            saltComposition: row['saltcomposition'] || undefined,
-            manufacturer: row['manufacturer'],
-            categoryId,
-            subCategory: row['subcategory'] || undefined,
-            packSize: row['packsize'],
-            unitOfMeasure: row['unitofmeasure'],
-            schedule: row['schedule'] as any,
-            hsnCode: row['hsncode'],
-            isNarcotic: row['isnarcotic'] === 'true',
-            storageCondition: row['storagecondition'] as any,
-            mrp: parseFloat(row['mrp']) || 0,
-            purchaseRate: parseFloat(row['purchaserate']) || 0,
-            sellingRate: parseFloat(row['sellingrate']) || 0,
-            wholesaleRate: parseFloat(row['wholesalerate']) || 0,
-            gstRate: parseFloat(row['gstrate']) || 0,
-            minStock: parseInt(row['minstock']) || 0,
-            maxStock: parseInt(row['maxstock']) || 0,
-            reorderQty: parseInt(row['reorderqty']) || 0,
-            rackLocation: row['racklocation'],
-            barcode,
-            branchId: branchId || undefined,
-          } as any,
-        });
-        created++;
-      } catch (err: any) {
-        errors.push(`Row ${rowNum} (${row['name'] || '?'}): ${err.message}`);
-      }
-    }
-
-    // Note: this legacy importer never sets totalStock (not in its accepted
-    // column set), so it can't create the phantom-stock issue the structured
-    // JSON import can — new rows always start at the schema default of 0.
-    return { created, skipped, errors, warnings: [] };
   }
 
   async adjustBatchStock(

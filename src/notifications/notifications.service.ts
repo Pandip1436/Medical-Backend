@@ -369,6 +369,27 @@ export class NotificationsService {
 
   // ── Auto-generate alerts ──────────────────────────────────────────────────
 
+  // Every alert generator in one call. Used by the external cron tick (see
+  // CronService) so the scheduled run has a single entry point; the in-process
+  // scheduler keeps its own copy because it additionally gates the reminder
+  // generator to business hours on a boot catch-up.
+  async runAllAlerts() {
+    const [lowStock, expiry, paymentDue, supplierDue, reminders] = await Promise.all([
+      this.generateLowStockAlerts(undefined),
+      this.generateExpiryAlerts(undefined, 90),
+      this.generatePaymentDueAlerts(undefined),
+      this.generateSupplierPaymentDueAlerts(undefined),
+      this.generateReminderAlerts(),
+    ]);
+    return {
+      lowStock: lowStock.created,
+      expiry: expiry.created,
+      paymentDue: paymentDue.created,
+      supplierDue: supplierDue.created,
+      reminders: reminders.created,
+    };
+  }
+
   async generateLowStockAlerts(branchId?: string) {
     const products = await this.prisma.product.findMany({
       where: {

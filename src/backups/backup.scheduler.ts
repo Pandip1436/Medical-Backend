@@ -45,6 +45,18 @@ export class BackupScheduler
   constructor(private readonly service: BackupService) {}
 
   onApplicationBootstrap() {
+    // OFF by default: the client takes backups manually, so no automated run is
+    // wanted. Kept behind a flag rather than deleted — the on-demand backup API
+    // and the retention sweep still work, and re-enabling is one env var.
+    //
+    // Note for the Cloud Run move: this timer could not be trusted there anyway.
+    // With CPU allocated only during requests the process is frozen between
+    // them, so a 02:00 IST timer would rarely fire — a scheduled backup that
+    // silently stops is worse than an honest manual one.
+    if (process.env.BACKUP_SCHEDULE_ENABLED !== 'true') {
+      this.logger.log('Automated backups disabled (BACKUP_SCHEDULE_ENABLED != "true") — manual backups only.');
+      return;
+    }
     const delay = msUntilNext2AmIst();
     const hours = (delay / (60 * 60 * 1000)).toFixed(1);
     this.logger.log(`Next scheduled backup in ${hours}h (targeting ~02:00 IST daily)`);

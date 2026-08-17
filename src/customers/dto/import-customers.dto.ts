@@ -17,6 +17,7 @@ import {
   CustomerType,
   InvoiceStatus,
 } from '@prisma/client';
+import { PartyPhoneDto } from '../../common/dto/party-phone.dto';
 
 // One workbook row may produce one customer + N invoices + N payments +
 // N activities + N prescriptions. The frontend parses the multi-sheet
@@ -211,8 +212,19 @@ export class ImportCustomerDto {
 
   @IsString() name!: string;
 
+  // Primary number — the key this importer matches duplicates on. Derived from
+  // `phones` by the parser, so the two always agree.
   @IsString() phone!: string;
 
+  // Every number the workbook row carried (mobile / phone1 / phone2 / resi all
+  // folded into one list by the frontend parser).
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => PartyPhoneDto)
+  phones?: PartyPhoneDto[];
+
+  /** @deprecated Superseded by `phones`; still read from legacy sheets. */
   @IsOptional() @IsString() alternatePhone?: string;
   @IsOptional() @IsString() contactPerson?: string;
   @IsOptional() @IsString() email?: string;

@@ -44,6 +44,7 @@ import { JustdialModule } from './justdial/justdial.module';
 import { CommonServicesModule } from './common/services/common-services.module';
 import { PaymentsModule } from './payments/payments.module';
 import { WhatsAppModule } from './whatsapp/whatsapp.module';
+import { CronModule } from './cron/cron.module';
 import { WebhooksModule } from './webhooks/webhooks.module';
 import { PdfModule } from './pdf/pdf.module';
 import { PublicPayModule } from './public-pay/public-pay.module';
@@ -99,6 +100,7 @@ import { join } from 'path';
     PdfModule,
     PaymentsModule,
     WhatsAppModule,
+    CronModule,
     WebhooksModule,
     PublicPayModule,
     DeliveryModule,

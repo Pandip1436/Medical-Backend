@@ -4,6 +4,7 @@ import { InvoicePdfService } from '../pdf/invoice-pdf.service';
 import { R2UploadService } from '../common/services/r2-upload.service';
 import { resolveWhatsAppPhone } from '../common/utils/whatsapp-phone.util';
 import { WhatsAppService } from '../whatsapp/whatsapp.service';
+import { WhatsAppSettingsService } from '../whatsapp/whatsapp-settings.service';
 import { orderDispatchedTemplate } from '../whatsapp/templates';
 
 // Notifies a hospital (Customer) over WhatsApp when their order (Invoice) is
@@ -30,6 +31,7 @@ export class DispatchNotificationService {
     private readonly pdf: InvoicePdfService,
     private readonly r2: R2UploadService,
     private readonly whatsapp: WhatsAppService,
+    private readonly whatsappSettings: WhatsAppSettingsService,
   ) {}
 
   // The dispatch entry point. `invoiceId` is the cuid of the Invoice that was
@@ -41,6 +43,14 @@ export class DispatchNotificationService {
   async notifyHospitalOnDispatch(
     invoiceId: string,
   ): Promise<{ ok: boolean; skipped?: string; messageId?: string }> {
+    // This path had no feature gate at all — the only reason it never sent is
+    // that nothing in the UI calls it. Now that it's toggleable from Settings
+    // it needs one, and it defaults OFF so enabling the endpoint stays a
+    // deliberate decision rather than a side effect of wiring up a button.
+    if (!(await this.whatsappSettings.isEnabled('orderDispatched'))) {
+      this.logger.debug(`dispatch notice disabled — skipping order ${invoiceId}`);
+      return { ok: false, skipped: 'disabled' };
+    }
     const invoice = await this.prisma.invoice.findUnique({
       where: { id: invoiceId },
       include: { items: true, customer: true, branch: true },

@@ -3,6 +3,7 @@ import { OnEvent } from '@nestjs/event-emitter';
 import { ReminderContactStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { WhatsAppService } from '../whatsapp/whatsapp.service';
+import { WhatsAppSettingsService } from '../whatsapp/whatsapp-settings.service';
 import { resolveWhatsAppPhone } from '../common/utils/whatsapp-phone.util';
 import {
   customerSaleReminderTemplate,
@@ -35,12 +36,13 @@ export class ReminderDueNotificationListener {
   constructor(
     private readonly prisma: PrismaService,
     private readonly whatsapp: WhatsAppService,
+    private readonly whatsappSettings: WhatsAppSettingsService,
   ) {}
 
   @OnEvent(NOTIFICATION_CREATED, { async: true })
   async handle(payload: NotificationCreatedPayload) {
     if (payload.type !== 'SYSTEM') return;
-    if (process.env.WHATSAPP_SALE_REMINDER_ENABLED !== 'true') {
+    if (!(await this.whatsappSettings.isEnabled('saleReminder'))) {
       this.logger.debug(
         `sale-reminder auto-send disabled, skipping notification ${payload.notificationId}`,
       );
@@ -60,6 +62,9 @@ export class ReminderDueNotificationListener {
             id: true,
             name: true,
             phone: true,
+            // resolveWhatsAppPhone prefers a WhatsApp-capable number from the
+            // list — `phone` alone can be a landline now.
+            phones: true,
             whatsappNumber: true,
             whatsappOptIn: true,
           },

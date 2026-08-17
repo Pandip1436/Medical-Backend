@@ -8,5 +8,8 @@ import { PrismaModule } from '../prisma/prisma.module'
   imports: [PrismaModule],
   controllers: [SharedFilesController],
   providers: [SharedFilesService, SharedFilesScheduler],
+  // Exported for the cron tick — the in-process scheduler cannot be relied on
+  // under Cloud Run's request-scoped CPU (see CronService).
+  exports: [SharedFilesService],
 })
 export class SharedFilesModule {}

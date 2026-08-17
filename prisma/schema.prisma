@@ -122,7 +122,19 @@ enum Role {
 model Customer {
   id                 String         @id @default(cuid())
   name               String
+  // PRIMARY number, mirrored from the `phones` entry flagged primary. Never
+  // written directly — see common/utils/party-phones.util. Every read path in
+  // the app (list rows, invoice prints, search, exports, the WhatsApp resolver)
+  // reads this, which is why adding multi-phone support needed no changes there.
   phone              String
+  // Every number for this party: [{ number, label, isPrimary }]. A customer may
+  // have a mobile plus an office landline plus a residence line — imported ERP
+  // exports carry them in separate columns, and plenty of customers have only a
+  // landline. Nullable for rows written before this column existed; readers go
+  // through phonesForForm/phonesFromLegacy, which fall back to phone + alternatePhone.
+  phones             Json?
+  // LEGACY single alternate — superseded by `phones`, which is backfilled from
+  // it. Kept so no data is lost; the forms and importers no longer write it.
   alternatePhone     String?
   email              String?
   address            String?
@@ -228,6 +240,14 @@ model Category {
 // ── Products & Batches ────────────────────────────────────────
 model Product {
   id               String           @id @default(cuid())
+  // The operator's own item code, carried over from whatever system they came
+  // from (MARG's ItemCode, a supplier's SKU, a hand-assigned code). Nullable
+  // because most rows predate it and the product form doesn't require one.
+  // It exists because `name` alone is not a safe match key on re-import: real
+  // catalogues legitimately carry the same product name twice under different
+  // codes, and matching those by name merges two distinct products into one.
+  // NULLs don't collide in a Postgres unique index, so unfilled rows coexist.
+  productCode      String?
   name             String
   genericName      String
   saltComposition  String?
@@ -272,6 +292,7 @@ model Product {
   reminderLinks    ReminderProduct[]
 
   @@unique([barcode, branchId])
+  @@unique([productCode, branchId])
 }
 
 model StockAdjustmentLog {
@@ -356,7 +377,11 @@ model Supplier {
   bankAccountNumber   String?
   bankIfsc            String?
   bankUpiId           String?
-  // Parity with the customer form (a supplier can be a wholesale customer's twin).
+  // Every number for this supplier: [{ number, label, isPrimary }] — same shape
+  // and rules as Customer.phones. `phone` above is the mirrored primary.
+  phones              Json?
+  // LEGACY single alternate — superseded by `phones`, which is backfilled from
+  // it. Kept so no data is lost; the form and importer no longer write it.
   alternatePhone      String?
   notes               String?
   isActive            Boolean          @default(true)

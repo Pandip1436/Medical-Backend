@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { OnEvent } from '@nestjs/event-emitter';
 import { PrismaService } from '../prisma/prisma.service';
 import { WhatsAppService } from '../whatsapp/whatsapp.service';
+import { WhatsAppSettingsService } from '../whatsapp/whatsapp-settings.service';
 import { resolveWhatsAppPhone } from '../common/utils/whatsapp-phone.util';
 import {
   lowStockSupplierTemplate,
@@ -34,12 +35,13 @@ export class LowStockNotificationListener {
   constructor(
     private readonly prisma: PrismaService,
     private readonly whatsapp: WhatsAppService,
+    private readonly whatsappSettings: WhatsAppSettingsService,
   ) {}
 
   @OnEvent(NOTIFICATION_CREATED, { async: true })
   async handle(payload: NotificationCreatedPayload) {
     if (payload.type !== 'LOW_STOCK') return;
-    if (process.env.WHATSAPP_LOW_STOCK_ENABLED !== 'true') {
+    if (!(await this.whatsappSettings.isEnabled('lowStock'))) {
       this.logger.debug(
         `low-stock auto-send disabled, skipping notification ${payload.notificationId}`,
       );
@@ -91,6 +93,9 @@ export class LowStockNotificationListener {
         name: true,
         contactPerson: true,
         phone: true,
+        // resolveWhatsAppPhone prefers a WhatsApp-capable number from the list —
+        // `phone` alone can be a landline now.
+        phones: true,
         whatsappNumber: true,
         whatsappOptIn: true,
       },

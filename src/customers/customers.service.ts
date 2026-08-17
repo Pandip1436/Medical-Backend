@@ -5,7 +5,9 @@ import {
   BadRequestException,
   ConflictException,
 } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { resolvePhoneWrite } from '../common/utils/party-phones.util';
 import { ApprovalsService } from '../approvals/approvals.service';
 import { PartyLinkService } from '../party-link/party-link.service';
 import { CreateCustomerDto } from './dto/create-customer.dto';
@@ -163,9 +165,24 @@ export class CustomersService {
     // trim on `name` too (the DTO already does this — this guards the
     // approval-replay path that calls this method directly with payloads
     // that were stored before the DTO trim landed). Bug #7.
-    const normalizedPhone = this.normalizePhone(createCustomerDto.phone);
+    // Settle the phone list and its `phone` mirror together. `phones` wins when
+    // supplied; otherwise the flat phone + alternatePhone pair is folded into a
+    // list so older clients (and the approval-replay path) still produce one.
+    const phoneWrite = resolvePhoneWrite(
+      createCustomerDto.phones,
+      createCustomerDto.phone,
+      createCustomerDto.alternatePhone,
+    );
+    if (!phoneWrite) {
+      throw new BadRequestException('At least one phone number is required');
+    }
+    const normalizedPhone = this.normalizePhone(phoneWrite.phone);
+    // `phones` is pulled out of the spread: the DTO's typed array isn't
+    // assignable to Prisma's Json input, and the normalised list replaces it.
+    const { phones: _incomingPhones, ...restOfDto } = createCustomerDto;
     const dto = {
-      ...createCustomerDto,
+      ...restOfDto,
+      phones: phoneWrite.phones as unknown as Prisma.InputJsonValue,
       phone: normalizedPhone,
       name: typeof createCustomerDto.name === 'string' ? createCustomerDto.name.trim() : createCustomerDto.name,
     };
@@ -221,8 +238,14 @@ export class CustomersService {
 
     for (const [index, c] of customers.entries()) {
       try {
-        const normalizedPhone = this.normalizePhone(c.phone);
-        
+        const { phones: _incomingPhones, ...rest } = c;
+        // Same rule as create(): the list settles the primary, the primary is
+        // mirrored into `phone`. Destructured out of the spread below because
+        // the DTO's typed array isn't assignable to Prisma's Json input.
+        const phoneWrite = resolvePhoneWrite(c.phones, c.phone, c.alternatePhone);
+        if (!phoneWrite) throw new BadRequestException('At least one phone number is required');
+        const normalizedPhone = this.normalizePhone(phoneWrite.phone);
+
         if (normalizedPhone) {
           const last10 = normalizedPhone.slice(-10);
           const isDup = Array.from(existingPhones).some(p => p.endsWith(last10));
@@ -234,7 +257,8 @@ export class CustomersService {
         if (normalizedPhone) existingPhones.add(normalizedPhone);
         
         toCreate.push({
-          ...c,
+          ...rest,
+          phones: phoneWrite.phones as unknown as Prisma.InputJsonValue,
           phone: normalizedPhone,
           branchId: branchId ?? null,
         });
@@ -861,13 +885,27 @@ export class CustomersService {
 
   async update(id: string, updateCustomerDto: UpdateCustomerDto, branchId?: string) {
     const existing = await this.findOne(id, branchId);
-    const data = { ...updateCustomerDto } as UpdateCustomerDto;
-    if (data.phone !== undefined) {
-      const normalized = this.normalizePhone(data.phone);
+    const { phones: _incomingPhones, ...restOfDto } = updateCustomerDto;
+    const data = { ...restOfDto } as Omit<UpdateCustomerDto, 'phones'> & { phones?: Prisma.InputJsonValue };
+    // `phones` supplied → it is the source of truth and `phone` is re-derived
+    // from its primary. Only `phone` supplied → older client, fold it into a
+    // list. Neither → leave both columns alone, so a PATCH of (say) just the
+    // credit limit can't blank the numbers.
+    if (updateCustomerDto.phones !== undefined || data.phone !== undefined) {
+      const phoneWrite = resolvePhoneWrite(
+        updateCustomerDto.phones,
+        data.phone ?? existing.phone,
+        updateCustomerDto.alternatePhone ?? existing.alternatePhone,
+      );
+      if (!phoneWrite) {
+        throw new BadRequestException('At least one phone number is required');
+      }
+      const normalized = this.normalizePhone(phoneWrite.phone);
       if (normalized !== this.normalizePhone(existing.phone)) {
         await this.assertUniquePhone(normalized, existing.branchId ?? null, id);
       }
       data.phone = normalized;
+      data.phones = phoneWrite.phones as unknown as Prisma.InputJsonValue;
     }
     if (data.gstin !== undefined || data.dlNumber !== undefined) {
       await this.assertUniqueGstinDl(
