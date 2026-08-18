@@ -43,6 +43,24 @@ function phoneKey(phone: string | null | undefined): string {
   return normalizePhone(phone).slice(-10);
 }
 
+// Fallback dedup key for suppliers with NO usable phone (many legacy exports put
+// the number inside the name, leaving the phone column blank). Two rows with the
+// same trimmed, case-folded name are then treated as the same party — so
+// re-importing updates instead of piling up duplicates. Only used when
+// phoneKey() yields no 10-digit number.
+function nameKey(name: string | null | undefined): string {
+  return (name ?? '').trim().toLowerCase();
+}
+
+// Shared shape for a resolved existing supplier (phone- or name-matched).
+type SupplierMatch = {
+  id: string;
+  name: string;
+  phone: string;
+  phones: Prisma.JsonValue;
+  branchId: string | null;
+};
+
 function emptyResult(dryRun: boolean): ImportResult {
   return {
     dryRun,
@@ -152,16 +170,26 @@ export class SupplierImportService {
       new Set(validRows.map((s) => phoneKey(s.phone)).filter((k) => k.length === 10)),
     );
     const existing = await this.findExistingByPhones(phoneKeys, ctx.branchId);
-    const existingByKey = new Map<
-      string,
-      { id: string; name: string; phone: string; phones: Prisma.JsonValue; branchId: string | null }
-    >();
+    const existingByKey = new Map<string, SupplierMatch>();
     for (const e of existing) existingByKey.set(phoneKey(e.phone), e);
 
+    // Name-based lookup for rows with NO usable phone — matches an existing
+    // supplier by name so a re-import updates instead of duplicating.
+    const nameCandidates = Array.from(
+      new Set(
+        validRows
+          .filter((s) => phoneKey(s.phone).length !== 10 && nameKey(s.name))
+          .map((s) => (s.name ?? '').trim()),
+      ),
+    );
+    const existingNamed = await this.findExistingByNames(nameCandidates, ctx.branchId);
+    const existingByName = new Map<string, SupplierMatch>();
+    for (const e of existingNamed) {
+      if (!existingByName.has(nameKey(e.name))) existingByName.set(nameKey(e.name), e);
+    }
+
     for (const s of validRows) {
-      const k = phoneKey(s.phone);
-      if (k.length !== 10) continue; // only real 10-digit numbers dedup
-      const e = existingByKey.get(k);
+      const e = this.resolveExisting(s, existingByKey, existingByName);
       if (!e) continue;
       result.duplicates.push({
         supplierCode: s.supplierCode,
@@ -172,7 +200,7 @@ export class SupplierImportService {
     }
 
     if (dryRun) {
-      this.simulate(validRows, existingByKey, dto.duplicateHandling, result);
+      this.simulate(validRows, existingByKey, existingByName, dto.duplicateHandling, result);
       return result;
     }
 
@@ -184,6 +212,7 @@ export class SupplierImportService {
       await this.processRow(
         row,
         existingByKey,
+        existingByName,
         dto.duplicateHandling,
         ctx,
         result,
@@ -201,6 +230,7 @@ export class SupplierImportService {
     result: ImportResult,
   ): ImportSupplierDto[] {
     const seenPhones = new Map<string, number>();
+    const seenNames = new Map<string, number>(); // nameKey → first sourceRow (phone-less)
     const seenCodes = new Map<string, number>();
     const valid: ImportSupplierDto[] = [];
 
@@ -240,6 +270,23 @@ export class SupplierImportService {
           continue;
         }
         seenPhones.set(last10, src);
+      } else {
+        // Phone-less row — dedup within the file by name (the number often lives
+        // inside the name for these), so re-listed parties don't multiply.
+        const nk = nameKey(name);
+        if (seenNames.has(nk)) {
+          this.pushWarning(result, {
+            kind: 'duplicate',
+            sheet: 'Suppliers',
+            row: src,
+            supplierCode: row.supplierCode,
+            field: 'name',
+            message: `Same name appears earlier in this file at row ${seenNames.get(nk)} (no phone to distinguish). Only the first row will be imported.`,
+          });
+          result.summary.suppliers.skipped++;
+          continue;
+        }
+        seenNames.set(nk, src);
       }
 
       const code = (row.supplierCode ?? '').trim();
@@ -296,15 +343,51 @@ export class SupplierImportService {
     return candidates.filter((c) => last10Keys.includes(phoneKey(c.phone)));
   }
 
+  // Fallback lookup for phone-less rows: resolve existing suppliers by exact
+  // (trimmed) name within the branch, so re-importing a party whose phone lives
+  // inside its name updates the same record instead of creating a duplicate.
+  private async findExistingByNames(names: string[], branchId?: string | null) {
+    if (!names.length) return [] as SupplierMatch[];
+    const out: SupplierMatch[] = [];
+    for (let i = 0; i < names.length; i += 1000) {
+      const chunk = names.slice(i, i + 1000);
+      const candidates = await this.prisma.supplier.findMany({
+        where: {
+          AND: [
+            { name: { in: chunk } },
+            ...(branchId ? [{ OR: [{ branchId }, { branchId: null }] }] : []),
+          ],
+        },
+        select: { id: true, name: true, phone: true, phones: true, branchId: true },
+      });
+      out.push(...candidates);
+    }
+    return out;
+  }
+
+  // Resolve a row to an existing supplier: by 10-digit phone when present,
+  // otherwise by name (phone-less rows only).
+  private resolveExisting<T>(
+    row: { phone: string; name?: string | null },
+    byPhone: Map<string, T>,
+    byName: Map<string, T>,
+  ): T | undefined {
+    const k = phoneKey(row.phone);
+    if (k.length === 10) return byPhone.get(k);
+    const nk = nameKey(row.name);
+    return nk ? byName.get(nk) : undefined;
+  }
+
   // ── Phase 3a: dry-run simulation ──────────────────────────────────────────
   private simulate(
     rows: ImportSupplierDto[],
-    existingByKey: Map<string, { id: string; name: string; phone: string }>,
+    existingByKey: Map<string, SupplierMatch>,
+    existingByName: Map<string, SupplierMatch>,
     handling: ImportDuplicateHandling,
     result: ImportResult,
   ) {
     for (const row of rows) {
-      const isDup = existingByKey.has(phoneKey(row.phone));
+      const isDup = !!this.resolveExisting(row, existingByKey, existingByName);
       if (isDup) {
         if (handling === 'SKIP') {
           result.summary.suppliers.skipped++;
@@ -413,16 +496,13 @@ export class SupplierImportService {
   // ── Phase 3b: real import ─────────────────────────────────────────────────
   private async processRow(
     row: ImportSupplierDto,
-    existingByKey: Map<
-      string,
-      { id: string; name: string; phone: string; phones: Prisma.JsonValue; branchId: string | null }
-    >,
+    existingByKey: Map<string, SupplierMatch>,
+    existingByName: Map<string, SupplierMatch>,
     handling: ImportDuplicateHandling,
     ctx: { userId: string; branchId?: string | null },
     result: ImportResult,
   ): Promise<void> {
-    const last10 = phoneKey(row.phone);
-    const existing = existingByKey.get(last10);
+    const existing = this.resolveExisting(row, existingByKey, existingByName);
 
     let supplierId: string;
     if (existing) {
@@ -436,7 +516,7 @@ export class SupplierImportService {
           row: row.sourceRow ?? 0,
           supplierCode: row.supplierCode,
           field: 'phone',
-          message: `CREATE strategy refused: phone "${row.phone}" is already used by supplier "${existing.name}". Choose UPDATE or SKIP instead.`,
+          message: `CREATE strategy refused: this party already matches supplier "${existing.name}" (by phone, or by name when phone is blank). Choose UPDATE or SKIP instead.`,
         });
         result.summary.suppliers.failed++;
         return;
