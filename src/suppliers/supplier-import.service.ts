@@ -146,8 +146,10 @@ export class SupplierImportService {
     if (validRows.length === 0) return result;
 
     // ── Phase 2: resolve existing suppliers by phone (1 batched query) ──
+    // Only real 10-digit numbers participate in cross-file dedup — partial /
+    // junk phones we kept above must never match an existing supplier.
     const phoneKeys = Array.from(
-      new Set(validRows.map((s) => phoneKey(s.phone)).filter(Boolean)),
+      new Set(validRows.map((s) => phoneKey(s.phone)).filter((k) => k.length === 10)),
     );
     const existing = await this.findExistingByPhones(phoneKeys, ctx.branchId);
     const existingByKey = new Map<
@@ -158,7 +160,7 @@ export class SupplierImportService {
 
     for (const s of validRows) {
       const k = phoneKey(s.phone);
-      if (!k) continue;
+      if (k.length !== 10) continue; // only real 10-digit numbers dedup
       const e = existingByKey.get(k);
       if (!e) continue;
       result.duplicates.push({
@@ -219,30 +221,26 @@ export class SupplierImportService {
         result.summary.suppliers.failed++;
         continue;
       }
-      if (!last10 || last10.length !== 10) {
-        this.pushError(result, {
-          sheet: 'Suppliers',
-          row: src,
-          supplierCode: row.supplierCode,
-          field: 'phone',
-          message: `Phone "${rawPhone}" must be a 10-digit number (extra spaces / country code OK).`,
-        });
-        result.summary.suppliers.failed++;
-        continue;
+      // Phone is best-effort on import: a valid 10-digit number is used to dedup;
+      // a partial / junk / blank one is imported as-is and never used to match —
+      // so the supplier still lands instead of being rejected.
+      const matchablePhone = last10.length === 10;
+
+      if (matchablePhone) {
+        if (seenPhones.has(last10)) {
+          this.pushWarning(result, {
+            kind: 'duplicate',
+            sheet: 'Suppliers',
+            row: src,
+            supplierCode: row.supplierCode,
+            field: 'phone',
+            message: `Same phone appears earlier in this file at row ${seenPhones.get(last10)}. Only the first row will be imported.`,
+          });
+          result.summary.suppliers.skipped++;
+          continue;
+        }
+        seenPhones.set(last10, src);
       }
-      if (seenPhones.has(last10)) {
-        this.pushWarning(result, {
-          kind: 'duplicate',
-          sheet: 'Suppliers',
-          row: src,
-          supplierCode: row.supplierCode,
-          field: 'phone',
-          message: `Same phone appears earlier in this file at row ${seenPhones.get(last10)}. Only the first row will be imported.`,
-        });
-        result.summary.suppliers.skipped++;
-        continue;
-      }
-      seenPhones.set(last10, src);
 
       const code = (row.supplierCode ?? '').trim();
       if (code) {

@@ -178,8 +178,10 @@ export class CustomerImportService {
     }
 
     // ── Phase 2: resolve existing customers by phone (1 batched query) ──
+    // Only real 10-digit numbers participate in cross-file dedup — partial /
+    // junk phones we kept above must never match an existing customer.
     const phoneKeys = Array.from(
-      new Set(validRows.map((c) => phoneKey(c.phone)).filter(Boolean)),
+      new Set(validRows.map((c) => phoneKey(c.phone)).filter((k) => k.length === 10)),
     );
     const existing = await this.findExistingByPhones(phoneKeys, ctx.branchId);
     const existingByKey = new Map<
@@ -203,7 +205,7 @@ export class CustomerImportService {
     // user exactly what we'll do at commit time.
     for (const c of validRows) {
       const k = phoneKey(c.phone);
-      if (!k) continue;
+      if (k.length !== 10) continue; // only real 10-digit numbers dedup
       const e = existingByKey.get(k);
       if (!e) continue;
       result.duplicates.push({
@@ -276,34 +278,31 @@ export class CustomerImportService {
         result.summary.customers.failed++;
         continue;
       }
-      if (!last10 || last10.length !== 10) {
-        this.pushError(result, {
-          sheet: 'Customers',
-          row: src,
-          customerCode: row.customerCode,
-          field: 'phone',
-          message: `Phone "${rawPhone}" must be a 10-digit number (extra spaces / country code OK).`,
-        });
-        result.summary.customers.failed++;
-        continue;
-      }
+      // Phone is best-effort on import: a valid 10-digit number is used to dedup;
+      // a partial / junk / blank one is imported as-is (digits kept, or blank if
+      // it had none) and never used to match — so the customer still lands
+      // instead of being rejected.
+      const matchablePhone = last10.length === 10;
 
       // Intra-file phone duplicate — likely a copy-paste mistake. Flag the
-      // second occurrence as a warning (we still import the first) so the
-      // user can decide whether to clean up the workbook.
-      if (seenPhones.has(last10)) {
-        this.pushWarning(result, {
-          kind: 'duplicate',
-          sheet: 'Customers',
-          row: src,
-          customerCode: row.customerCode,
-          field: 'phone',
-          message: `Same phone appears earlier in this file at row ${seenPhones.get(last10)}. Only the first row will be imported.`,
-        });
-        result.summary.customers.skipped++;
-        continue;
+      // second occurrence as a warning (we still import the first) so the user
+      // can clean up the workbook. Only for real 10-digit numbers; partials
+      // can't reliably indicate the same party.
+      if (matchablePhone) {
+        if (seenPhones.has(last10)) {
+          this.pushWarning(result, {
+            kind: 'duplicate',
+            sheet: 'Customers',
+            row: src,
+            customerCode: row.customerCode,
+            field: 'phone',
+            message: `Same phone appears earlier in this file at row ${seenPhones.get(last10)}. Only the first row will be imported.`,
+          });
+          result.summary.customers.skipped++;
+          continue;
+        }
+        seenPhones.set(last10, src);
       }
-      seenPhones.set(last10, src);
 
       // Intra-file code duplicate — invoices/payments linked to this code
       // would be ambiguous, so we reject the second.
