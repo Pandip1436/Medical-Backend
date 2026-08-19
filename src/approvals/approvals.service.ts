@@ -53,6 +53,25 @@ export class ApprovalsService {
     private readonly suppliersService: SuppliersService,
   ) {}
 
+  // The customer / supplier an approval request is about, pulled from whatever
+  // shape the filing service put in the payload:
+  //   SALES_RETURN  → customerName + customerPhone   CREDIT_BILL   → customerName
+  //   PURCHASE_ENTRY / PURCHASE_RETURN → supplierName
+  //   NEW_CUSTOMER / NEW_SUPPLIER      → name + phone (the raw dto)
+  // Returns null for requests with no party at all (e.g. INVENTORY_ADJUSTMENT),
+  // which keep the plain "<requester> requested approval for …" message.
+  private static partyFromPayload(
+    payload: Record<string, any>,
+  ): { name: string; phone: string | null } | null {
+    const name = payload?.customerName ?? payload?.supplierName ?? payload?.name;
+    if (typeof name !== 'string' || !name.trim()) return null;
+    const phone = payload?.customerPhone ?? payload?.supplierPhone ?? payload?.phone;
+    return {
+      name: name.trim(),
+      phone: typeof phone === 'string' && phone.trim() ? phone.trim() : null,
+    };
+  }
+
   // ── Create a pending request ───────────────────────────────
   async createRequest(opts: {
     type: ApprovalType;
@@ -74,11 +93,30 @@ export class ApprovalsService {
 
     // Fire an APPROVAL notification for admins in the branch. recipientRole
     // 'ADMIN' keeps it out of non-admins' lists — only approvers act on it.
+    // Lead with the customer/supplier (and phone, to disambiguate same-named
+    // parties) in the "<party> — <detail>" shape the Notifications page parses
+    // into its Customer column; without the lead the request landed in the
+    // Requests folder with a blank name. Mirrors the credit-note review
+    // notification in credit-notes.service.ts.
+    const party = ApprovalsService.partyFromPayload(opts.payload);
+    // The source document, when the payload names one. A sales return spanning
+    // two invoices files two requests (one CN per invoice) — without this they
+    // read as identical rows in the Requests folder.
+    const docNo =
+      opts.payload?.invoiceNumber ??
+      opts.payload?.supplierInvoiceNo ??
+      opts.payload?.grnNumber ??
+      null;
+    const detail =
+      `${request.requestedBy.name} requested approval for ${opts.type.replace(/_/g, ' ').toLowerCase()}` +
+      `${typeof docNo === 'string' && docNo.trim() ? ` · ${docNo.trim()}` : ''}.`;
     await this.prisma.notification.create({
       data: {
         type: 'APPROVAL',
         title: 'Approval Required',
-        message: `${request.requestedBy.name} requested approval for ${opts.type.replace(/_/g, ' ').toLowerCase()}.`,
+        message: party
+          ? `${party.name}${party.phone ? ` (${party.phone})` : ''} — ${detail}`
+          : detail,
         actionUrl: `/admin/approvals/detail?id=${request.id}`,
         branchId: opts.branchId ?? null,
         recipientRole: 'ADMIN',

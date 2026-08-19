@@ -8,6 +8,11 @@ import {
   type NotificationKind,
 } from '../events/notification-events';
 import { buildPaymentDueMessage, buildPaymentDueState } from './payment-due-sync';
+import {
+  CADENCE_SETTING_KEY,
+  resolveCadence,
+  type NotificationCadence,
+} from './notification-cadence';
 import { isAdminRole } from '../common/roles.util';
 
 // Window-based dedup: don't fire the same alert again within this many hours
@@ -60,16 +65,24 @@ function daysAgo(n: number): Date {
 // mean "don't fire a new one." Layered signals so user actions take effect:
 //   - active alert (unread, unresolved, unsnoozed)  → forever, until acted on
 //   - snoozed for the future                        → until snooze expires
-//   - resolved within RESOLVED_SUPPRESS_DAYS        → ~30 days quiet
+//   - resolved BY A PERSON within RESOLVED_SUPPRESS_DAYS → ~30 days quiet
 //   - read within READ_SUPPRESS_DAYS                → ~3 days quiet
 //   - fallback: any record within DEDUP_WINDOW_HOURS → 24h baseline
-function suppressionClauses(): any[] {
+// `readDays` overrides the read-suppression window — expiry / low-stock pass
+// the admin-configured cadence.stock.reAlertDays (Settings → Notifications);
+// everything else falls back to the env default.
+function suppressionClauses(readDays: number = READ_SUPPRESS_DAYS): any[] {
   const now = new Date();
   return [
     { isRead: false, resolvedAt: null, snoozedUntil: null },
     { isRead: false, resolvedAt: null, snoozedUntil: { gt: now } },
-    { resolvedAt: { gte: daysAgo(RESOLVED_SUPPRESS_DAYS) } },
-    { isRead: true, resolvedAt: null, createdAt: { gte: daysAgo(READ_SUPPRESS_DAYS) } },
+    // Only a HUMAN "Resolve" buys the 30 days of quiet — that's someone saying
+    // "I've dealt with this, stop asking". The reconcilers below auto-resolve
+    // alerts whose problem simply went away (product restocked, batch emptied)
+    // and leave resolvedById null; those must not silence the next genuine
+    // shortage, which for a fast-moving product can be days later.
+    { resolvedAt: { gte: daysAgo(RESOLVED_SUPPRESS_DAYS) }, resolvedById: { not: null } },
+    { isRead: true, resolvedAt: null, createdAt: { gte: daysAgo(readDays) } },
     { createdAt: { gte: dedupSince() } },
   ];
 }
@@ -95,14 +108,10 @@ type PaymentDueState = {
 // How much worse the situation must be to override suppression
 const LOW_STOCK_DROP_PCT = 0.25;    // stock dropped 25%+ from last snapshot
 
-// Payment-due reminders: nudge once a day for up to this many days, then stop.
-// A one-time Resolve (or the invoice being paid) ends them early — see
-// generatePaymentDueAlerts.
-const PAYMENT_DUE_MAX_REMINDERS = Number(process.env.PAYMENT_DUE_MAX_REMINDERS ?? 3);
-
-// Customer dues start alerting only this many days BEFORE the invoice's due
-// date (a pre-due reminder). Invoices with no due date alert immediately.
-const CUSTOMER_PAYMENT_DUE_BEFORE_DAYS = Number(process.env.CUSTOMER_PAYMENT_DUE_BEFORE_DAYS ?? 3);
+// Reminder cadence — how far before the due date alerts start, and how long
+// before an opened-but-unresolved alert asks again — now lives in
+// notification-cadence.ts, admin-editable via Settings → Notifications, with
+// CUSTOMER_PAYMENT_DUE_BEFORE_DAYS / NOTIFICATION_READ_DAYS as its defaults.
 
 // Supplier dues only start alerting once the GRN is this many days past its
 // supplier-invoice date (the agreed payment term). Set to 0 to alert immediately.
@@ -134,6 +143,36 @@ export class NotificationsService {
     private readonly prisma: PrismaService,
     private readonly events: EventEmitter2,
   ) {}
+
+  // Admin-editable reminder cadence (Settings → Notifications), stored as one
+  // GlobalSetting row. Read once per generator run — a single indexed lookup
+  // per sweep, so no caching to go stale after an admin saves a change.
+  // Falls back to the env-var defaults when unset or unreadable.
+  async getCadence(): Promise<NotificationCadence> {
+    try {
+      const row = await this.prisma.globalSetting.findUnique({
+        where: { key: CADENCE_SETTING_KEY },
+        select: { value: true },
+      });
+      return resolveCadence(row?.value ?? null);
+    } catch {
+      return resolveCadence(null);
+    }
+  }
+
+  // Save the cadence from Settings → Notifications. Clamped through
+  // resolveCadence before it is stored, so the row can only ever hold values
+  // the generators can act on, and the caller gets back exactly what will be
+  // used (not the raw input).
+  async updateCadence(input: unknown): Promise<NotificationCadence> {
+    const value = resolveCadence(input);
+    await this.prisma.globalSetting.upsert({
+      where: { key: CADENCE_SETTING_KEY },
+      update: { value: value as any },
+      create: { key: CADENCE_SETTING_KEY, value: value as any },
+    });
+    return value;
+  }
 
   // Centralised create+emit so every notification creation path (manual,
   // low-stock, expiry, reminder, payment-due) consistently fires the
@@ -417,14 +456,17 @@ export class NotificationsService {
     });
 
     let created = 0;
+    const { stock } = await this.getCadence();
 
     for (const p of lowStock) {
+      const marker = `[productId:${p.id}]`;
       // Layered suppression — see suppressionClauses() for the full ruleset.
+      // No cap: a product nobody restocks keeps asking every reAlertDays.
       const existing = await this.prisma.notification.findFirst({
         where: {
           type: NotificationType.LOW_STOCK,
-          message: { contains: `[productId:${p.id}]` },
-          OR: suppressionClauses(),
+          message: { contains: marker },
+          OR: suppressionClauses(stock.reAlertDays),
         },
         orderBy: { createdAt: 'desc' },
       });
@@ -453,7 +495,10 @@ export class NotificationsService {
       );
       created++;
     }
-    return { created };
+
+    // Close out alerts for products that have since been restocked.
+    const resolved = await this.resolveRestockedLowStockAlerts(branchId);
+    return { created, resolved };
   }
 
   async generateExpiryAlerts(branchId?: string, daysAhead = 90) {
@@ -461,16 +506,18 @@ export class NotificationsService {
     const cutoff = new Date();
     cutoff.setDate(cutoff.getDate() + daysAhead);
 
-    // Lower bound = today so we don't include batches expired long ago on every run.
-    // We keep already-expired ones by using a far-past lower bound (30 days grace window).
+    const { stock } = await this.getCadence();
+    // How far past its expiry date a batch keeps alerting. Stock that expired
+    // longer ago than this is assumed dealt with outside the system (or bad
+    // import data) and stays quiet — see cadence.stock.expiredGraceDays.
     const gracePast = new Date();
-    gracePast.setDate(gracePast.getDate() - 30);
+    gracePast.setDate(gracePast.getDate() - stock.expiredGraceDays);
 
     const batches = await this.prisma.batch.findMany({
       where: {
         quantity: { gt: 0 },
         expiryDate: {
-          gte: gracePast,  // don't alert on stock expired >30 days ago (likely written off)
+          gte: gracePast,
           lte: cutoff,     // within the look-ahead window
         },
         product: {
@@ -487,16 +534,20 @@ export class NotificationsService {
 
     let created = 0;
     for (const b of batches) {
-      // Layered suppression — see suppressionClauses().
+      const marker = `[batchId:${b.id}]`;
+      const daysLeft = Math.ceil((new Date(b.expiryDate).getTime() - now.getTime()) / 86400000);
+      // Layered suppression — see suppressionClauses(). No cap: a batch that
+      // expires and is never written off keeps asking every reAlertDays, until
+      // it's written off (which resolves these alerts — see products.service.ts),
+      // sold through, or passes the expiredGraceDays cutoff above.
       const existing = await this.prisma.notification.findFirst({
         where: {
           type: NotificationType.EXPIRY,
-          message: { contains: `[batchId:${b.id}]` },
-          OR: suppressionClauses(),
+          message: { contains: marker },
+          OR: suppressionClauses(stock.reAlertDays),
         },
         orderBy: { createdAt: 'desc' },
       });
-      const daysLeft = Math.ceil((new Date(b.expiryDate).getTime() - now.getTime()) / 86400000);
       const nextState: ExpiryState = { kind: 'EXPIRY', daysLeft };
       // Expiry never escalates — a batch's expiry date is fixed. So if a
       // suppression record exists, always skip.
@@ -523,6 +574,56 @@ export class NotificationsService {
     // list forever. Resolve those here on the sweep so the list stays truthful.
     const resolved = await this.resolveStaleExpiryAlerts(branchId);
     return { created, resolved };
+  }
+
+  // Resolve active LOW_STOCK alerts for products that are back above their
+  // minimum. Restocking happens through several paths (purchase entry, stock
+  // adjustment, sales return, import), none of which touched the alert — so
+  // without this the row sat in the Unread list long after the problem was
+  // fixed. Reconciled on the sweep rather than hooked into each path, so every
+  // way of adding stock is covered by one piece of code. Mirrors
+  // resolveStaleExpiryAlerts / resolveSettledSupplierAlerts below.
+  private async resolveRestockedLowStockAlerts(branchId?: string): Promise<number> {
+    const active = await this.prisma.notification.findMany({
+      where: {
+        type: NotificationType.LOW_STOCK,
+        resolvedAt: null,
+        ...(branchId ? { OR: [{ branchId }, { branchId: null }] } : {}),
+      },
+      select: { id: true, message: true },
+    });
+    const idsByProduct = new Map<string, string[]>();
+    for (const n of active) {
+      const m = n.message.match(/\[productId:([^\]]+)\]/);
+      if (!m) continue;
+      const list = idsByProduct.get(m[1]) ?? [];
+      list.push(n.id);
+      idsByProduct.set(m[1], list);
+    }
+    if (idsByProduct.size === 0) return 0;
+
+    // Same "is it low?" test the generator above uses.
+    const products = await this.prisma.product.findMany({
+      where: { id: { in: [...idsByProduct.keys()] } },
+      select: { id: true, totalStock: true, minStock: true },
+    });
+    const stillLow = new Set(
+      products
+        .filter((p) => p.totalStock <= 0 || (p.minStock > 0 && p.totalStock <= p.minStock))
+        .map((p) => p.id),
+    );
+
+    const fixedIds: string[] = [];
+    for (const [productId, ids] of idsByProduct) {
+      if (!stillLow.has(productId)) fixedIds.push(...ids);
+    }
+    if (fixedIds.length === 0) return 0;
+
+    const res = await this.prisma.notification.updateMany({
+      where: { id: { in: fixedIds } },
+      data: { resolvedAt: new Date(), isRead: true },
+    });
+    return res.count;
   }
 
   // Resolve active EXPIRY alerts whose batch no longer has stock (qty 0) or was
@@ -677,44 +778,42 @@ export class NotificationsService {
 
     const now = new Date();
     let created = 0;
+    const { customerDue } = await this.getCadence();
     for (const inv of invoices) {
       const outstanding = Number(inv.grandTotal) - Number(inv.amountPaid);
       const daysOutstanding = Math.floor((now.getTime() - new Date(inv.date).getTime()) / 86_400_000);
 
       // Payment-due alerts are strictly relative to a due date: only invoices
       // that carry one are eligible, and only once we're within the lead window
-      // before it (default 3 days). Invoices without a due date never alert.
+      // before it (Settings → Notifications, default 3 days). Invoices without
+      // a due date never alert.
       if (!inv.dueDate) continue;
       const daysUntilDue = Math.ceil((new Date(inv.dueDate).getTime() - now.getTime()) / 86_400_000);
-      if (daysUntilDue > CUSTOMER_PAYMENT_DUE_BEFORE_DAYS) continue;
+      if (daysUntilDue > customerDue.beforeDays) continue;
 
-      // Reminder policy: nudge once a day for up to PAYMENT_DUE_MAX_REMINDERS
-      // days, then stop. A one-time Resolve (or the invoice being paid, which
-      // sets resolvedAt via syncPaymentDueForInvoice) ends the reminders early
-      // and for good.
+      // Reminder policy: ask once, then again every `reAlertDays` after the
+      // alert has been OPENED and the invoice still isn't settled — the same
+      // rule the stock alerts use (suppressionClauses). An unread alert is
+      // already in the folder, so it never duplicates itself. Reminders end
+      // when the invoice is paid (syncPaymentDueForInvoice sets resolvedAt) or
+      // somebody hits Resolve.
       const marker = {
         type: NotificationType.PAYMENT_DUE,
         message: { contains: `[invoiceId:${inv.id}]` },
       };
 
-      // 1) Resolved at any point → never notify again.
+      // Resolved at any point → never notify again.
       const resolved = await this.prisma.notification.findFirst({
         where: { ...marker, resolvedAt: { not: null } },
         select: { id: true },
       });
       if (resolved) continue;
 
-      // 2) Already sent the full run of daily reminders → stop.
-      const sentCount = await this.prisma.notification.count({ where: marker });
-      if (sentCount >= PAYMENT_DUE_MAX_REMINDERS) continue;
-
-      // 3) At most one reminder per day — skip if we already sent one in the
-      //    last ~20h (guards against a same-day re-run, e.g. a server restart).
-      const sentRecently = await this.prisma.notification.findFirst({
-        where: { ...marker, createdAt: { gte: new Date(now.getTime() - 20 * 60 * 60 * 1000) } },
+      const suppressed = await this.prisma.notification.findFirst({
+        where: { ...marker, OR: suppressionClauses(customerDue.reAlertDays) },
         select: { id: true },
       });
-      if (sentRecently) continue;
+      if (suppressed) continue;
 
       const nextState: PaymentDueState = buildPaymentDueState({
         outstanding,
@@ -741,8 +840,8 @@ export class NotificationsService {
   }
 
   // Supplier-side mirror of generatePaymentDueAlerts — money the business OWES
-  // suppliers on unpaid/partial GRNs (Purchase Entries). Same cadence: nudge
-  // once a day for up to PAYMENT_DUE_MAX_REMINDERS days, stop on a one-time
+  // suppliers on unpaid/partial GRNs (Purchase Entries). Same shape of cadence,
+  // configured separately under cadence.supplierDue; stops on a one-time
   // Resolve (or when the GRN is paid off).
   async generateSupplierPaymentDueAlerts(branchId?: string) {
     const grns = await this.prisma.gRN.findMany({
@@ -782,6 +881,7 @@ export class NotificationsService {
 
     const now = new Date();
     let created = 0;
+    const { supplierDue } = await this.getCadence();
     for (const g of grns) {
       const outstanding = Number(g.supplierInvoiceAmount) - Number(g.amountPaid);
       if (outstanding <= 0.01) continue;
@@ -798,8 +898,9 @@ export class NotificationsService {
       const daysOutstanding = Math.floor(
         (now.getTime() - effectiveDue.getTime()) / 86_400_000,
       );
-      // Not due yet — nothing to nudge about.
-      if (daysOutstanding < 0) continue;
+      // Not due yet — nothing to nudge about until we're inside the lead window
+      // (Settings → Notifications; 0 = start on the due date, the old behaviour).
+      if (daysOutstanding < -supplierDue.beforeDays) continue;
 
       const marker = {
         type: NotificationType.SUPPLIER_PAYMENT_DUE,
@@ -811,15 +912,12 @@ export class NotificationsService {
         select: { id: true },
       });
       if (resolved) continue;
-      // Cap at the daily-reminder run.
-      const sentCount = await this.prisma.notification.count({ where: marker });
-      if (sentCount >= PAYMENT_DUE_MAX_REMINDERS) continue;
-      // One reminder per day.
-      const sentRecently = await this.prisma.notification.findFirst({
-        where: { ...marker, createdAt: { gte: new Date(now.getTime() - 20 * 60 * 60 * 1000) } },
+      // Same read-then-ask-again rule as the customer side.
+      const suppressed = await this.prisma.notification.findFirst({
+        where: { ...marker, OR: suppressionClauses(supplierDue.reAlertDays) },
         select: { id: true },
       });
-      if (sentRecently) continue;
+      if (suppressed) continue;
 
       await this.createAndEmit(
         {

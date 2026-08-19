@@ -746,7 +746,34 @@ export class ProductsService {
     if (branchId && batch.product?.branchId && batch.product.branchId !== branchId) {
       throw new NotFoundException('Batch not found');
     }
-    return this.shapeBatchRow(batch);
+    // An emptied batch can't be written off or returned again, so the detail
+    // view needs to know WHY it's empty before it offers those actions. Only
+    // an adjustment that removed stock (diff < 0) counts — a batch that simply
+    // sold out has no log row and stays "no stock left" rather than "written
+    // off". Looked up only on the single-batch fetch (the list stays lean).
+    let writeOff: {
+      at: Date;
+      reason: string;
+      quantity: number;
+      by: string | null;
+      adjustmentNo: string | null;
+    } | null = null;
+    if (batch.quantity <= 0) {
+      const log = await (this.prisma as any).stockAdjustmentLog.findFirst({
+        where: { batchId: id, diff: { lt: 0 } },
+        orderBy: { createdAt: 'desc' },
+      });
+      if (log) {
+        writeOff = {
+          at: log.createdAt,
+          reason: log.reason,
+          quantity: Math.abs(log.diff),
+          by: log.userName ?? null,
+          adjustmentNo: log.adjustmentNo ?? null,
+        };
+      }
+    }
+    return { ...this.shapeBatchRow(batch), writeOff };
   }
 
   // Flattens product/supplier joins onto the batch row so the frontend gets a
@@ -877,6 +904,30 @@ export class ProductsService {
     return this.prisma.product.delete({ where: { id } });
   }
 
+  // Close out the EXPIRY alerts for batches an adjustment just emptied
+  // (write-off / disposal → qty 0). Without this the alert survives until the
+  // next daily sweep's resolveStaleExpiryAlerts() (notifications.service.ts),
+  // so a written-off batch keeps sitting in the Unread Expiry folder and its
+  // row still opens a batch detail showing 0 units — nothing left to act on.
+  // Resolved (not deleted), matching the sweep, so it stays in All/Resolved.
+  // Runs inside the caller's transaction: if the adjustment rolls back, so
+  // does the resolution.
+  private async resolveExpiryAlertsForEmptiedBatches(
+    tx: Prisma.TransactionClient,
+    batchIds: string[],
+  ): Promise<void> {
+    if (batchIds.length === 0) return;
+    await tx.notification.updateMany({
+      where: {
+        type: 'EXPIRY',
+        resolvedAt: null,
+        // Alerts carry their batch as a [batchId:…] marker in the message.
+        OR: batchIds.map((id) => ({ message: { contains: `[batchId:${id}]` } })),
+      },
+      data: { resolvedAt: new Date(), isRead: true },
+    });
+  }
+
   async adjustBatchStock(
     productId: string,
     batchId: string,
@@ -919,6 +970,9 @@ export class ProductsService {
             branchId: product.branchId ?? branchId ?? null,
           },
         });
+      }
+      if (dto.adjustedQty === 0) {
+        await this.resolveExpiryAlertsForEmptiedBatches(tx, [batchId]);
       }
       return {
         success: true,
@@ -1195,6 +1249,10 @@ export class ProductsService {
           data: { totalStock: agg._sum.quantity ?? 0 },
         });
       }
+      await this.resolveExpiryAlertsForEmptiedBatches(
+        tx,
+        resolved.filter((i) => i.adjustedQty === 0).map((i) => i.batchId),
+      );
       return {
         success: true,
         adjustmentNo,

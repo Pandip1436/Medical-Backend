@@ -2,6 +2,7 @@ import {
   Controller,
   Get,
   Post,
+  Put,
   Patch,
   Delete,
   Param,
@@ -79,6 +80,23 @@ export class NotificationsController {
       skip: Number.isFinite(skipN) ? skipN : undefined,
       take: Number.isFinite(takeN) ? takeN : undefined,
     });
+  }
+
+  // ── Reminder cadence (Settings → Notifications) ───────────────────────────
+  // How many nudges an unpaid invoice / expiring batch generates and how far
+  // apart. Declared before the parameterised routes below so 'cadence' can't be
+  // swallowed by an :id segment. GET returns the resolved values (stored merged
+  // over the env defaults), so the screen always has real numbers to show.
+  @Get('cadence')
+  @Roles('ADMIN')
+  getCadence() {
+    return this.service.getCadence();
+  }
+
+  @Put('cadence')
+  @Roles('ADMIN')
+  updateCadence(@Body() body: unknown) {
+    return this.service.updateCadence(body);
   }
 
   @Post()
