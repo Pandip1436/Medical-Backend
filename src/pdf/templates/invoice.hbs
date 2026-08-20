@@ -4,207 +4,222 @@
   <meta charset="utf-8" />
   <title>Invoice {{invoiceNumber}}</title>
   <style>
-    /* ---- A4 print reset ---- */
+    /* Mirrors the client's delivery-challan stationery: one ruled outer frame,
+       every block in its own bordered band, black on white so it photocopies
+       and faxes cleanly. Kept deliberately plain — this is a legal document,
+       not a branded one. */
     * { margin: 0; padding: 0; box-sizing: border-box; }
-    :root {
-      --ink:      #1a1a1a;   /* primary text            */
-      --muted:    #6b7280;   /* secondary / labels      */
-      --line:     #e5e7eb;   /* hairlines               */
-      --brand:    #0f766e;   /* teal — medical/clinical */
-      --brand-bg: #f0fdfa;   /* brand tint              */
-      --zebra:    #f9fafb;   /* table striping          */
-    }
     html { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
     body {
-      font-family: 'Helvetica Neue', Arial, 'Segoe UI', sans-serif;
-      color: var(--ink);
-      font-size: 11px;
-      line-height: 1.45;
+      font-family: Arial, 'Helvetica Neue', Helvetica, sans-serif;
+      color: #000;
+      font-size: 10px;
+      line-height: 1.35;
     }
-    .wrap { width: 100%; }
+    /* The frame spans the whole printed page, like the client's stationery:
+       A4 (297mm) less the 12mm/14mm print margins set in invoice-pdf.service.
+       min-height (not height) so a long invoice still flows onto page two. */
+    .sheet {
+      border: 1.2px solid #000;
+      /* 269mm, not the full 271mm of printable height: Chromium rounds layout
+         to device pixels, and at exactly 271mm the rounding tipped the frame
+         past the page and emitted a blank second sheet. */
+      min-height: 269mm;
+      display: flex;
+      flex-direction: column;
+    }
+    .band { border-bottom: 1px solid #000; }
+    .cols { display: flex; }
+    .cols > .c { flex: 1; padding: 5px 8px; }
+    .cols > .c + .c { border-left: 1px solid #000; }
+    /* Everything below the signature row is one open, full-width area with the
+       QR at its top-left — no centre divider past that point. It flexes so the
+       frame still reaches the foot of the page. */
+    .tail { flex: 1 1 auto; padding: 8px; }
 
     /* ---- Header ---- */
-    .header { display: flex; justify-content: space-between; align-items: flex-start; }
-    .supplier-name { font-size: 20px; font-weight: 700; color: var(--brand); letter-spacing: .2px; }
-    .supplier-meta { color: var(--muted); margin-top: 4px; max-width: 320px; }
-    .supplier-meta .reg { color: var(--ink); margin-top: 3px; }
-    .supplier-meta .reg b { color: var(--ink); font-weight: 600; }
+    .head { display: flex; align-items: flex-start; padding: 8px; gap: 10px; }
+    .head .logo { width: 62px; height: 62px; object-fit: contain; flex: 0 0 auto; }
+    .head .biz { flex: 1 1 auto; }
+    .head .biz .nm { font-size: 15px; font-weight: 700; letter-spacing: .2px; }
+    .head .biz .ln { font-size: 8.5px; margin-top: 1px; }
+    .head .title { font-size: 21px; font-weight: 700; letter-spacing: .5px; white-space: nowrap; align-self: center; }
 
-    .doc-box { text-align: right; min-width: 220px; }
-    .doc-title { font-size: 22px; font-weight: 700; letter-spacing: 1px; color: var(--ink); }
-    .doc-title .sub { display: block; font-size: 9px; font-weight: 600; color: var(--muted); letter-spacing: 2px; }
-    .doc-meta { margin-top: 8px; font-size: 10.5px; }
-    .doc-meta div { margin-top: 2px; }
-    .doc-meta .k { color: var(--muted); display: inline-block; min-width: 64px; text-align: right; padding-right: 8px; }
-    .doc-meta .v { font-weight: 600; }
+    /* ---- Label : value rows ---- */
+    .kv { display: flex; font-size: 9px; margin-top: 1px; }
+    .kv .k { width: 78px; flex: 0 0 auto; }
+    .kv .s { width: 8px; flex: 0 0 auto; }
+    .kv .v { font-weight: 700; }
 
-    .rule { height: 3px; background: var(--brand); margin: 14px 0 0; border-radius: 2px; }
+    /* ---- Party ---- */
+    .party .nm { font-size: 11.5px; font-weight: 700; }
+    .party .sub { font-size: 9px; margin-top: 1px; }
+    .repl { float: right; font-weight: 700; color: #0284c7; font-size: 10px; }
 
-    /* ---- Parties ---- */
-    .parties { display: flex; gap: 16px; margin-top: 16px; }
-    .party { flex: 1; border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px; }
-    .party.bill { background: var(--brand-bg); border-color: #cceae6; }
-    .party h4 { font-size: 9px; letter-spacing: 1.2px; text-transform: uppercase; color: var(--brand); margin-bottom: 5px; }
-    .party .name { font-size: 13px; font-weight: 700; }
-    .party .row { color: var(--ink); margin-top: 2px; }
-    .party .row .lbl { color: var(--muted); }
-    .party .qr { text-align: center; }
-    .party .qr img { width: 104px; height: 104px; }
-    .party .qr .cap { font-size: 9px; color: var(--muted); margin-top: 2px; }
-    .party .qr .amt { font-size: 12px; font-weight: 700; color: var(--brand); }
+    /* ---- Items ---- */
+    table.items { width: 100%; border-collapse: collapse; }
+    table.items th, table.items td { border: 1px solid #000; padding: 4px 5px; font-size: 9px; }
+    table.items thead th { font-weight: 700; background: #fff; }
+    table.items td.n, table.items th.n { text-align: right; white-space: nowrap; }
+    table.items td.c, table.items th.c { text-align: center; }
+    table.items tbody td.desc { font-weight: 600; }
+    /* Repeat the header when a long invoice breaks across pages. */
+    table.items thead { display: table-header-group; }
+    table.items tr { page-break-inside: avoid; }
 
-    /* ---- Items table ---- */
-    table.items { width: 100%; border-collapse: collapse; margin-top: 18px; }
-    table.items thead th {
-      background: var(--brand);
-      color: #fff;
-      font-size: 9.5px;
-      letter-spacing: .3px;
-      text-transform: uppercase;
-      font-weight: 600;
-      padding: 8px 8px;
-      text-align: left;
+    /* ---- Totals / payment note ---- */
+    /* The column itself has no padding — the signature panel's top rule has to
+       span its full width — so the totals get their breathing room from the
+       cells instead. Without this the labels sit flush against the centre rule. */
+    .totals { width: 100%; border-collapse: collapse; margin: 5px 0; }
+    .totals td { padding: 2px 0; font-size: 9.5px; }
+    .totals td:first-child { padding-left: 10px; }
+    .totals td.v { text-align: right; white-space: nowrap; padding-right: 10px; }
+    .totals tr.big td { font-size: 11.5px; font-weight: 700; padding-top: 4px; }
+    .paynote .t { font-weight: 700; font-style: italic; text-decoration: underline; font-size: 9.5px; }
+    .paynote .l { font-weight: 700; font-size: 10px; margin-top: 2px; }
+
+    /* ---- Signature ---- */
+    .sign {
+      border-top: 1px solid #000;
+      min-height: 74px;
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-end;
+      text-align: center;
+      padding: 6px 8px;
     }
-    table.items thead th.num { text-align: right; }
-    table.items thead th.ctr { text-align: center; }
-    table.items tbody td { padding: 7px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
-    table.items tbody tr:nth-child(even) { background: var(--zebra); }
-    table.items td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
-    table.items td.ctr { text-align: center; }
-    table.items td.med { font-weight: 600; }
-    table.items td.idx { color: var(--muted); text-align: center; width: 26px; }
-    .batch { font-family: 'Courier New', monospace; font-size: 10px; }
 
-    /* ---- Totals ---- */
-    .foot { display: flex; justify-content: space-between; margin-top: 16px; gap: 24px; }
-    .notes { flex: 1; color: var(--muted); font-size: 10px; }
-    .notes .terms-title { color: var(--ink); font-weight: 600; font-size: 10px; margin-bottom: 3px; }
+    /* ---- QR ---- */
+    .qr { display: flex; align-items: center; gap: 8px; }
+    .qr img { width: 76px; height: 76px; }
+    .qr .cap { font-size: 9px; }
+    .qr .cap b { display: block; font-size: 10.5px; }
 
-    .totals { width: 280px; }
-    .totals table { width: 100%; border-collapse: collapse; }
-    .totals td { padding: 4px 8px; }
-    .totals td.k { color: var(--muted); }
-    .totals td.v { text-align: right; font-variant-numeric: tabular-nums; font-weight: 600; }
-    .totals tr.grand td { border-top: 2px solid var(--ink); border-bottom: 2px solid var(--ink); font-size: 13px; }
-    .totals tr.grand td.k { color: var(--ink); font-weight: 700; }
-    .totals tr.grand td.v { color: var(--brand); }
-    .totals tr.out td { color: #b91c1c; font-weight: 700; }
-
-    /* ---- Page footer ---- */
-    .pagefoot { margin-top: 26px; padding-top: 8px; border-top: 1px solid var(--line); text-align: center; color: var(--muted); font-size: 9px; }
-    .pagefoot .sign { float: right; text-align: center; color: var(--ink); }
   </style>
 </head>
 <body>
-  <div class="wrap">
+  <div class="sheet">
 
-    <!-- ===== HEADER: Supplier (left) + Invoice meta (right) ===== -->
-    <div class="header">
-      <div>
-        <div class="supplier-name">{{supplierName}}</div>
-        <div class="supplier-meta">
-          {{#if supplierAddress}}<div>{{supplierAddress}}</div>{{/if}}
-          {{#if supplierContact}}<div>{{supplierContact}}</div>{{/if}}
-          <div class="reg">
-            {{#if supplierGstin}}<span><b>GSTIN:</b> {{supplierGstin}}</span>{{/if}}
-            {{#if supplierDlNumber}}<span>&nbsp;&nbsp;<b>D.L. No:</b> {{supplierDlNumber}}</span>{{/if}}
-          </div>
+    <!-- ===== Letterhead + document title ===== -->
+    <div class="band head">
+      {{#if logoDataUri}}<img class="logo" src="{{{logoDataUri}}}" alt="" />{{/if}}
+      <div class="biz">
+        <div class="nm">{{supplierName}}</div>
+        {{#if supplierAddress}}<div class="ln">{{supplierAddress}}</div>{{/if}}
+        {{#if supplierContact}}<div class="ln">{{supplierContact}}</div>{{/if}}
+        <div class="ln">
+          {{#if supplierGstin}}GSTIN: {{supplierGstin}}{{/if}}
+          {{#if supplierDlNumber}}&nbsp;&nbsp; D.L.No: {{supplierDlNumber}}{{/if}}
         </div>
       </div>
+      <div class="title">TAX INVOICE</div>
+    </div>
 
-      <div class="doc-box">
-        <div class="doc-title">TAX INVOICE<span class="sub">ORIGINAL FOR RECIPIENT</span></div>
-        <div class="doc-meta">
-          <div><span class="k">Invoice #</span><span class="v">{{invoiceNumber}}</span></div>
-          <div><span class="k">Date</span><span class="v">{{day date}}</span></div>
-          {{#if dueDate}}<div><span class="k">Due Date</span><span class="v">{{day dueDate}}</span></div>{{/if}}
-        </div>
+    <!-- ===== Invoice meta ===== -->
+    <div class="band cols">
+      <div class="c">
+        <div class="kv"><span class="k">Invoice No</span><span class="s">:</span><span class="v">{{invoiceNumber}}</span></div>
+        <div class="kv"><span class="k">Invoice Date</span><span class="s">:</span><span class="v">{{day date}}</span></div>
+      </div>
+      <div class="c">
+        {{#if salespersonName}}
+        <div class="kv"><span class="k">Sales person</span><span class="s">:</span><span class="v">{{salespersonName}}</span></div>
+        {{/if}}
+        {{#if dueDate}}
+        <div class="kv"><span class="k">Due Date</span><span class="s">:</span><span class="v">{{day dueDate}}</span></div>
+        {{/if}}
       </div>
     </div>
 
-    <div class="rule"></div>
-
-    <!-- ===== PARTIES: Bill To (hospital) + optional Pay QR ===== -->
-    <div class="parties">
-      <div class="party bill">
-        <h4>Bill To</h4>
-        <div class="name">{{customerName}}</div>
-        {{#if customerBranch}}<div class="row"><span class="lbl">Branch:</span> {{customerBranch}}</div>{{/if}}
-        {{#if customerAddress}}<div class="row">{{customerAddress}}</div>{{/if}}
-        {{#if customerPhone}}<div class="row"><span class="lbl">Phone:</span> {{customerPhone}}</div>{{/if}}
-        {{#if customerGstin}}<div class="row"><span class="lbl">GSTIN:</span> {{customerGstin}}</div>{{/if}}
-        {{#if customerDlNumber}}<div class="row"><span class="lbl">D.L. No:</span> {{customerDlNumber}}</div>{{/if}}
+    <!-- ===== Bill to ===== -->
+    <div class="band party" style="padding: 5px 8px;">
+      {{#if isReplacement}}<span class="repl">REPLACEMENT - NO CHARGE</span>{{/if}}
+      <div class="nm">{{customerName}}{{#if customerPhone}} ({{customerPhone}}){{/if}}</div>
+      <div class="sub">
+        {{#if customerAddress}}{{customerAddress}}{{/if}}
+        {{#if customerBranch}} &nbsp;|&nbsp; {{customerBranch}}{{/if}}
+        {{#if customerGstin}} &nbsp;|&nbsp; GSTIN: {{customerGstin}}{{/if}}
+        {{#if customerDlNumber}} &nbsp;|&nbsp; D.L.No: {{customerDlNumber}}{{/if}}
       </div>
-
-      {{#if qrDataUri}}
-      <div class="party qr">
-        <h4>Scan &amp; Pay (UPI)</h4>
-        <img src="{{{qrDataUri}}}" alt="Pay via UPI" />
-        {{#if showOutstanding}}<div class="amt">{{money outstanding}}</div>{{/if}}
-        <div class="cap">Scan with any UPI app</div>
-      </div>
-      {{/if}}
     </div>
 
-    <!-- ===== ITEMS ===== -->
+    <!-- ===== Items ===== -->
     <table class="items">
       <thead>
         <tr>
-          <th class="ctr">#</th>
-          <th>Medicine Name</th>
-          <th>Batch No.</th>
-          <th class="ctr">Expiry</th>
-          <th class="num">Qty</th>
-          <th class="num">MRP</th>
-          <th class="num">Sale Price</th>
-          <th class="num">Total</th>
+          <th class="c" style="width:26px;">#</th>
+          <th>Description</th>
+          <th class="n" style="width:52px;">MRP</th>
+          <th style="width:66px;">Batch No</th>
+          <th class="c" style="width:48px;">Expiry</th>
+          <th class="c" style="width:42px;">Qty</th>
+          <th class="n" style="width:60px;">Rate</th>
+          <th class="c" style="width:38px;">GST%</th>
+          <th class="n" style="width:68px;">Amount</th>
         </tr>
       </thead>
       <tbody>
         {{#each items}}
         <tr>
-          <td class="idx">{{inc @index}}</td>
-          <td class="med">{{this.productName}}</td>
-          <td><span class="batch">{{this.batchNumber}}</span></td>
-          <td class="ctr">{{expiry this.expiryDate}}</td>
-          <td class="num">{{this.quantity}}</td>
-          <td class="num">{{money this.mrp}}</td>
-          <td class="num">{{money this.rate}}</td>
-          <td class="num">{{money this.amount}}</td>
+          <td class="c">{{inc @index}}</td>
+          <td class="desc">{{this.productName}}</td>
+          <td class="n">{{money this.mrp}}</td>
+          {{!-- With stock tracking OFF a line carries no batch, and the stored
+                expiryDate defaults to "today" when left blank — which must NOT
+                print as a real expiry. Both fall back to a dash. --}}
+          <td>{{#if this.batchNumber}}{{this.batchNumber}}{{else}}-{{/if}}</td>
+          <td class="c">{{#if this.batchNumber}}{{expiry this.expiryDate}}{{else}}-{{/if}}</td>
+          <td class="c">{{this.quantity}}</td>
+          <td class="n">{{money this.rate}}</td>
+          <td class="c">{{this.gstPercent}}</td>
+          <td class="n">{{money this.amount}}</td>
         </tr>
         {{/each}}
       </tbody>
     </table>
 
-    <!-- ===== FOOTER: notes + totals ===== -->
-    <div class="foot">
-      <div class="notes">
-        <div class="terms-title">Terms &amp; Notes</div>
-        <div>Goods once sold are subject to the terms of supply. Please verify batch &amp; expiry on receipt.</div>
-        <div>Payment due by the date stated above. For UPI payment, scan the QR code provided.</div>
+    <!-- ===== Payment note | totals + signature ===== -->
+    <div class="band cols">
+      <div class="c paynote">
+        <div class="t">Kindly deposit Payment through Our</div>
+        <div class="l">GPAY: BABU - 99941-13242</div>
+        <div class="l" style="text-align:center; width:150px;">OR</div>
+        <div class="l">JEYA LAKSHMI - 99941-73036</div>
       </div>
-
-      <div class="totals">
-        <table>
-          <tr><td class="k">Subtotal</td><td class="v">{{money subtotal}}</td></tr>
-          {{#if showDiscount}}<tr><td class="k">Discount</td><td class="v">- {{money productDiscount}}</td></tr>{{/if}}
-          <tr><td class="k">Taxable Value</td><td class="v">{{money taxableAmount}}</td></tr>
-          {{#if showCgst}}<tr><td class="k">CGST</td><td class="v">{{money cgst}}</td></tr>{{/if}}
-          {{#if showSgst}}<tr><td class="k">SGST</td><td class="v">{{money sgst}}</td></tr>{{/if}}
-          {{#if showIgst}}<tr><td class="k">IGST</td><td class="v">{{money igst}}</td></tr>{{/if}}
-          {{#if showDelivery}}<tr><td class="k">Delivery / Packaging</td><td class="v">{{money deliveryCharge}}</td></tr>{{/if}}
-          {{#each charges}}<tr><td class="k">{{this.label}}</td><td class="v">{{money this.amount}}</td></tr>{{/each}}
-          {{#if showRoundOff}}<tr><td class="k">Round Off</td><td class="v">{{money roundOff}}</td></tr>{{/if}}
-          <tr class="grand"><td class="k">Grand Total</td><td class="v">{{money grandTotal}}</td></tr>
-          {{#if showPaid}}<tr><td class="k">Amount Paid</td><td class="v">{{money amountPaid}}</td></tr>{{/if}}
-          {{#if showOutstanding}}<tr class="out"><td class="k">Balance Due</td><td class="v">{{money outstanding}}</td></tr>{{/if}}
+      <div class="c" style="padding:0;">
+        <table class="totals">
+          <tr><td>Sub Total</td><td class="v">{{money subtotal}}</td></tr>
+          {{#if showDiscount}}<tr><td>Discount</td><td class="v">- {{money productDiscount}}</td></tr>{{/if}}
+          <tr><td>Taxable</td><td class="v">{{money taxableAmount}}</td></tr>
+          {{#if showCgst}}<tr><td>CGST</td><td class="v">{{money cgst}}</td></tr>{{/if}}
+          {{#if showSgst}}<tr><td>SGST</td><td class="v">{{money sgst}}</td></tr>{{/if}}
+          {{#if showIgst}}<tr><td>IGST</td><td class="v">{{money igst}}</td></tr>{{/if}}
+          {{#if showDelivery}}<tr><td>Delivery / Packaging</td><td class="v">{{money deliveryCharge}}</td></tr>{{/if}}
+          {{#each charges}}<tr><td>{{this.label}}</td><td class="v">{{money this.amount}}</td></tr>{{/each}}
+          {{#if showRoundOff}}<tr><td>Round Off</td><td class="v">{{money roundOff}}</td></tr>{{/if}}
+          <tr class="big"><td>Total</td><td class="v">{{money grandTotal}}</td></tr>
+          {{#if showPaid}}<tr><td>Paid</td><td class="v">{{money amountPaid}}</td></tr>{{/if}}
+          {{#if showOutstanding}}<tr class="big"><td>Balance Due</td><td class="v">{{money outstanding}}</td></tr>{{/if}}
         </table>
+        <!-- Signature panel, ruled off from the totals above it. -->
+        <div class="sign">
+          <div>For {{supplierName}}</div>
+        </div>
       </div>
     </div>
 
-    <div class="pagefoot">
-      <span class="sign">For {{supplierName}}<br/><br/>Authorised Signatory</span>
-      This is a computer-generated invoice and does not require a physical signature.
+    <!-- ===== Pay QR, directly under the full-width rule ===== -->
+    <div class="tail">
+      {{#if qrDataUri}}
+      <div class="qr">
+        <img src="{{{qrDataUri}}}" alt="Scan to pay" />
+        <div class="cap">
+          {{#if showOutstanding}}<b>{{money outstanding}}</b>{{/if}}
+          Scan the QR code to Pay
+        </div>
+      </div>
+      {{/if}}
     </div>
 
   </div>

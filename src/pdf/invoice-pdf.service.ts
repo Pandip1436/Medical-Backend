@@ -29,6 +29,13 @@ export interface InvoicePdfData {
   branchEmail?: string | null;       // optional
   branchDlNumber?: string | null;    // supplier drug-license no (optional)
 
+  /** Printed in the header band, mirroring the client's challan stationery. */
+  salespersonName?: string | null;
+  /** Stamps "REPLACEMENT - NO CHARGE" across the party band. */
+  isReplacement?: boolean;
+  /** Business logo as a data URI; omitted when the branch has none. */
+  logoDataUri?: string | null;
+
   items: Array<{
     productName: string;
     batchNumber: string;
@@ -82,6 +89,10 @@ export class InvoicePdfService implements OnModuleDestroy {
   private launching?: Promise<Browser>;
   private idleTimer?: NodeJS.Timeout;
   private compiled?: Handlebars.TemplateDelegate;
+  // Mtime the cached template was compiled from — dev-only staleness check.
+  private templateMtimeMs?: number;
+  // undefined = not read yet, null = absent/unreadable (render without it).
+  private logoDataUri?: string | null;
   // Render-slot accounting for MAX_CONCURRENT_RENDERS (see acquireSlot).
   private activeRenders = 0;
   private readonly waiting: Array<() => void> = [];
@@ -198,7 +209,12 @@ export class InvoicePdfService implements OnModuleDestroy {
     const template = await this.getTemplate();
 
     const outstanding = round2(Number(d.grandTotal) - Number(d.amountPaid));
-    const supplierContact = [d.branchPhone, d.branchEmail].filter(Boolean).join('  •  ');
+    const supplierContact = [
+      d.branchPhone ? `Phone: ${d.branchPhone}` : null,
+      d.branchEmail ? `E-Mail: ${d.branchEmail}` : null,
+    ]
+      .filter(Boolean)
+      .join('   ');
 
     let qrDataUri: string | undefined;
     if (d.paymentQrShortUrl) {
@@ -207,6 +223,8 @@ export class InvoicePdfService implements OnModuleDestroy {
 
     const view = {
       ...d,
+      // Caller-supplied logo wins; otherwise fall back to the bundled one.
+      logoDataUri: d.logoDataUri ?? (await this.getLogoDataUri()),
       supplierName: d.branchName ?? 'Medical Supplier',
       supplierAddress: d.branchAddress,
       supplierGstin: d.branchGstin,
@@ -234,9 +252,21 @@ export class InvoicePdfService implements OnModuleDestroy {
   }
 
   // ── Lazy, cached Handlebars compile ──
+  // In production the template is compiled once and kept — it cannot change
+  // under a running process. In development it can: `nest start --watch`
+  // restarts on .ts edits but only *copies* changed .hbs assets, so a cached
+  // template silently kept serving the old invoice layout while the file on
+  // disk had already changed. Re-compile when the file's mtime moves.
   private async getTemplate(): Promise<Handlebars.TemplateDelegate> {
-    if (this.compiled) return this.compiled;
-    const src = await fs.readFile(this.resolveTemplatePath(), 'utf8');
+    const path = this.resolveTemplatePath();
+    if (process.env.NODE_ENV === 'production') {
+      if (this.compiled) return this.compiled;
+    } else {
+      const mtime = (await fs.stat(path)).mtimeMs;
+      if (this.compiled && mtime === this.templateMtimeMs) return this.compiled;
+      this.templateMtimeMs = mtime;
+    }
+    const src = await fs.readFile(path, 'utf8');
     this.compiled = Handlebars.compile(src);
     return this.compiled;
   }
@@ -244,11 +274,34 @@ export class InvoicePdfService implements OnModuleDestroy {
   // Works both compiled (dist/src/pdf/templates) and under ts-node (src/pdf/templates).
   // Requires the nest-cli.json asset rule that copies *.hbs into dist (see Step 4).
   private resolveTemplatePath(): string {
-    const next = join(__dirname, 'templates', 'invoice.hbs');
+    return this.resolveAsset('invoice.hbs');
+  }
+
+  private resolveAsset(file: string): string {
+    const next = join(__dirname, 'templates', file);
     if (existsSync(next)) return next;
-    const fallback = join(process.cwd(), 'src', 'pdf', 'templates', 'invoice.hbs');
+    const fallback = join(process.cwd(), 'src', 'pdf', 'templates', file);
     if (existsSync(fallback)) return fallback;
-    throw new Error(`invoice.hbs not found (looked in ${next} and ${fallback})`);
+    throw new Error(`${file} not found (looked in ${next} and ${fallback})`);
+  }
+
+  // The letterhead logo — the same /logo.png the web app shows in its sidebar,
+  // copied alongside the template so the backend doesn't depend on the frontend
+  // build. Inlined as a data URI because the render runs on a `setContent` page
+  // with no origin, so it cannot fetch anything over the network. Read once and
+  // cached: it's ~100 KB and every invoice needs it.
+  private async getLogoDataUri(): Promise<string | null> {
+    if (this.logoDataUri !== undefined) return this.logoDataUri;
+    try {
+      const buf = await fs.readFile(this.resolveAsset('logo.png'));
+      this.logoDataUri = `data:image/png;base64,${buf.toString('base64')}`;
+    } catch (err) {
+      // A missing logo must never fail an invoice — the header just renders
+      // without it, exactly as it did before the logo existed.
+      this.logger.warn(`Invoice logo unavailable, rendering without it: ${String(err)}`);
+      this.logoDataUri = null;
+    }
+    return this.logoDataUri;
   }
 
   // ── Shared, lazily-launched Chromium. Reused across invoices; relaunched

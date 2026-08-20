@@ -146,6 +146,7 @@ export class DispatchNotificationService {
       customerAddress: invoice.customer?.address,
       customerGstin: invoice.customer?.gstin,
       customerDlNumber: invoice.customer?.dlNumber,
+      salespersonName: invoice.salespersonName,
       branchName: invoice.branch?.name,
       branchGstin: invoice.branch?.gstin,
       branchAddress: invoice.branch?.address,

@@ -199,6 +199,8 @@ export class InvoiceCreatedListener {
         customerAddress: customer.address,
         customerGstin: customer.gstin,
         customerDlNumber: customer.dlNumber,
+        // Printed in the header band, matching the client's challan stationery.
+        salespersonName: invoice.salespersonName,
         branchName: invoice.branch?.name,
         branchGstin: invoice.branch?.gstin,
         branchAddress: invoice.branch?.address,
