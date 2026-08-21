@@ -40,10 +40,26 @@
     /* ---- Header ---- */
     .head { display: flex; align-items: flex-start; padding: 8px; gap: 10px; }
     .head .logo { width: 62px; height: 62px; object-fit: contain; flex: 0 0 auto; }
-    .head .biz { flex: 1 1 auto; }
+    /* min-width:0 lets the address column actually shrink instead of forcing
+       the row wider than the frame. The title is operator-editable, so it is
+       capped and allowed to wrap: an unusually long one costs itself a second
+       line rather than crushing the address beside it. */
+    .head .biz { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
     .head .biz .nm { font-size: 15px; font-weight: 700; letter-spacing: .2px; }
     .head .biz .ln { font-size: 8.5px; margin-top: 1px; }
-    .head .title { font-size: 21px; font-weight: 700; letter-spacing: .5px; white-space: nowrap; align-self: center; }
+    /* flex-shrink:0 is the important bit. With the default shrink of 1 the
+       column collapsed to its longest WORD and "DELIVERY CHALLAN" broke onto
+       two lines; the address column (which has min-width:0) is the one that
+       should give up space. max-width is only the escape hatch for a title long
+       enough that wrapping beats overflowing the sheet. */
+    .head .titlecol { flex: 0 0 auto; max-width: 60%; align-self: center; text-align: right; }
+    .head .title { font-size: 21px; font-weight: 700; letter-spacing: .5px; overflow-wrap: anywhere; }
+    /* PAID / CREDIT / PART PAID, boxed under the title. inline-block so the rule
+       hugs the word instead of running the width of the column. */
+    .head .paystatus {
+      display: inline-block; margin-top: 4px; padding: 1px 7px;
+      border: 1px solid #000; font-size: 10px; font-weight: 700; letter-spacing: .5px;
+    }
 
     /* ---- Label : value rows ---- */
     .kv { display: flex; font-size: 9px; margin-top: 1px; }
@@ -108,12 +124,22 @@
         <div class="nm">{{supplierName}}</div>
         {{#if supplierAddress}}<div class="ln">{{supplierAddress}}</div>{{/if}}
         {{#if supplierContact}}<div class="ln">{{supplierContact}}</div>{{/if}}
+        {{!-- GSTIN / D.L. are suppressed independently via Settings ->
+              Invoice & Payment. Each is its own flag because a business may be
+              registered for one and not the other, and the same document is
+              handed to buyers who need to see different things. --}}
         <div class="ln">
-          {{#if supplierGstin}}GSTIN: {{supplierGstin}}{{/if}}
-          {{#if supplierDlNumber}}&nbsp;&nbsp; D.L.No: {{supplierDlNumber}}{{/if}}
+          {{#if showBusinessGstin}}GSTIN: {{supplierGstin}}{{/if}}
+          {{#if showBusinessDl}}&nbsp;&nbsp; D.L.No: {{supplierDlNumber}}{{/if}}
         </div>
       </div>
-      <div class="title">TAX INVOICE</div>
+      <div class="titlecol">
+        <div class="title">{{documentTitle}}</div>
+        {{!-- Whether the person handing this over should be collecting money is
+              the one thing worth reading off the top of the page, so it goes
+              with the title rather than being buried in the totals column. --}}
+        {{#if payStatus}}<div class="paystatus">{{payStatus}}</div>{{/if}}
+      </div>
     </div>
 
     <!-- ===== Invoice meta ===== -->
@@ -139,8 +165,8 @@
       <div class="sub">
         {{#if customerAddress}}{{customerAddress}}{{/if}}
         {{#if customerBranch}} &nbsp;|&nbsp; {{customerBranch}}{{/if}}
-        {{#if customerGstin}} &nbsp;|&nbsp; GSTIN: {{customerGstin}}{{/if}}
-        {{#if customerDlNumber}} &nbsp;|&nbsp; D.L.No: {{customerDlNumber}}{{/if}}
+        {{#if showCustomerGstin}} &nbsp;|&nbsp; GSTIN: {{customerGstin}}{{/if}}
+        {{#if showCustomerDl}} &nbsp;|&nbsp; D.L.No: {{customerDlNumber}}{{/if}}
       </div>
     </div>
 
@@ -181,11 +207,29 @@
 
     <!-- ===== Payment note | totals + signature ===== -->
     <div class="band cols">
+      {{!-- Payment note. Every line comes from Settings -> Invoice & Payment;
+            these were hard-coded names and numbers before, so they could only be
+            changed by editing this template. The whole block is skipped when
+            nothing is configured, rather than printing a bare heading. --}}
       <div class="c paynote">
+        {{#if hasPaymentNote}}
         <div class="t">Kindly deposit Payment through Our</div>
-        <div class="l">GPAY: BABU - 99941-13242</div>
-        <div class="l" style="text-align:center; width:150px;">OR</div>
-        <div class="l">JEYA LAKSHMI - 99941-73036</div>
+        {{#each gpayLines}}
+        {{#unless @first}}<div class="l" style="text-align:center; width:150px;">OR</div>{{/unless}}
+        <div class="l">{{#if @first}}GPAY: {{/if}}{{this.name}}{{#if this.number}} - {{this.number}}{{/if}}</div>
+        {{/each}}
+        {{!-- Bank block sits under a gap so the UPI numbers and the account
+              read as two groups, matching the frontend jsPDF renderer's
+              `gapBefore` spacing. The gap is only applied when there are GPay
+              lines above it to separate from. --}}
+        {{#if hasBank}}
+        <div{{#if gpayLines.length}} style="margin-top:9px;"{{/if}}>
+          {{#if bankName}}<div class="l">{{bankName}}</div>{{/if}}
+          {{#if bankAccountNumber}}<div class="l">A/C: {{bankAccountNumber}}</div>{{/if}}
+          {{#if bankIfsc}}<div class="l">IFSC: {{bankIfsc}}</div>{{/if}}
+        </div>
+        {{/if}}
+        {{/if}}
       </div>
       <div class="c" style="padding:0;">
         <table class="totals">

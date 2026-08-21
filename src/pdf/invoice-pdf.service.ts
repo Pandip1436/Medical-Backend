@@ -6,6 +6,7 @@ import puppeteer, { Browser } from 'puppeteer';
 import * as QRCode from 'qrcode';
 import dayjs from 'dayjs';
 import { forceCloseBrowser } from '../common/browser/close-browser.util';
+import { SettingsService } from '../settings/settings.service';
 
 export interface InvoicePdfData {
   invoiceNumber: string;
@@ -97,8 +98,50 @@ export class InvoicePdfService implements OnModuleDestroy {
   private activeRenders = 0;
   private readonly waiting: Array<() => void> = [];
 
-  constructor() {
+  constructor(private readonly settings: SettingsService) {
     this.registerHelpers();
+  }
+
+  // Print options for the invoice/challan, from Settings -> Invoice & Payment
+  // (GlobalSetting key `invoice_settings`). Read here rather than passed in by
+  // each caller: three separate services render this document
+  // (InvoiceCreatedListener, DispatchNotificationService, the delivery scraper)
+  // and they'd otherwise each have to remember to thread the same options
+  // through — one of them forgetting is a silently different-looking invoice.
+  //
+  // Every field is optional; a missing key means the defaults below, which
+  // reproduce the document exactly as it printed before these were settings.
+  private async getPrintOptions() {
+    const raw = ((await this.settings.getSetting('invoice_settings')) ?? {}) as {
+      documentTitle?: unknown;
+      hideBusinessGstin?: unknown;
+      hideBusinessDl?: unknown;
+      hideCustomerGstin?: unknown;
+      hideCustomerDl?: unknown;
+      gpay?: Array<{ name?: unknown; number?: unknown }>;
+      bankName?: unknown;
+      bankAccountNumber?: unknown;
+      bankIfsc?: unknown;
+    };
+    const str = (v: unknown) => (typeof v === 'string' ? v.trim() : '');
+    // Only an explicit `true` hides a field — an absent/garbled value must not
+    // silently strip GSTIN off a tax document.
+    const hidden = (v: unknown) => v === true;
+
+    return {
+      documentTitle: str(raw.documentTitle) || 'DELIVERY CHALLAN',
+      hideBusinessGstin: hidden(raw.hideBusinessGstin),
+      hideBusinessDl: hidden(raw.hideBusinessDl),
+      hideCustomerGstin: hidden(raw.hideCustomerGstin),
+      hideCustomerDl: hidden(raw.hideCustomerDl),
+      // Drop blank rows so an emptied slot doesn't print a dangling "OR".
+      gpay: (Array.isArray(raw.gpay) ? raw.gpay : [])
+        .map((g) => ({ name: str(g?.name), number: str(g?.number) }))
+        .filter((g) => g.name || g.number),
+      bankName: str(raw.bankName),
+      bankAccountNumber: str(raw.bankAccountNumber),
+      bankIfsc: str(raw.bankIfsc),
+    };
   }
 
   // ── Public API — unchanged signature. Returns a PDF Buffer that the
@@ -221,6 +264,8 @@ export class InvoicePdfService implements OnModuleDestroy {
       qrDataUri = await QRCode.toDataURL(d.paymentQrShortUrl, { width: 220, margin: 1 });
     }
 
+    const opts = await this.getPrintOptions();
+
     const view = {
       ...d,
       // Caller-supplied logo wins; otherwise fall back to the bundled one.
@@ -232,6 +277,34 @@ export class InvoicePdfService implements OnModuleDestroy {
       supplierContact,
       outstanding,
       qrDataUri,
+      documentTitle: opts.documentTitle,
+      // PAID / CREDIT / PART PAID, boxed under the title. Derived from the same
+      // two numbers the totals block prints, so it can never contradict them.
+      // Blank on a zero-value document (a replacement, already marked NO
+      // CHARGE). Kept in step with paymentStatusLabel() in the frontend jsPDF
+      // renderer — the two produce the same document.
+      payStatus:
+        Number(d.grandTotal) <= 0.01
+          ? ''
+          : outstanding <= 0.01
+            ? 'PAID'
+            : Number(d.amountPaid) <= 0.01
+              ? 'CREDIT'
+              : 'PART PAID',
+      // Each field prints only when it BOTH exists on the record and isn't
+      // hidden by settings — so a toggle can never surface an empty label.
+      showBusinessGstin: !!d.branchGstin && !opts.hideBusinessGstin,
+      showBusinessDl: !!d.branchDlNumber && !opts.hideBusinessDl,
+      showCustomerGstin: !!d.customerGstin && !opts.hideCustomerGstin,
+      showCustomerDl: !!d.customerDlNumber && !opts.hideCustomerDl,
+      gpayLines: opts.gpay,
+      bankName: opts.bankName,
+      bankAccountNumber: opts.bankAccountNumber,
+      bankIfsc: opts.bankIfsc,
+      hasBank: !!(opts.bankName || opts.bankAccountNumber || opts.bankIfsc),
+      // Suppress the whole panel (including its heading) when nothing is set up.
+      hasPaymentNote:
+        opts.gpay.length > 0 || !!(opts.bankName || opts.bankAccountNumber || opts.bankIfsc),
       // Pre-computed visibility flags keep the template free of math/logic.
       showDiscount: Number(d.productDiscount) > 0,
       showCgst: Number(d.cgst) > 0,
