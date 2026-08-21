@@ -164,6 +164,32 @@ export class UsersService {
     const updateData: any = {};
     if (updateUserDto.name !== undefined) updateData.name = updateUserDto.name;
     if (updateUserDto.phone !== undefined) updateData.phone = updateUserDto.phone;
+    // Email is editable, but only through this route — which is @Roles('ADMIN'),
+    // so a non-admin can't reach it at all. It was previously dropped on the
+    // floor here, which is what the UI's "cannot be changed after creation" note
+    // described: the field was sent and silently ignored.
+    //
+    // It's the login identifier and is @unique, so a collision has to be a clean
+    // 409 rather than a raw Prisma P2002 leaking out — same contract create()
+    // already offers. Trimmed but NOT case-folded: create() doesn't fold either,
+    // and quietly rewriting someone's address to lowercase on an unrelated edit
+    // would change the credential they type in.
+    if (updateUserDto.email !== undefined) {
+      const email = updateUserDto.email.trim();
+      if (!email) throw new BadRequestException('Email cannot be blank.');
+      // Only validate/write when it actually changed, so re-saving a user with
+      // their existing address can't fail against their own row.
+      if (email !== target.email) {
+        const clash = await this.prisma.user.findUnique({
+          where: { email },
+          select: { id: true },
+        });
+        if (clash && clash.id !== id) {
+          throw new ConflictException('Another user already has this email address.');
+        }
+        updateData.email = email;
+      }
+    }
     if (updateUserDto.isActive !== undefined) updateData.isActive = updateUserDto.isActive;
     if (updateUserDto.commissionRate !== undefined) updateData.commissionRate = updateUserDto.commissionRate;
     if (updateUserDto.password) {
