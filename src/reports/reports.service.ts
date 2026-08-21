@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CustomersService } from '../customers/customers.service';
+import { SettingsService } from '../settings/settings.service';
 import dayjs from 'dayjs';
 
 type PeriodQuery = { from?: string; to?: string; branchId?: string };
@@ -15,6 +16,7 @@ export class ReportsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly customersService: CustomersService,
+    private readonly settings: SettingsService,
   ) {}
 
   // ── Shared helpers ─────────────────────────────────────────────
@@ -178,6 +180,15 @@ export class ReportsService {
   }
 
   async getDashboardExpiring(branchId?: string, skip?: number, take?: number) {
+    // Stock tracking off ⇒ batch quantities are frozen: no sale draws one down
+    // and no GRN tops one up, so "expiring in 90 days" describes stock nobody is
+    // maintaining and the operator cannot act on. Return empty rather than let
+    // every caller remember to ignore it — this is the chokepoint for both the
+    // dashboard KPI rollup and the paginated /dashboard/expiring endpoint, so
+    // gating here is what makes a future consumer safe by default.
+    if (!(await this.settings.isStockTrackingEnabled())) {
+      return { items: [], total: 0 };
+    }
     const page = this.normalizePage(skip, take);
     const now = new Date();
     const ninetyDaysFromNow = dayjs().add(90, 'days').toDate();
@@ -227,6 +238,21 @@ export class ReportsService {
   // are not low-stock regardless of totalStock. Returns the FULL sorted list so
   // both the first page (getDashboardKpis) and lazy pages slice from one source.
   private async computeLowStock(branchId?: string) {
+    // Stock tracking off ⇒ totalStock is frozen, so "below reorder level" is a
+    // verdict on a number nothing moves: it can never recover and never clears.
+    // Zero out the low / out-of-stock figures at this chokepoint (it feeds both
+    // the KPI rollup and /dashboard/low-stock) so no caller has to remember.
+    //
+    // `totalProducts` is NOT zeroed — it's a plain catalogue count, has nothing
+    // to do with stock, and still drives the "Total Products" tile, which stays
+    // visible in this mode. A cheap count replaces the full row fetch, since
+    // none of the per-product fields are needed once the verdict is dropped.
+    if (!(await this.settings.isStockTrackingEnabled())) {
+      const totalProducts = await this.prisma.product.count({
+        where: { isActive: true, ...(branchId ? { branchId } : {}) },
+      });
+      return { items: [], total: 0, outOfStockCount: 0, totalProducts };
+    }
     const products = await this.prisma.product.findMany({
       where: { isActive: true, ...(branchId ? { branchId } : {}) },
       select: { id: true, name: true, packSize: true, totalStock: true, minStock: true, reorderQty: true },
@@ -521,6 +547,69 @@ export class ReportsService {
     return { chartData };
   }
 
+  // Resolves the unit COST of an invoice line, for COGS. Precedence:
+  //
+  //   1) the line's own `unitCost` SNAPSHOT, frozen when the invoice was written
+  //      — authoritative, and the only source that can't be re-priced later
+  //   2) the BATCH's purchaseRate — for rows written before that column existed
+  //   3) the PRODUCT MASTER's purchaseRate — last resort, covering batchless
+  //      lines (sales billed while Stock Tracking was off) and imported invoices
+  //      whose batch couldn't be resolved
+  //
+  // Why the snapshot leads: a GRN with a newer delivery date overwrites
+  // Product.purchaseRate (see GrnService), so pricing an old sale off the master
+  // makes closed periods move — re-run March's P&L after an April purchase and
+  // March's profit changes. Reading the frozen figure first keeps reports
+  // reproducible.
+  //
+  // Why (3) still matters: without it, batchless lines resolve to zero cost,
+  // COGS collapses and the P&L restates the whole sale value as gross profit —
+  // a 100% margin on every product. Less precise than a real cost, but broadly
+  // right where zero is simply wrong.
+  //
+  // A batch with purchaseRate 0 (legacy rows predating per-batch costing) falls
+  // through to the master for the same reason.
+  //
+  // Batches and products are fetched one query each — InvoiceItem stores batchId
+  // without a declared Prisma relation, so it's resolved by hand, and doing it
+  // per line would be an N+1.
+  private async buildUnitCostResolver(
+    lines: Array<{ productId: string; batchId: string; unitCost?: any }>,
+  ): Promise<
+    (line: { productId: string; batchId: string; unitCost?: any }) => number
+  > {
+    // Only lines without a usable snapshot need the live lookups.
+    const needsLookup = lines.filter((l) => !(Number(l.unitCost ?? 0) > 0));
+    const batchIds = Array.from(new Set(needsLookup.map((l) => l.batchId).filter(Boolean)));
+    const productIds = Array.from(new Set(needsLookup.map((l) => l.productId).filter(Boolean)));
+
+    const [batches, products] = await Promise.all([
+      batchIds.length
+        ? this.prisma.batch.findMany({
+            where: { id: { in: batchIds } },
+            select: { id: true, purchaseRate: true },
+          })
+        : Promise.resolve([] as Array<{ id: string; purchaseRate: any }>),
+      productIds.length
+        ? this.prisma.product.findMany({
+            where: { id: { in: productIds } },
+            select: { id: true, purchaseRate: true },
+          })
+        : Promise.resolve([] as Array<{ id: string; purchaseRate: any }>),
+    ]);
+
+    const byBatch = new Map(batches.map((b) => [b.id, Number(b.purchaseRate ?? 0)]));
+    const byProduct = new Map(products.map((p) => [p.id, Number(p.purchaseRate ?? 0)]));
+
+    return (line) => {
+      const snapshot = Number(line.unitCost ?? 0);
+      if (snapshot > 0) return snapshot;
+      const batchCost = line.batchId ? byBatch.get(line.batchId) ?? 0 : 0;
+      if (batchCost > 0) return batchCost;
+      return byProduct.get(line.productId) ?? 0;
+    };
+  }
+
   // ── Product / Customer Sales ───────────────────────────────────
   async getProductSales(query: PeriodQuery & { branchId?: string }) {
     const { from, to } = this.resolvePeriod(query);
@@ -531,18 +620,9 @@ export class ReportsService {
       include: { invoice: { select: { date: true } } },
     });
 
-    // Resolve each line's batch purchase rate for real COGS (InvoiceItem stores
-    // batchId without a declared relation, so look them up in one query).
-    const batchIds = Array.from(new Set(items.map((it) => it.batchId).filter(Boolean)));
-    const batchRates = batchIds.length
-      ? await this.prisma.batch.findMany({
-          where: { id: { in: batchIds } },
-          select: { id: true, purchaseRate: true },
-        })
-      : [];
-    const purchaseRateByBatchId = new Map(
-      batchRates.map((b) => [b.id, Number(b.purchaseRate ?? 0)]),
-    );
+    // Real COGS per line — batch cost, falling back to the product master for
+    // batchless lines. See buildUnitCostResolver.
+    const unitCost = await this.buildUnitCostResolver(items);
 
     const productStats = new Map<string, { product: string; qtySold: number; revenue: number; cost: number }>();
     items.forEach((item) => {
@@ -554,9 +634,9 @@ export class ReportsService {
       };
       current.qtySold += item.quantity;
       current.revenue += Number(item.amount);
-      // COGS from the batch's real purchase rate (mirrors getProfitLoss) — not
+      // COGS from the line's real purchase rate (mirrors getProfitLoss) — not
       // a fabricated 70%-of-sale-price markup, which made every margin ~30%.
-      current.cost += (purchaseRateByBatchId.get(item.batchId) ?? 0) * item.quantity;
+      current.cost += unitCost(item) * item.quantity;
       productStats.set(item.productId, current);
     });
 
@@ -934,36 +1014,90 @@ export class ReportsService {
       where: invoiceWhere,
       include: { items: true },
     });
-    // Fetch every referenced batch in one query so COGS can use real
-    // purchase rates without an N+1. InvoiceItem stores batchId without a
-    // declared Prisma relation, so we resolve it ourselves.
-    const batchIds = Array.from(
-      new Set(
-        invoices.flatMap((inv) => inv.items.map((it) => it.batchId).filter(Boolean)),
-      ),
-    );
-    const batches = batchIds.length
-      ? await this.prisma.batch.findMany({
-          where: { id: { in: batchIds } },
-          select: { id: true, purchaseRate: true },
-        })
-      : [];
-    const purchaseRateByBatchId = new Map(
-      batches.map((b) => [b.id, Number(b.purchaseRate ?? 0)]),
+    // Real purchase rates for COGS, batched to avoid an N+1 — batch cost first,
+    // product master as the fallback for batchless lines. See
+    // buildUnitCostResolver for why the fallback matters.
+    const unitCost = await this.buildUnitCostResolver(
+      invoices.flatMap((inv) => inv.items),
     );
     // Sales returns reduce revenue only when the return is real AND actually
     // reverses the sale: APPROVED + settled as Refund or Credit. PENDING/REJECTED
     // aren't financial events, and REPLACEMENT is goods-for-goods (no revenue
     // reduction). Mirrors the credit-note filter in getCustomerLedger.
+    const returnWhere = {
+      date: { gte: from, lte: to },
+      status: 'APPROVED' as const,
+      settlementMode: { in: ['CREDIT', 'REFUND'] as any[] },
+      ...bFilter,
+    };
     const creditNotes = await this.prisma.creditNote.aggregate({
-      where: {
-        date: { gte: from, lte: to },
-        status: 'APPROVED',
-        settlementMode: { in: ['CREDIT', 'REFUND'] },
-        ...bFilter,
-      },
+      where: returnWhere,
       _sum: { totalAmount: true },
     });
+    // ...and they must reduce COGS by the SAME rule, or a return strips the
+    // revenue while leaving its cost charged — reporting a loss on a sale that
+    // was undone. Pulled with the source invoice's lines so each returned unit
+    // reverses the exact cost ITS sale charged (`unitCost` snapshot), which is
+    // what makes a return raised in a later month than the sale cancel cleanly
+    // instead of leaving a residue when prices have moved since.
+    //
+    // Filter is deliberately identical to the revenue side above so the two
+    // halves can never drift apart: REPLACEMENT stays excluded (goods-for-goods
+    // — the customer keeps an equivalent unit, so the cost is still incurred),
+    // as do PENDING/REJECTED (not financial events).
+    const returnedItems = await this.prisma.creditNoteItem.findMany({
+      where: { creditNote: returnWhere },
+      select: {
+        productId: true,
+        batchId: true,
+        returnedQty: true,
+        creditNote: { select: { invoiceId: true } },
+      },
+    });
+    // The source invoice lines, fetched separately because the SALE can predate
+    // this period — a March sale returned in April has no March invoice in the
+    // `invoices` set above.
+    //
+    // `invoiceId` is NULLABLE: a credit note may be standalone, with no linkable
+    // invoice at all (imported returns — see CreditNote.invoiceId). Those simply
+    // contribute no source line, and their cost falls through to the resolver's
+    // batch → product-master ladder below, which is the best available answer
+    // when there is no original sale to read a frozen unitCost off.
+    //
+    // Typed narrowing rather than `.filter(Boolean)`: that doesn't drop `null`
+    // from the element type, so the array stays `(string | null)[]` and Prisma
+    // rejects it for an `in` clause.
+    const returnSourceIds = Array.from(
+      new Set(
+        returnedItems
+          .map((r) => r.creditNote.invoiceId)
+          .filter((id): id is string => !!id),
+      ),
+    );
+    const returnSourceLines = returnSourceIds.length
+      ? await this.prisma.invoiceItem.findMany({
+          where: { invoiceId: { in: returnSourceIds } },
+          select: {
+            invoiceId: true,
+            productId: true,
+            batchId: true,
+            unitCost: true,
+          },
+        })
+      : [];
+    // One resolver over both sets: source lines carry the snapshot we want, and
+    // the returned lines themselves are the fallback when the source line can no
+    // longer be matched (e.g. the invoice was edited and its lines replaced).
+    const returnUnitCost = await this.buildUnitCostResolver([
+      ...returnSourceLines,
+      ...returnedItems.map((r) => ({ productId: r.productId, batchId: r.batchId })),
+    ]);
+    const sourceCostByKey = new Map<string, number>(
+      returnSourceLines.map((l) => [
+        `${l.invoiceId}::${l.productId}::${l.batchId}`,
+        returnUnitCost(l),
+      ]),
+    );
     // Purchases (informational) — exclude replacement GRNs (goods-for-goods,
     // not a new purchase) so the displayed figure is real spend.
     const purchases = await this.prisma.gRN.aggregate({
@@ -988,18 +1122,26 @@ export class ReportsService {
     );
     const salesReturn = Number(creditNotes._sum.totalAmount ?? 0);
     const netSales = grossSales - salesReturn;
-    // COGS uses each batch's actual purchase rate. If the batch row was
-    // deleted (shouldn't happen — FK constraints), the line contributes 0 —
-    // better to under-report cost than fabricate it from a markup assumption.
-    const costOfGoods = invoices.reduce(
+    // COGS uses each line's actual purchase cost (snapshot → batch → master; see
+    // buildUnitCostResolver). A line still contributes 0 when none of the three
+    // has a cost on file: better to under-report cost than fabricate it from a
+    // markup assumption.
+    const costOfGoodsSold = invoices.reduce(
       (s, inv) =>
-        s +
-        inv.items.reduce((si, it) => {
-          const cost = purchaseRateByBatchId.get(it.batchId) ?? 0;
-          return si + cost * Number(it.quantity);
-        }, 0),
+        s + inv.items.reduce((si, it) => si + unitCost(it) * Number(it.quantity), 0),
       0,
     );
+    // Cost of returned goods, reversed out on the same basis the revenue was.
+    // Prefers the source invoice line's frozen cost so the reversal cancels the
+    // original charge exactly, whatever prices have done since.
+    const costOfReturns = returnedItems.reduce((s, r) => {
+      const key = `${r.creditNote.invoiceId}::${r.productId}::${r.batchId}`;
+      const cost =
+        sourceCostByKey.get(key) ??
+        returnUnitCost({ productId: r.productId, batchId: r.batchId });
+      return s + cost * Number(r.returnedQty);
+    }, 0);
+    const costOfGoods = costOfGoodsSold - costOfReturns;
     const grossPurchases = Number(purchases._sum.totalAmount ?? 0);
     const purchaseReturn = Number(purchaseReturns._sum.totalAmount ?? 0);
     const opex = Number(expenses._sum.amount ?? 0);

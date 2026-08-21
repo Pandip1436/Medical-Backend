@@ -13,6 +13,7 @@ import {
   PaymentReceivedPayload,
 } from '../events/invoice-events';
 import { InvoiceCreatedListener } from '../events/invoice-created.listener';
+import { SettingsService } from '../settings/settings.service';
 import { syncPaymentDueForInvoice } from '../notifications/payment-due-sync';
 
 // Round to 2 decimal places before persisting any rupee/percent column. The
@@ -31,14 +32,26 @@ function r2(n: number | null | undefined): number {
 // rounds every Decimal field. Also snapshots a non-zero mrp when the caller
 // hands us 0 (see findItemMrpFallback). Kept inline so the create/draft/
 // finalize/edit paths share one shape.
-function normalizeItem(item: CreateInvoiceItemDto, mrpFallback: number) {
+// `stockApplied` records whether this line actually moved inventory, which the
+// product timeline needs to decide if the row belongs in the running-stock
+// column (see InvoiceItem.stockApplied). Deliberately a required parameter, not
+// a defaulted one: every call site has to state which it is, so a new write path
+// can't silently inherit the wrong answer.
+function normalizeItem(
+  item: CreateInvoiceItemDto,
+  mrpFallback: number,
+  stockApplied: boolean,
+  unitCost: number,
+) {
   const mrp = r2(item.mrp);
   return {
     productId: item.productId,
     productName: item.productName,
     // batchId/batchNumber/expiryDate are filled by deductStockForItem (including
     // FEFO auto-selection) before this runs on the stock-deducting paths; the
-    // fallbacks only apply to quotation/draft lines that never reserve stock.
+    // fallbacks only apply to quotation/draft lines that never reserve stock,
+    // and to lines billed with Stock Tracking off (where batchNumber/expiryDate
+    // are whatever free text the operator typed).
     batchId: item.batchId ?? '',
     batchNumber: item.batchNumber ?? '',
     expiryDate: item.expiryDate ? new Date(item.expiryDate) : new Date(),
@@ -48,6 +61,10 @@ function normalizeItem(item: CreateInvoiceItemDto, mrpFallback: number) {
     discountPercent: r2(item.discountPercent),
     gstPercent: r2(item.gstPercent),
     amount: r2(item.amount),
+    stockApplied,
+    // Frozen at write time so COGS can never be re-priced by a later GRN.
+    // Server-derived (see resolveItemUnitCosts) — never taken from the client.
+    unitCost: r2(unitCost),
   };
 }
 
@@ -61,6 +78,7 @@ export class BillingService {
     private readonly numbering: DocumentNumberingService,
     private readonly events: EventEmitter2,
     private readonly invoiceCreatedListener: InvoiceCreatedListener,
+    private readonly settings: SettingsService,
   ) {}
 
   // Schedule H, H1, and X are prescription-only drugs under the Drugs &
@@ -289,6 +307,86 @@ export class BillingService {
     }
   }
 
+  // Price guardrails for lines that never resolve a batch — i.e. every sale
+  // made while Stock Tracking is off. deductStockForItem enforces these against
+  // the chosen BATCH (see step 3 there); with no batch, the product master
+  // stands in as the reference price.
+  //
+  // This exists because selling above MRP is a hard legal ceiling under the
+  // Drugs (Prices Control) Order — it has nothing to do with whether we happen
+  // to be counting inventory. Folding the check into deductStockForItem meant
+  // turning stock tracking off silently disabled it too, leaving the frontend
+  // rate cap as the only thing standing between a typo and an illegal invoice.
+  private async assertPriceGuardsWithoutBatch(
+    tx: Prisma.TransactionClient,
+    items: Array<{
+      productId: string;
+      productName: string;
+      rate?: number;
+      allowBelowCost?: boolean;
+    }>,
+  ) {
+    const priced = items.filter((i) => i.rate !== undefined && i.rate !== null);
+    if (!priced.length) return;
+
+    const products = await tx.product.findMany({
+      where: { id: { in: Array.from(new Set(priced.map((i) => i.productId))) } },
+      select: { id: true, mrp: true, purchaseRate: true },
+    });
+    const byId = new Map(products.map((p) => [p.id, p]));
+
+    for (const item of priced) {
+      const master = byId.get(item.productId);
+      if (!master) continue;
+      const rate = Number(item.rate);
+      if (!Number.isFinite(rate)) continue;
+
+      const mrp = Number(master.mrp);
+      if (Number.isFinite(mrp) && mrp > 0 && rate > mrp + 0.01) {
+        throw new BadRequestException(
+          `Sale price (₹${rate.toFixed(2)}) for ${item.productName} exceeds its MRP (₹${mrp.toFixed(2)}).`,
+        );
+      }
+
+      // Soft guard, same contract as the batch version: an intentional loss sale
+      // is allowed once the operator has acknowledged it. Skipped when the
+      // master cost is unset (0).
+      const cost = Number(master.purchaseRate);
+      if (
+        Number.isFinite(cost) &&
+        cost > 0 &&
+        rate < cost - 0.01 &&
+        !item.allowBelowCost
+      ) {
+        throw new BadRequestException(
+          `Sale price (₹${rate.toFixed(2)}) for ${item.productName} is below its purchase cost (₹${cost.toFixed(2)}). Confirm the below-cost sale to proceed.`,
+        );
+      }
+    }
+  }
+
+  // Expiry is mandatory on every line of a real invoice billed with Stock
+  // Tracking off.
+  //
+  // With tracking ON the resolved batch supplies the expiry, so there is nothing
+  // to check. With it OFF nothing supplies one — and normalizeItem's fallback
+  // (`item.expiryDate ? new Date(item.expiryDate) : new Date()`) would quietly
+  // stamp TODAY onto the line, putting a fabricated expiry date on a real
+  // pharmacy invoice. Rejecting is the only honest option; the fallback stays
+  // for quotations and drafts, which legitimately carry no expiry.
+  //
+  // Batch number deliberately stays optional — it prints as an em dash.
+  private assertExpiryOnUntrackedLines(
+    items: Array<{ productName: string; expiryDate?: string }>,
+  ) {
+    const missing = items.find((i) => !i.expiryDate);
+    if (missing) {
+      throw new BadRequestException(
+        `Expiry date is required for ${missing.productName}. Enter the expiry printed on the pack before saving this invoice.`,
+      );
+    }
+  }
+
   // Look up MRP from the chosen batch (preferred — that's what was on the
   // strip at sale time) or the product master (fallback) so we can snapshot
   // a sane mrp onto InvoiceItem even when the frontend forgets to send one.
@@ -353,6 +451,65 @@ export class BillingService {
     return fallbacks.get(`${item.productId}::${item.batchId ?? ''}`) ?? 0;
   }
 
+  // Resolve the unit purchase COST for each line, to snapshot onto InvoiceItem
+  // (see InvoiceItem.unitCost for why it must be frozen rather than looked up
+  // at report time). Same shape and keying as resolveItemMrpFallbacks.
+  //
+  // Precedence: the line's own BATCH cost when it has a batch — that's what was
+  // actually paid for the goods shipping — else the PRODUCT MASTER's, which
+  // covers lines billed with Stock Tracking off.
+  //
+  // MUST run after deductStockForItem, which is what fills in a FEFO-selected
+  // batchId; called any earlier the batch lookup would miss and every tracked
+  // line would silently fall back to the master rate.
+  private async resolveItemUnitCosts(
+    tx: Prisma.TransactionClient,
+    items: Array<{ productId: string; batchId?: string }>,
+  ): Promise<Map<string, number>> {
+    const costs = new Map<string, number>();
+    if (!items.length) return costs;
+
+    const batchIds = Array.from(
+      new Set(items.map((i) => i.batchId).filter((b): b is string => !!b)),
+    );
+    const productIds = Array.from(new Set(items.map((i) => i.productId).filter(Boolean)));
+
+    const [batches, products] = await Promise.all([
+      batchIds.length
+        ? tx.batch.findMany({
+            where: { id: { in: batchIds } },
+            select: { id: true, purchaseRate: true },
+          })
+        : Promise.resolve([] as Array<{ id: string; purchaseRate: any }>),
+      productIds.length
+        ? tx.product.findMany({
+            where: { id: { in: productIds } },
+            select: { id: true, purchaseRate: true },
+          })
+        : Promise.resolve([] as Array<{ id: string; purchaseRate: any }>),
+    ]);
+
+    const byBatch = new Map(batches.map((b) => [b.id, Number(b.purchaseRate ?? 0)]));
+    const byProduct = new Map(products.map((p) => [p.id, Number(p.purchaseRate ?? 0)]));
+
+    for (const item of items) {
+      // A batch with cost 0 (legacy row predating per-batch costing) falls
+      // through to the master rather than snapshotting a meaningless zero.
+      const fromBatch = item.batchId ? byBatch.get(item.batchId) ?? 0 : 0;
+      const cost = fromBatch > 0 ? fromBatch : byProduct.get(item.productId) ?? 0;
+      costs.set(`${item.productId}::${item.batchId ?? ''}`, cost);
+    }
+    return costs;
+  }
+
+  // Pull the resolved cost for a single item — same key shape as above.
+  private unitCostFor(
+    costs: Map<string, number>,
+    item: { productId: string; batchId?: string },
+  ): number {
+    return costs.get(`${item.productId}::${item.batchId ?? ''}`) ?? 0;
+  }
+
   // Public entry point — retries the whole operation on a document-number
   // collision (rare now that numbers are branch-scoped unique; see
   // DocumentNumberingService.retryOnCollision). Safe to retry wholesale:
@@ -386,6 +543,10 @@ export class BillingService {
     // Admins are exempt from the pending-credit cap — they can extend credit
     // regardless of how many invoices a customer already has unsettled.
     const isAdmin = userRole === 'ADMIN' || userRole === 'SUPER_ADMIN';
+    // Resolved BEFORE opening the transaction so the extra settings read doesn't
+    // sit inside it. See SettingsService.isStockTrackingEnabled — false puts the
+    // app in "infinite stock" mode where billing neither checks nor moves stock.
+    const stockTracking = await this.settings.isStockTrackingEnabled();
     const created = await this.prisma.$transaction(async (tx) => {
       // 1. Credit limit check — behaviour differs by role. Skipped for drafts
       // (a draft hasn't extended credit to anyone yet) and for admins.
@@ -413,6 +574,7 @@ export class BillingService {
               branchId ?? null,
             );
             const mrpFallbacks = await this.resolveItemMrpFallbacks(tx, createInvoiceDto.items);
+            const unitCosts = await this.resolveItemUnitCosts(tx, createInvoiceDto.items);
             const draftInvoice = await tx.invoice.create({
               data: {
                 invoiceNumber,
@@ -443,8 +605,16 @@ export class BillingService {
                 // created via "Create Invoice" from the lead detail panel.
                 ...(createInvoiceDto.leadId && { leadId: createInvoiceDto.leadId }),
                 items: {
+                  // Parked as DRAFT pending approval — no stock reserved yet.
+                  // The CREDIT_BILL approval executor flips this to true if it
+                  // deducts on approval.
                   create: createInvoiceDto.items.map((item) =>
-                    normalizeItem(item, this.mrpFallbackFor(mrpFallbacks, item)),
+                    normalizeItem(
+                      item,
+                      this.mrpFallbackFor(mrpFallbacks, item),
+                      false,
+                      this.unitCostFor(unitCosts, item),
+                    ),
                   ),
                 },
               } as any,
@@ -504,14 +674,28 @@ export class BillingService {
       if (!isQuotation && !isDraft) {
         // Block dispensing of Schedule H/H1/X drugs without a valid prescription
         // on file before we touch any stock. Wholesale customers are exempt.
+        // NOT gated on stockTracking — the prescription rule is a legal
+        // dispensing control, unrelated to whether we count inventory.
         await this.assertPrescriptionForScheduledItems(
           tx,
           createInvoiceDto.items,
           createInvoiceDto.customerId ?? null,
           createInvoiceDto.billingType,
         );
-        for (const item of createInvoiceDto.items) {
-          await this.deductStockForItem(tx, item, branchId);
+        if (stockTracking) {
+          for (const item of createInvoiceDto.items) {
+            await this.deductStockForItem(tx, item, branchId);
+          }
+        } else {
+          // stockTracking OFF: no batch resolution, no decrement, no low-stock
+          // alert. batchNumber/expiryDate stay exactly as the operator typed
+          // them (both optional) and normalizeItem's mrp fallback still fills
+          // mrp from the product master, so the line is complete without a
+          // batch. The MRP / below-cost guards still run — they're pricing law,
+          // not inventory bookkeeping — and expiry becomes mandatory since
+          // nothing else can supply it.
+          await this.assertPriceGuardsWithoutBatch(tx, createInvoiceDto.items);
+          this.assertExpiryOnUntrackedLines(createInvoiceDto.items);
         }
       }
 
@@ -532,6 +716,8 @@ export class BillingService {
 
       // 3. Create the Invoice and InvoiceItems
       const mrpFallbacks = await this.resolveItemMrpFallbacks(tx, createInvoiceDto.items);
+      // After the deduct loop above, so FEFO-resolved batchIds are in place.
+      const unitCosts = await this.resolveItemUnitCosts(tx, createInvoiceDto.items);
       const invoice = await tx.invoice.create({
         data: {
           invoiceNumber,
@@ -563,8 +749,16 @@ export class BillingService {
           // Optional CRM Lead link — see DTO comment.
           ...(createInvoiceDto.leadId && { leadId: createInvoiceDto.leadId }),
           items: {
+            // Stock moved only on a real, finalized invoice with tracking on —
+            // quotations and drafts reserve nothing, and tracking-off lines
+            // never touch a batch.
             create: createInvoiceDto.items.map((item) =>
-              normalizeItem(item, this.mrpFallbackFor(mrpFallbacks, item)),
+              normalizeItem(
+                item,
+                this.mrpFallbackFor(mrpFallbacks, item),
+                !isQuotation && !isDraft && stockTracking,
+                this.unitCostFor(unitCosts, item),
+              ),
             ),
           },
         },
@@ -1384,6 +1578,7 @@ export class BillingService {
   }
 
   private async convertToInvoiceInternal(id: string, branchId?: string) {
+    const stockTracking = await this.settings.isStockTrackingEnabled();
     return this.prisma.$transaction(async (tx) => {
       const quotation = await tx.invoice.findUnique({
         where: { id },
@@ -1408,23 +1603,73 @@ export class BillingService {
         quotation.customerId ?? null,
         quotation.billingType,
       );
-      for (const item of quotation.items) {
-        await this.deductStockForItem(
-          tx,
-          {
-            productId: item.productId,
-            productName: item.productName,
-            batchId: item.batchId,
-            batchNumber: item.batchNumber,
-            quantity: item.quantity,
-            rate: Number(item.rate),
-            mrp: Number(item.mrp),
-            // The quotation price was already agreed with the customer, so
-            // conversion must not re-block on the below-cost floor.
-            allowBelowCost: true,
-          },
-          branchId,
-        );
+      // deductStockForItem reports the batch it settled on by writing it back
+      // onto the object it was handed (see step 5 there) — that is the ONLY
+      // channel through which a FEFO auto-selection escapes the function. Every
+      // other caller passes the same DTO objects it later persists via
+      // normalizeItem, so the snapshot lands in the DB for free. Conversion
+      // can't: it reuses the quotation's own InvoiceItem rows instead of
+      // recreating them, so we keep one mutable draft per row here, let the
+      // loop write into it, and flush the drafts back below.
+      //
+      // Handing deductStockForItem a throwaway object literal instead silently
+      // drops the resolution: quotation lines are stored with batchId '' AND
+      // batchNumber '' (a quotation reserves nothing, so it never picks a
+      // batch), so the invoice would claim no batch for goods that really left
+      // one specific batch. Concretely, with both blank:
+      //   - invoice.hbs prints an em dash in both Batch No. and Expiry (the
+      //     expiry cell is gated on batchNumber), so the customer's bill can't
+      //     be traced to the strip that was dispensed;
+      //   - the product timeline aggregates sales per batch by batchNumber
+      //     (see ProductsService), so the sale never shows against the batch it
+      //     actually drained;
+      //   - a credit note finds no batch to restore into — CreditNotesService
+      //     resolves batchId, then (batchNumber, expiryDate), then FEFO on
+      //     batchNumber, and with all of them blank it logs a warning, marks
+      //     the line stockRestored=false and the goods never come back.
+      const lines = quotation.items.map((item) => ({
+        id: item.id,
+        productId: item.productId,
+        productName: item.productName,
+        batchId: item.batchId,
+        batchNumber: item.batchNumber,
+        expiryDate: item.expiryDate,
+        quantity: item.quantity,
+        rate: Number(item.rate),
+        mrp: Number(item.mrp),
+        // The quotation price was already agreed with the customer, so
+        // conversion must not re-block on the below-cost floor.
+        allowBelowCost: true,
+      }));
+
+      // stockTracking OFF: nothing to reserve, and so no batch to resolve — the
+      // lines keep the batch / expiry text they were quoted with and stay
+      // stockApplied=false (see create(), step 3). unitCost is still stamped
+      // below, off the product master, exactly as finalizeDraft does with
+      // tracking off.
+      if (stockTracking) {
+        for (const line of lines) {
+          await this.deductStockForItem(tx, line, branchId);
+        }
+      } else {
+        // MRP is a legal ceiling under the Drugs (Prices Control) Order, so the
+        // check has to survive stock tracking being switched off — it is pricing
+        // law, not inventory bookkeeping.
+        //
+        // Conversion is the ONLY moment a quoted price is validated: create()
+        // deliberately skips both guards for a QUOTATION (quoting a price isn't
+        // selling at it), so the quote itself can carry anything. With tracking
+        // on, deductStockForItem above enforces the ceiling against the resolved
+        // batch as a side effect of reserving stock. Without this else-branch,
+        // turning tracking off removed the deduction AND silently took the legal
+        // check with it — letting a quote priced above MRP convert into a real,
+        // non-compliant invoice with nothing between it and the customer but the
+        // frontend's rate cap.
+        //
+        // `lines` already carries allowBelowCost: true (the price was agreed with
+        // the customer), so only the hard MRP ceiling can bite here — the
+        // below-cost floor stays deliberately disarmed on this path.
+        await this.assertPriceGuardsWithoutBatch(tx, lines);
       }
 
       const invoiceNumber = await this.numbering.nextNumber(
@@ -1432,6 +1677,53 @@ export class BillingService {
         'INV',
         branchId ?? null,
       );
+
+      // After the deduct loop above, so FEFO-resolved batchIds are in place and
+      // each line is costed at what was actually paid for the goods shipping
+      // rather than falling through to the product master. Conversion used to
+      // skip this entirely, leaving every converted invoice at unitCost 0. That
+      // doesn't zero out COGS — ReportsService.buildUnitCostResolver falls back
+      // to the batch, then the product master — but with batchId also blank
+      // (same bug) it landed on the master's LIVE purchaseRate, the one thing
+      // the snapshot exists to escape: the next GRN for that product silently
+      // re-prices every already-converted sale, so re-running a closed month's
+      // P&L after a later purchase reports a different profit for that month.
+      const unitCosts = await this.resolveItemUnitCosts(tx, lines);
+
+      // Flush the resolved values back onto the quotation's own rows. Per line
+      // rather than the one blanket updateMany this used to do: batch, expiry
+      // and cost all differ line by line, and a per-line write subsumes the
+      // stockApplied flip anyway. Quotations run to a handful of lines, so the
+      // extra round trips aren't worth batching around.
+      for (const line of lines) {
+        await tx.invoiceItem.update({
+          where: { id: line.id },
+          data: {
+            // Only written when a batch was actually resolved — with tracking
+            // off there is nothing better to say than what the operator typed.
+            ...(stockTracking && {
+              batchId: line.batchId,
+              batchNumber: line.batchNumber,
+              expiryDate: line.expiryDate,
+              // deductStockForItem backfills this from the batch when the
+              // quotation was written without one.
+              mrp: r2(line.mrp),
+            }),
+            // The rows still carry the quotation's stockApplied=false. The loop
+            // above just reserved stock for every one of them, so flip the flag
+            // — otherwise the product timeline treats a converted sale as if it
+            // never moved stock. Stays false when tracking is off: nothing was
+            // reserved, and a legacy quotation row that defaulted to true gets
+            // corrected on the way through.
+            stockApplied: stockTracking,
+            // Frozen here for the same reason as every other write path: a
+            // later GRN overwrites Product.purchaseRate, so costing this sale
+            // at report time would re-price a closed period.
+            unitCost: r2(this.unitCostFor(unitCosts, line)),
+          },
+        });
+      }
+
       return tx.invoice.update({
         where: { id },
         data: { type: 'INVOICE', invoiceNumber, status: 'PAID' },
@@ -1471,6 +1763,7 @@ export class BillingService {
       await tx.invoiceItem.deleteMany({ where: { invoiceId: id } });
 
       const mrpFallbacks = await this.resolveItemMrpFallbacks(tx, dto.items);
+      const unitCosts = await this.resolveItemUnitCosts(tx, dto.items);
       return tx.invoice.update({
         where: { id },
         data: {
@@ -1498,8 +1791,15 @@ export class BillingService {
           // Status pinned to DRAFT — finalization goes through finalizeDraft().
           status: 'DRAFT',
           items: {
+            // A draft has moved no stock; finalizeDraft() recreates these rows
+            // with the real value.
             create: dto.items.map((item) =>
-              normalizeItem(item, this.mrpFallbackFor(mrpFallbacks, item)),
+              normalizeItem(
+                item,
+                this.mrpFallbackFor(mrpFallbacks, item),
+                false,
+                this.unitCostFor(unitCosts, item),
+              ),
             ),
           },
         },
@@ -1522,23 +1822,33 @@ export class BillingService {
   }
 
   private async finalizeDraftInternal(id: string, dto: CreateInvoiceDto, branchId?: string) {
+    const stockTracking = await this.settings.isStockTrackingEnabled();
     return this.prisma.$transaction(async (tx) => {
       const existing = await this._verifyDraft(tx, id, branchId);
 
       // Prescription + stock — same validators a fresh invoice goes through.
+      // The prescription check always runs; the stock leg is skipped when
+      // stockTracking is OFF (see create(), step 3).
       await this.assertPrescriptionForScheduledItems(
         tx,
         dto.items,
         dto.customerId ?? null,
         dto.billingType,
       );
-      for (const item of dto.items) {
-        await this.deductStockForItem(tx, item, branchId);
+      if (stockTracking) {
+        for (const item of dto.items) {
+          await this.deductStockForItem(tx, item, branchId);
+        }
+      } else {
+        await this.assertPriceGuardsWithoutBatch(tx, dto.items);
+        this.assertExpiryOnUntrackedLines(dto.items);
       }
 
       // Replace items, flip status, write final payment fields.
       await tx.invoiceItem.deleteMany({ where: { invoiceId: id } });
       const mrpFallbacks = await this.resolveItemMrpFallbacks(tx, dto.items);
+      // After the deduct loop above, so FEFO-resolved batchIds are in place.
+      const unitCosts = await this.resolveItemUnitCosts(tx, dto.items);
       const finalized = await tx.invoice.update({
         where: { id },
         data: {
@@ -1565,8 +1875,15 @@ export class BillingService {
           changeReturned: r2(dto.changeReturned),
           status: dto.status,
           items: {
+            // Finalizing a draft into a real invoice — stock was just deducted
+            // above, unless tracking is off.
             create: dto.items.map((item) =>
-              normalizeItem(item, this.mrpFallbackFor(mrpFallbacks, item)),
+              normalizeItem(
+                item,
+                this.mrpFallbackFor(mrpFallbacks, item),
+                stockTracking,
+                this.unitCostFor(unitCosts, item),
+              ),
             ),
           },
         },
@@ -1661,6 +1978,7 @@ export class BillingService {
     userId: string,
     branchId?: string,
   ) {
+    const stockTracking = await this.settings.isStockTrackingEnabled();
     const updated = await this.prisma.$transaction(async (tx) => {
       const existing = await tx.invoice.findUnique({
         where: { id },
@@ -1694,6 +2012,21 @@ export class BillingService {
         );
       }
 
+      // An invoice keeps the stock behaviour it was BILLED under, even if the
+      // global Stock Tracking switch has flipped since. Without this, editing an
+      // old infinite-stock invoice after tracking is switched on would deduct
+      // stock for goods that physically left the building long ago (and were
+      // already accounted for in whatever opening stock was established at
+      // switch-on) — double-counting them, or hard-failing with "no unexpired
+      // batch has enough stock" for a product that hasn't been restocked.
+      //
+      // `every` (not `some`): a mixed invoice can't exist today, and if one ever
+      // did, treating it as tracked is the safer default.
+      const invoiceTookStock =
+        existing.items.length > 0 &&
+        existing.items.every((i) => i.stockApplied !== false);
+      const applyStock = stockTracking && invoiceTookStock;
+
       // Don't allow the new grand total to fall below what's already been
       // collected — that would put the business in a refund situation we
       // aren't equipped to settle automatically.
@@ -1704,16 +2037,33 @@ export class BillingService {
         );
       }
 
-      // 1) Restore stock from the existing items.
-      for (const old of existing.items) {
-        await tx.batch.update({
-          where: { id: old.batchId },
-          data: { quantity: { increment: old.quantity } },
-        });
-        await tx.product.update({
-          where: { id: old.productId },
-          data: { totalStock: { increment: old.quantity } },
-        });
+      // 1) Restore stock from the existing items. Skipped wholesale when this
+      //    invoice never took stock — nothing to give back, and no batch to
+      //    give it back to.
+      if (applyStock) {
+        for (const old of existing.items) {
+          // A line can legitimately carry no batch: lines billed while stock
+          // tracking was OFF, and imported invoices, both store batchId ''.
+          // updateMany (not update) so a missing/blank batch is a 0-row no-op
+          // instead of a P2025 that aborts the whole edit. The product's
+          // totalStock is only credited back when a batch actually took it,
+          // which keeps totalStock == SUM(batch.quantity).
+          if (!old.batchId) continue;
+          const restored = await tx.batch.updateMany({
+            where: { id: old.batchId },
+            data: { quantity: { increment: old.quantity } },
+          });
+          if (restored.count === 0) {
+            this.logger.warn(
+              `Invoice ${existing.invoiceNumber}: batch ${old.batchId} no longer exists — skipping stock restore for ${old.productName} (${old.quantity} units).`,
+            );
+            continue;
+          }
+          await tx.product.update({
+            where: { id: old.productId },
+            data: { totalStock: { increment: old.quantity } },
+          });
+        }
       }
 
       // 2) Reverse the old customer-side ledger entries.
@@ -1771,8 +2121,13 @@ export class BillingService {
         dto.customerId ?? null,
         dto.billingType,
       );
-      for (const item of dto.items) {
-        await this.deductStockForItem(tx, item, branchId);
+      if (applyStock) {
+        for (const item of dto.items) {
+          await this.deductStockForItem(tx, item, branchId);
+        }
+      } else {
+        await this.assertPriceGuardsWithoutBatch(tx, dto.items);
+        this.assertExpiryOnUntrackedLines(dto.items);
       }
 
       // 5) Recompute status from the new totals + the (preserved) amountPaid.
@@ -1787,6 +2142,8 @@ export class BillingService {
 
       // 6) Write the updated invoice and recreate items.
       const mrpFallbacks = await this.resolveItemMrpFallbacks(tx, dto.items);
+      // After the deduct loop above, so FEFO-resolved batchIds are in place.
+      const unitCosts = await this.resolveItemUnitCosts(tx, dto.items);
       const updated = await tx.invoice.update({
         where: { id },
         data: {
@@ -1814,8 +2171,15 @@ export class BillingService {
           // of what the customer actually handed over and lives independently
           // of the invoice's billed amount.
           items: {
+            // Matches what the edit actually did above — an invoice billed
+            // without stock stays that way through edits.
             create: dto.items.map((item) =>
-              normalizeItem(item, this.mrpFallbackFor(mrpFallbacks, item)),
+              normalizeItem(
+                item,
+                this.mrpFallbackFor(mrpFallbacks, item),
+                applyStock,
+                this.unitCostFor(unitCosts, item),
+              ),
             ),
           },
         },

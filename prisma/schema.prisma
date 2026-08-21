@@ -602,6 +602,41 @@ model InvoiceItem {
   discountPercent Decimal
   gstPercent      Decimal
   amount          Decimal
+  // Did this line actually move inventory? True for every normal sale (billing
+  // resolved a batch and decremented it) and for imported invoices (the
+  // importer decrements totalStock even when it can't resolve a batch id).
+  // False ONLY for lines billed while Stock Tracking was off, which never
+  // touched a batch or totalStock.
+  //
+  // Needed because `batchId` alone can't answer this: an imported line legitimately
+  // has an empty batchId yet DID reduce stock. The product timeline reads this to
+  // decide whether a row participates in the running-stock column (a line that
+  // moved nothing must not shift the balance, or it manufactures a phantom
+  // opening balance to reconcile against).
+  //
+  // Defaults true so every pre-existing row backfills correctly — they were all
+  // created by stock-moving paths.
+  stockApplied    Boolean  @default(true)
+  // Unit purchase cost SNAPSHOT, captured when the invoice was written. Drives
+  // COGS in the P&L and the product-profitability report.
+  //
+  // It has to be a snapshot rather than a lookup because both live sources move:
+  // a GRN with a newer delivery date overwrites Product.purchaseRate (see
+  // GrnService), so costing an old sale from the master would silently re-price
+  // closed periods — re-running March's P&L after an April purchase would report
+  // a different March profit. Freezing it here makes financial reports
+  // reproducible, and makes a cross-period sales return reverse EXACTLY the cost
+  // its sale charged instead of leaving a residue.
+  //
+  // Source at write time: the resolved batch's purchaseRate when the line has a
+  // batch, else the product master's (a sale billed with Stock Tracking off).
+  // Server-derived only — deliberately absent from CreateInvoiceItemDto so a
+  // client can't post its own cost.
+  //
+  // 0 = not snapshotted: rows written before this column existed. Readers fall
+  // back to batch → product master for those (see ReportsService
+  // .buildUnitCostResolver), so no backfill is required.
+  unitCost        Decimal  @default(0)
 }
 
 enum InvoiceType {
@@ -910,6 +945,17 @@ model CreditNoteItem {
   rate            Decimal
   gstPercent      Decimal
   amount          Decimal
+  // Did approving this return actually put stock back? Mirrors
+  // InvoiceItem.stockApplied on the inbound side. False when the approval
+  // skipped the restore — either because Stock Tracking was off (the sale never
+  // took stock, so there is none to give back) or because the batch no longer
+  // exists and the restore was logged-and-skipped.
+  //
+  // Written at approval time, which is the only moment that knows what actually
+  // happened. Defaults true so pre-existing approved returns backfill to the
+  // common case. The product timeline reads it to keep non-restoring returns
+  // out of the running-stock column.
+  stockRestored   Boolean    @default(true)
 }
 
 enum SettlementMode {

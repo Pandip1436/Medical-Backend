@@ -1124,6 +1124,10 @@ export class ProductsService {
         amount: Number(i.amount),
         gstPercent: Number(i.gstPercent),
         discountPercent: Number(i.discountPercent),
+        // Did this sale actually move inventory? False only for lines billed
+        // while Stock Tracking was off. The timeline uses it to keep such rows
+        // out of the running-stock column — see InvoiceItem.stockApplied.
+        stockApplied: i.stockApplied !== false,
       })),
       purchases: purchaseItems.map((i: any) => ({
         id: i.id,
@@ -1157,6 +1161,10 @@ export class ProductsService {
         rate: Number(i.rate),
         amount: Number(i.amount),
         gstPercent: Number(i.gstPercent),
+        // Did approving this return actually put stock back? False when it was
+        // skipped — tracking was off, or the batch had vanished. Keeps the
+        // timeline's running-stock column honest. See CreditNoteItem.stockRestored.
+        stockRestored: i.stockRestored !== false,
       })),
       // Stock went back OUT — returned to supplier
       purchaseReturns: purchaseReturnItems.map((i: any) => ({

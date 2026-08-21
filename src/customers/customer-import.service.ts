@@ -1265,11 +1265,43 @@ export class CustomerImportService {
                 needed -= take;
               }
 
-              // Decrement the product's denormalised totalStock
-              await tx.product.update({
-                where: { id: productId },
-                data: { totalStock: { decrement: qty } },
-              });
+              // Decrement totalStock by what the batches ACTUALLY supplied, not
+              // by the quantity the invoice asked for.
+              //
+              // The loop above stops once the batches run dry, so a line for 10
+              // units against 6 units of batch stock decrements batches by 6 and
+              // leaves `needed` at 4. Decrementing totalStock by the full 10
+              // broke the invariant the whole inventory layer rests on —
+              // `Product.totalStock === SUM(batch.quantity)` — by exactly that
+              // shortfall, and could drive totalStock negative while the batches
+              // sat at 0. That corruption is silent, and it survives into the
+              // period AFTER Stock Tracking is switched on, where it shows up as
+              // products reading the wrong stock and the Batches tab disagreeing
+              // with the header total.
+              //
+              // Sourcing it from `applied` also makes this correct with tracking
+              // OFF for free: there are no batches then, so the loop takes
+              // nothing, `applied` is 0, and totalStock is left frozen — which is
+              // exactly the guarantee that mode promises.
+              const applied = qty - needed;
+              if (applied > 0) {
+                await tx.product.update({
+                  where: { id: productId },
+                  data: { totalStock: { decrement: applied } },
+                });
+              }
+              // A shortfall means the import could not attribute the whole sale
+              // to real stock. Surfacing it beats silently under-deducting.
+              if (needed > 0) {
+                this.pushWarning(result, {
+                  kind: 'missing-link',
+                  sheet: 'Invoice Items',
+                  row: inv.sourceRow ?? 0,
+                  customerCode: parent.customerCode,
+                  field: 'quantity',
+                  message: `Only ${applied} of ${qty} units of "${item.productName ?? 'item'}" could be drawn from existing batches — stock was reduced by ${applied}, not ${qty}. Import the purchase history (GRNs / Batches) first if this line should draw real stock.`,
+                });
+              }
             }
 
             await tx.invoiceItem.create({
@@ -2011,12 +2043,28 @@ export class CustomerImportService {
               },
             });
 
-            // Increment product totalStock for approved returns so stock level balances
+            // Deliberately does NOT touch totalStock.
+            //
+            // The line above creates the CreditNoteItem with `batchId: ''` — the
+            // import has no batch to put the returned units back into. Bumping
+            // totalStock anyway pushed it ABOVE SUM(batch.quantity), inverting
+            // the same invariant the invoice path breaks downward, so a file
+            // carrying both sheets could drift in both directions at once.
+            //
+            // This mirrors the live approval path exactly: CreditNotesService
+            // skips the totalStock bump whenever it can't resolve a batch,
+            // "since there's no batch to back it (keeps totalStock == sum of
+            // batch quantities)". An imported return is a financial record; the
+            // physical stock it represents was never registered in a batch here.
+            //
+            // stockRestored is left at its `false` value below so the product
+            // timeline reports the return as having restored nothing, rather
+            // than claiming stock came back that never did.
             const returnedQty = Math.trunc(item.returnedQty ?? 0);
             if (status === 'APPROVED' && productId && returnedQty > 0) {
-              await tx.product.update({
-                where: { id: productId },
-                data: { totalStock: { increment: returnedQty } },
+              await tx.creditNoteItem.updateMany({
+                where: { creditNoteId: created.id, productId, batchId: '' },
+                data: { stockRestored: false },
               });
             }
 

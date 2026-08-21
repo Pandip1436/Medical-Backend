@@ -2,6 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { ReportsService } from './reports.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { CustomersService } from '../customers/customers.service';
+import { SettingsService } from '../settings/settings.service';
 
 describe('ReportsService', () => {
   let service: ReportsService;
@@ -12,6 +13,13 @@ describe('ReportsService', () => {
         ReportsService,
         { provide: PrismaService, useValue: {} },
         { provide: CustomersService, useValue: { computeLiveOutstanding: jest.fn() } },
+        // Stock Tracking gates the low-stock / near-expiry dashboard figures.
+        // Stubbed ON: these specs cover GST rounding, which is unrelated, and ON
+        // keeps those computations on their normal path.
+        {
+          provide: SettingsService,
+          useValue: { isStockTrackingEnabled: jest.fn().mockResolvedValue(true) },
+        },
       ],
     }).compile();
 

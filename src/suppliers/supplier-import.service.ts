@@ -1720,17 +1720,45 @@ export class SupplierImportService {
     }
 
     try {
-      await this.prisma.batch.create({
-        data: {
-          product: { connect: { id: productId } },
-          supplier: { connect: { id: supplierId } },
-          batchNumber,
-          mfgDate: parseDate(b.mfgDate) ?? new Date(),
-          expiryDate: parseDate(b.expiryDate) ?? new Date(),
-          quantity: Math.trunc(b.quantity ?? 0),
-          mrp: new Prisma.Decimal(b.mrp ?? 0),
-          purchaseRate: new Prisma.Decimal(b.purchaseRate ?? 0),
-        },
+      const quantity = Math.trunc(b.quantity ?? 0);
+      // Create the batch AND carry its quantity onto the product's denormalised
+      // totalStock, in ONE transaction — exactly as GrnService does when a
+      // Purchase Entry receives stock (grn.service.ts: batch.create + totalStock
+      // increment together).
+      //
+      // Creating the batch alone silently inverted the invariant the whole
+      // inventory layer rests on, `Product.totalStock === SUM(batch.quantity)`:
+      // the batch held stock while totalStock stayed 0. That doesn't fail
+      // loudly — it corrupts quietly. Every product reads "Out of Stock" despite
+      // having stock; ProductsService.reconcileProductBatches trims the batch
+      // quantities shown in the UI down to totalStock, so the Batches tab
+      // displays 0; low-stock alerts fire for the whole catalogue; and the first
+      // sale decrements totalStock straight past zero into negative.
+      //
+      // That made this sheet unusable for its most valuable job — bulk-loading
+      // opening stock when switching Stock Tracking on — leaving a per-product
+      // Purchase Entry as the only safe route.
+      await this.prisma.$transaction(async (tx) => {
+        await tx.batch.create({
+          data: {
+            product: { connect: { id: productId } },
+            supplier: { connect: { id: supplierId } },
+            batchNumber,
+            mfgDate: parseDate(b.mfgDate) ?? new Date(),
+            expiryDate: parseDate(b.expiryDate) ?? new Date(),
+            quantity,
+            mrp: new Prisma.Decimal(b.mrp ?? 0),
+            purchaseRate: new Prisma.Decimal(b.purchaseRate ?? 0),
+          },
+        });
+        // Guarded: a zero-quantity batch (a placeholder row, or stock already
+        // sold through) is a legitimate import and must leave totalStock alone.
+        if (quantity > 0) {
+          await tx.product.update({
+            where: { id: productId },
+            data: { totalStock: { increment: quantity } },
+          });
+        }
       });
       result.summary.batches.created++;
     } catch (err) {

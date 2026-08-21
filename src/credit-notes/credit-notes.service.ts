@@ -10,6 +10,7 @@ import {
 import { PrismaService } from '../prisma/prisma.service';
 import { DocumentNumberingService } from '../common/services/document-numbering.service';
 import { ApprovalsService } from '../approvals/approvals.service';
+import { SettingsService } from '../settings/settings.service';
 import { CreateCreditNoteDto } from './dto/create-credit-note.dto';
 import { ApproveCreditNoteDto } from './dto/approve-credit-note.dto';
 import { RejectCreditNoteDto } from './dto/reject-credit-note.dto';
@@ -27,6 +28,7 @@ export class CreditNotesService {
     // SALES_RETURN executor calls createPendingReview). Resolved via forwardRef.
     @Inject(forwardRef(() => ApprovalsService))
     private readonly approvals: ApprovalsService,
+    private readonly settings: SettingsService,
   ) {}
 
   // Non-consuming preview of the next credit-note number, for the Sales-Return
@@ -272,7 +274,7 @@ export class CreditNotesService {
     return this.prisma.$transaction(async (tx) => {
       const cn = await tx.creditNote.findUnique({
         where: { id },
-        include: { items: true, invoice: true },
+        include: { items: true, invoice: { include: { items: true } } },
       });
       if (!cn) throw new NotFoundException('Credit note not found');
       if (branchId && cn.branchId && cn.branchId !== branchId) {
@@ -319,7 +321,39 @@ export class CreditNotesService {
       }
 
       // Restore stock (was lines 113-120 of the old create()).
-      for (const item of cn.items) {
+      //
+      // A return puts back exactly what the SALE took — decided PER LINE from
+      // the source invoice line's `stockApplied`, NOT from the current global
+      // Stock Tracking setting.
+      //
+      // That distinction is what makes the switch safe to flip. An operator can
+      // run with tracking off for months and then turn it on: those older
+      // invoices never took stock, so approving a return against one must still
+      // restore nothing, even though tracking is now on. Reading the live switch
+      // here would instead try to restore — and since those lines carry an empty
+      // batchId, the batchNumber fallback below would match the operator's
+      // free-typed batch number against a real batch and silently inflate stock
+      // that was never sold from it.
+      //
+      // The money side of the return (refund / credit / replacement) is
+      // unaffected and runs normally either way.
+      const soldWithStock = new Map<string, boolean>();
+      for (const it of cn.invoice?.items ?? []) {
+        soldWithStock.set(`${it.productId}::${it.batchId}`, it.stockApplied !== false);
+      }
+      // Missing source line ⇒ treat as restorable, matching the historical
+      // behaviour rather than silently swallowing stock.
+      const didNotTakeStock = (i: { productId: string; batchId: string }) =>
+        soldWithStock.get(`${i.productId}::${i.batchId}`) === false;
+
+      const skipped = cn.items.filter(didNotTakeStock);
+      if (skipped.length) {
+        await tx.creditNoteItem.updateMany({
+          where: { id: { in: skipped.map((i) => i.id) } },
+          data: { stockRestored: false },
+        });
+      }
+      for (const item of cn.items.filter((i) => !didNotTakeStock(i))) {
         // The batch can be gone by the time a return is approved (expiry
         // cleanup, manual batch deletion, etc.). Restoring into a missing batch
         // makes batch.update throw P2025 and aborts the whole approval — so only
@@ -359,6 +393,12 @@ export class CreditNotesService {
           this.logger.warn(
             `Credit note ${cn.id}: batch ${item.batchId || item.batchNumber || '(none)'} not found — skipping stock restore for product ${item.productId} (${item.returnedQty} units).`,
           );
+          // Record the skip so the product timeline doesn't show this return as
+          // stock coming back in when it never did.
+          await tx.creditNoteItem.update({
+            where: { id: item.id },
+            data: { stockRestored: false },
+          });
           continue;
         }
         await tx.batch.update({

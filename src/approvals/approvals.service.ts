@@ -16,6 +16,7 @@ import { CreditNotesService } from '../credit-notes/credit-notes.service';
 import { PartyLinkService } from '../party-link/party-link.service';
 import { GrnService } from '../grn/grn.service';
 import { SuppliersService } from '../suppliers/suppliers.service';
+import { SettingsService } from '../settings/settings.service';
 
 // Builds the "<customer> (<phone>) — " prefix for approval notifications when
 // the request payload carries customer fields (e.g. SALES_RETURN stamps both
@@ -51,6 +52,7 @@ export class ApprovalsService {
     // supplier on approval.
     @Inject(forwardRef(() => SuppliersService))
     private readonly suppliersService: SuppliersService,
+    private readonly settings: SettingsService,
   ) {}
 
   // The customer / supplier an approval request is about, pulled from whatever
@@ -312,6 +314,8 @@ export class ApprovalsService {
         // throw — the request stays approved-but-failed and admin sees the
         // error; pharmacist must raise a new request.
         if (!refId) break;
+        // Read outside the transaction so the settings lookup doesn't extend it.
+        const stockTracking = await this.settings.isStockTrackingEnabled();
         await this.prisma.$transaction(async (tx) => {
           const invoice = await tx.invoice.findUnique({
             where: { id: refId },
@@ -354,32 +358,79 @@ export class ApprovalsService {
               );
             }
           }
-          for (const item of invoice.items) {
-            const batch = await tx.batch.findUnique({
-              where: { id: item.batchId },
-            });
-            if (!batch) {
-              throw new BadRequestException(
-                `Batch ${item.batchNumber} for ${item.productName} no longer exists`,
-              );
+          // Reserve the stock this credit bill was queued against. Mirrors
+          // BillingService.deductStockForItem — skipped entirely when stock
+          // tracking is OFF (Settings → General → Inventory), where the draft
+          // was billed without ever resolving a batch. The prescription check
+          // above still runs either way: it's a dispensing rule, not a
+          // stock-counting one.
+          if (stockTracking) {
+            for (const item of invoice.items) {
+              const batch = await tx.batch.findUnique({
+                where: { id: item.batchId },
+              });
+              if (!batch) {
+                throw new BadRequestException(
+                  `Batch ${item.batchNumber} for ${item.productName} no longer exists`,
+                );
+              }
+              if (new Date(batch.expiryDate) < new Date()) {
+                throw new BadRequestException(
+                  `Cannot approve: batch ${item.batchNumber} of ${item.productName} has expired`,
+                );
+              }
+              // Atomic, race-safe decrement — the availability check lives in
+              // the WHERE clause so the database evaluates it while holding the
+              // row lock, and the write is RELATIVE (`decrement`) rather than an
+              // absolute figure computed from the read above. Mirrors
+              // BillingService.deductStockForItem step 4; keep the two in step.
+              //
+              // The previous form was read → check `batch.quantity < needed` →
+              // write `quantity: batch.quantity - item.quantity`, which is unsafe
+              // twice over under the default READ COMMITTED isolation this app
+              // runs at:
+              //
+              //   1. Check-then-act. A concurrent sale can slip between the read
+              //      and the write, so both operations pass their own check and
+              //      together draw more than the batch holds.
+              //   2. Lost update. Writing an absolute value derived from a stale
+              //      read overwrites whatever happened in between — erasing the
+              //      concurrent sale outright. It can even raise the quantity
+              //      (batch drained to 0 elsewhere, then set back to 10 - 8 = 2),
+              //      inventing stock that was never received.
+              //
+              // Neither shows up as a negative batch, which is what makes it so
+              // hard to spot: the row is left holding a plausible number. The
+              // damage surfaces only as Product.totalStock (decremented
+              // relatively, so it counts both) drifting below SUM(batch.quantity)
+              // — silently breaking the invariant the stock-adjustment
+              // reconciliation depends on.
+              const dec = await tx.batch.updateMany({
+                where: { id: batch.id, quantity: { gte: item.quantity } },
+                data: { quantity: { decrement: item.quantity } },
+              });
+              if (dec.count === 0) {
+                // Zero rows matched ⇒ another transaction took the stock first.
+                // Re-read so the reviewer sees the live figure, not the stale one.
+                const fresh = await tx.batch.findUnique({
+                  where: { id: batch.id },
+                  select: { quantity: true },
+                });
+                throw new BadRequestException(
+                  `Cannot approve: insufficient stock for ${item.productName} batch ${item.batchNumber}. Available ${fresh?.quantity ?? 0}, needed ${item.quantity}`,
+                );
+              }
+              await tx.product.update({
+                where: { id: item.productId },
+                data: { totalStock: { decrement: item.quantity } },
+              });
             }
-            if (new Date(batch.expiryDate) < new Date()) {
-              throw new BadRequestException(
-                `Cannot approve: batch ${item.batchNumber} of ${item.productName} has expired`,
-              );
-            }
-            if (batch.quantity < item.quantity) {
-              throw new BadRequestException(
-                `Cannot approve: insufficient stock for ${item.productName} batch ${item.batchNumber}. Available ${batch.quantity}, needed ${item.quantity}`,
-              );
-            }
-            await tx.batch.update({
-              where: { id: batch.id },
-              data: { quantity: batch.quantity - item.quantity },
-            });
-            await tx.product.update({
-              where: { id: item.productId },
-              data: { totalStock: { decrement: item.quantity } },
+            // The draft's lines were written with stockApplied=false (nothing
+            // was reserved while it waited for approval). They have now moved
+            // stock, so the product timeline must count them.
+            await tx.invoiceItem.updateMany({
+              where: { invoiceId: refId },
+              data: { stockApplied: true },
             });
           }
           await tx.invoice.update({
@@ -505,7 +556,25 @@ export class ApprovalsService {
           );
           if (!isShortDelivery) {
             for (const item of payload.items ?? []) {
-              await tx.batch.update({ where: { id: item.batchId }, data: { quantity: { decrement: item.returnedQty } } });
+              // Guarded like the CREDIT_BILL decrement above and
+              // PurchaseReturnsService: `quantity: { gte: … }` in the WHERE means
+              // a batch already drawn down by a concurrent sale can't be pushed
+              // negative here. The write was already relative (so it could never
+              // lose an update), but without the guard it would happily take a
+              // batch below zero and break totalStock == SUM(batch.quantity).
+              const dec = await tx.batch.updateMany({
+                where: { id: item.batchId, quantity: { gte: item.returnedQty } },
+                data: { quantity: { decrement: item.returnedQty } },
+              });
+              if (dec.count === 0) {
+                const fresh = await tx.batch.findUnique({
+                  where: { id: item.batchId },
+                  select: { quantity: true },
+                });
+                throw new BadRequestException(
+                  `Cannot approve purchase return: batch ${item.batchNumber ?? item.batchId} of ${item.productName ?? 'product'} holds ${fresh?.quantity ?? 0}, cannot return ${item.returnedQty}.`,
+                );
+              }
               await tx.product.update({ where: { id: item.productId }, data: { totalStock: { decrement: item.returnedQty } } });
             }
           }

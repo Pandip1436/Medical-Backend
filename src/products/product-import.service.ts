@@ -1,6 +1,7 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { Prisma, Schedule, StorageCondition } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { SettingsService } from '../settings/settings.service';
 import {
   ImportCategoryDto,
   ImportDuplicateHandling,
@@ -98,7 +99,10 @@ const WARN_ON_MISSING_PRICE = {
 
 @Injectable()
 export class ProductImportService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly settings: SettingsService,
+  ) {}
 
   // Single entry point for /preview and /commit. Same diagnostic shape
   // either way — the drawer renders the same panel.
@@ -189,6 +193,9 @@ export class ProductImportService {
         crossBranchByName,
         dto.duplicateHandling,
         result,
+        // Resolved ONCE here, not per row — it only shapes the wording of the
+        // missing-cost warning below, and a lookup per row would be pointless.
+        await this.settings.isStockTrackingEnabled(),
       );
       return result;
     }
@@ -445,6 +452,7 @@ export class ProductImportService {
     crossBranchByName: Map<string, { branchName: string }>,
     handling: ImportDuplicateHandling,
     result: ImportResult,
+    stockTracking: boolean,
   ) {
     // Track categories referenced by name so the preview banner can show
     // how many new categories will be auto-created. We use a Set for the
@@ -579,9 +587,24 @@ export class ProductImportService {
         }
         if (WARN_ON_MISSING_PRICE.mrp && row.mrp === undefined)
           pricingNotes.push('no mrp — stored as ₹0');
+        // How bad a missing cost is depends entirely on whether stock is being
+        // tracked, so the warning says which situation the operator is actually
+        // in rather than one vague line for both.
+        //
+        // Tracking ON  — the product master's cost is a starting point; the
+        //   first Purchase Entry overwrites it (GrnService) and each batch
+        //   carries its own cost, which is what COGS reads. Recoverable.
+        // Tracking OFF — there are no batches, so this field is the ONLY cost
+        //   source. Every sale snapshots it onto the invoice line (unitCost), so
+        //   a blank here means those sales report zero cost and the P&L shows
+        //   100% margin. It stays wrong for as long as the field is blank, which
+        //   is exactly the trap when running tracking-off for a stretch before
+        //   switching on.
         if (WARN_ON_MISSING_PRICE.purchaseRate && row.purchaseRate === undefined)
           pricingNotes.push(
-            'no purchase_rate — stored as ₹0, so margin and below-cost checks cannot work for this product',
+            stockTracking
+              ? 'no purchase_rate — stored as ₹0, so margin and below-cost checks cannot work for this product'
+              : 'no purchase_rate — with Stock Tracking OFF this is the only cost source, so every sale of this product will report ₹0 cost and show 100% margin in Profit & Loss',
           );
         if (WARN_ON_MISSING_PRICE.gstRate && row.gstRate === undefined)
           pricingNotes.push('no gst_rate — stored as 0%, so invoices carry no tax');

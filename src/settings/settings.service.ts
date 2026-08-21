@@ -67,4 +67,23 @@ export class SettingsService {
     });
   }
 
+  // Master switch for the whole inventory side of the app (Settings → General →
+  // Inventory → "Stock Tracking", admin-only). ON is the historical behaviour:
+  // a sale must resolve a batch with enough stock, and it decrements that batch.
+  //
+  // OFF puts the app in "infinite stock" mode for operators who never record
+  // purchases at all — they only ever sell. In that mode billing performs NO
+  // stock validation and NO stock mutation: batches and totalStock are frozen
+  // exactly where they were, so the numbers stay meaningful if tracking is ever
+  // switched back ON (rather than spiralling into a large meaningless negative).
+  //
+  // Deliberately defaults to TRUE when the key is missing or the field is
+  // absent — a fresh install, or one that predates this setting, keeps the
+  // stock checks. Only an explicit `false` disables them.
+  async isStockTrackingEnabled(): Promise<boolean> {
+    const general = (await this.getSetting('general_settings')) as {
+      stockTracking?: unknown;
+    };
+    return general?.stockTracking !== false;
+  }
 }

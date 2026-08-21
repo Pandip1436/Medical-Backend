@@ -5,9 +5,10 @@ import { ApprovalsModule } from '../approvals/approvals.module';
 import { PaymentsModule } from '../payments/payments.module';
 import { DispatchNotificationModule } from '../dispatch/dispatch-notification.module';
 import { EventsModule } from '../events/events.module';
+import { SettingsModule } from '../settings/settings.module';
 
 @Module({
-  imports: [ApprovalsModule, PaymentsModule, DispatchNotificationModule, EventsModule],
+  imports: [ApprovalsModule, PaymentsModule, DispatchNotificationModule, EventsModule, SettingsModule],
   providers: [BillingService],
   controllers: [BillingController],
 })

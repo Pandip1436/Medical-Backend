@@ -44,12 +44,31 @@ describe('Outstanding KPI consistency (bugs #1 + #3)', () => {
         }),
         // Used elsewhere in dashboard for sales / overdue — return empty.
         aggregate: jest.fn(async () => ({ _sum: { grandTotal: 0 } })),
+        // Dashboard "Recent activity" card: page of rows + a total for its
+        // infinite scroll. Neither feeds totalOutstanding, so 0 rows is fine.
+        count: jest.fn(async () => 0),
+        // summary() also derives Paid/Partial/Unpaid folder counts via
+        // customerPaymentStatusIds(). Those counts are a separate concern from
+        // the totalOutstanding this suite pins, and with customer.findMany
+        // returning [] the helper short-circuits before ever calling groupBy —
+        // it's stubbed only so a future change to that order can't turn a
+        // behavioural regression into a confusing "not a function" TypeError.
+        groupBy: jest.fn(async () => []),
       },
       customer: {
         count: jest.fn(async () => 205),
         // Legacy denormalized aggregator: deliberately returns a STALE wrong
         // value so the test fails if anything regresses back to reading it.
         aggregate: jest.fn(async () => ({ _sum: { currentOutstanding: 999_999 } })),
+        // Two callers, both incidental to what this suite asserts:
+        //   - getOutstanding() batch-fetches phones to render "name + phone"
+        //     per row. Empty => customerPhone is null on every row, which the
+        //     row-count / total assertions don't look at.
+        //   - summary() classifies customers into payment-status folders.
+        // Neither feeds totalOutstanding — that comes solely from the invoice
+        // fixture through computeLiveOutstanding — so returning [] leaves the
+        // canonical assertions untouched while letting both paths run.
+        findMany: jest.fn(async () => []),
       },
       batch: {
         count: jest.fn(async () => 0),
@@ -64,7 +83,12 @@ describe('Outstanding KPI consistency (bugs #1 + #3)', () => {
   it('summary(), getOutstanding(), and reports.getDashboardKpis() all return the same totalOutstanding and customer count', async () => {
     const prisma = makePrismaMock();
     const customers = new CustomersService(prisma, {} as any, {} as any);
-    const reports = new ReportsService(prisma, customers);
+    const reports = new ReportsService(prisma, customers, {
+      // These assertions are about the outstanding rollup, not stock. Tracking
+      // ON keeps computeLowStock/getDashboardExpiring on their normal path, so
+      // the dashboard payload has the same shape it always had.
+      isStockTrackingEnabled: async () => true,
+    } as any);
 
     const [summary, outstanding, dashboard] = await Promise.all([
       customers.summary(),
@@ -99,7 +123,12 @@ describe('Outstanding KPI consistency (bugs #1 + #3)', () => {
     // above) would fail.
     const prisma = makePrismaMock();
     const customers = new CustomersService(prisma, {} as any, {} as any);
-    const reports = new ReportsService(prisma, customers);
+    const reports = new ReportsService(prisma, customers, {
+      // These assertions are about the outstanding rollup, not stock. Tracking
+      // ON keeps computeLowStock/getDashboardExpiring on their normal path, so
+      // the dashboard payload has the same shape it always had.
+      isStockTrackingEnabled: async () => true,
+    } as any);
     await Promise.all([customers.summary(), reports.getDashboardKpis()]);
     // customer.aggregate may still be called by other code paths in summary,
     // but it must not be the source of totalOutstanding (asserted above).

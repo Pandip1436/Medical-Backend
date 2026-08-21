@@ -429,7 +429,38 @@ export class NotificationsService {
     };
   }
 
+  // Whether the app is counting stock at all (Settings → General → Inventory).
+  // Read straight off the GlobalSetting row rather than via SettingsService, to
+  // match getCadence() above and keep this module dependency-free. Missing key
+  // or missing field ⇒ enabled, so existing installs are unaffected.
+  private async isStockTrackingEnabled(): Promise<boolean> {
+    try {
+      const row = await this.prisma.globalSetting.findUnique({
+        where: { key: 'general_settings' },
+        select: { value: true },
+      });
+      return (row?.value as { stockTracking?: unknown } | null)?.stockTracking !== false;
+    } catch {
+      return true;
+    }
+  }
+
   async generateLowStockAlerts(branchId?: string) {
+    // Stock tracking OFF ⇒ "infinite stock": totalStock is frozen at whatever
+    // it held when the switch was thrown. Sales stop decrementing it and no GRN
+    // tops it up, so a product that read low then reads low forever, and the
+    // operator has no move that clears it. Don't raise new alerts — and sweep
+    // any raised BEFORE the switch into Resolved, or they sit unread in the
+    // bell for good.
+    //
+    // Reversible by construction, same as the expiry gate below: the sweep
+    // leaves resolvedById null, which buys only the 24h dedup window and never
+    // the 30-day human-Resolve quiet (see suppressionClauses), so turning
+    // tracking back on has the very next sweep re-raise whatever is genuinely
+    // low.
+    if (!(await this.isStockTrackingEnabled())) {
+      return { created: 0, resolved: await this.resolveRestockedLowStockAlerts(branchId, true) };
+    }
     const products = await this.prisma.product.findMany({
       where: {
         isActive: true,
@@ -502,6 +533,23 @@ export class NotificationsService {
   }
 
   async generateExpiryAlerts(branchId?: string, daysAhead = 90) {
+    // Stock tracking OFF ⇒ batch quantities are frozen leftovers (imports, or
+    // whatever was on hand when the switch was thrown). Sales never draw them
+    // down and no GRN tops them up, so "Batch X expires in 12 days" describes
+    // stock that may not physically exist — and the operator has no move that
+    // clears it: selling through and writing off both need the tracking that's
+    // switched off. An alert nobody can act on is just noise, so don't raise
+    // one, and sweep any raised BEFORE the switch into Resolved so the inbox
+    // stops repeating them.
+    //
+    // Nothing is deleted and nothing is permanent: the auto-resolve below
+    // leaves resolvedById null, which buys no suppression (see
+    // suppressionClauses), so flipping tracking back on has the very next sweep
+    // re-raise whatever is genuinely near expiry.
+    if (!(await this.isStockTrackingEnabled())) {
+      return { created: 0, resolved: await this.resolveStaleExpiryAlerts(branchId, true) };
+    }
+
     const now = new Date();
     const cutoff = new Date();
     cutoff.setDate(cutoff.getDate() + daysAhead);
@@ -583,7 +631,16 @@ export class NotificationsService {
   // fixed. Reconciled on the sweep rather than hooked into each path, so every
   // way of adding stock is covered by one piece of code. Mirrors
   // resolveStaleExpiryAlerts / resolveSettledSupplierAlerts below.
-  private async resolveRestockedLowStockAlerts(branchId?: string): Promise<number> {
+  //
+  // `stockFrozen` widens that to EVERY open low-stock alert: with stock
+  // tracking off totalStock is not a number anyone maintains, so "back above
+  // its minimum" is not a fact we can assert about any product — none is
+  // actionable, not just the restocked ones. Same flag, same meaning, as
+  // resolveStaleExpiryAlerts. See the gate at the top of generateLowStockAlerts.
+  private async resolveRestockedLowStockAlerts(
+    branchId?: string,
+    stockFrozen = false,
+  ): Promise<number> {
     const active = await this.prisma.notification.findMany({
       where: {
         type: NotificationType.LOW_STOCK,
@@ -602,11 +659,15 @@ export class NotificationsService {
     }
     if (idsByProduct.size === 0) return 0;
 
-    // Same "is it low?" test the generator above uses.
-    const products = await this.prisma.product.findMany({
-      where: { id: { in: [...idsByProduct.keys()] } },
-      select: { id: true, totalStock: true, minStock: true },
-    });
+    // Same "is it low?" test the generator above uses. Frozen ⇒ treat nothing
+    // as still low and skip the lookup entirely; the product rows would answer
+    // off a totalStock nobody maintains.
+    const products = stockFrozen
+      ? []
+      : await this.prisma.product.findMany({
+          where: { id: { in: [...idsByProduct.keys()] } },
+          select: { id: true, totalStock: true, minStock: true },
+        });
     const stillLow = new Set(
       products
         .filter((p) => p.totalStock <= 0 || (p.minStock > 0 && p.totalStock <= p.minStock))
@@ -629,7 +690,15 @@ export class NotificationsService {
   // Resolve active EXPIRY alerts whose batch no longer has stock (qty 0) or was
   // deleted — they're no longer actionable. Resolved (not deleted) so they stay
   // in the All/Resolved history.
-  private async resolveStaleExpiryAlerts(branchId?: string): Promise<number> {
+  //
+  // `stockFrozen` widens that to EVERY open expiry alert: with stock tracking
+  // off no batch quantity is being maintained at all, so "still has stock" is
+  // not a fact we can assert about any of them — none is actionable, not just
+  // the emptied ones. See the gate at the top of generateExpiryAlerts.
+  private async resolveStaleExpiryAlerts(
+    branchId?: string,
+    stockFrozen = false,
+  ): Promise<number> {
     const active = await this.prisma.notification.findMany({
       where: {
         type: NotificationType.EXPIRY,
@@ -650,10 +719,14 @@ export class NotificationsService {
     }
     if (idsByBatch.size === 0) return 0;
 
-    const liveBatches = await this.prisma.batch.findMany({
-      where: { id: { in: [...idsByBatch.keys()] }, quantity: { gt: 0 } },
-      select: { id: true },
-    });
+    // Frozen ⇒ treat nothing as live and skip the lookup entirely; the batch
+    // rows would answer "yes, still in stock" off numbers nobody maintains.
+    const liveBatches = stockFrozen
+      ? []
+      : await this.prisma.batch.findMany({
+          where: { id: { in: [...idsByBatch.keys()] }, quantity: { gt: 0 } },
+          select: { id: true },
+        });
     const live = new Set(liveBatches.map((b) => b.id));
 
     const staleIds: string[] = [];

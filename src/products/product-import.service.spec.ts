@@ -25,7 +25,7 @@ describe('ProductImportService — duplicate detection', () => {
   let service: ProductImportService;
 
   beforeEach(() => {
-    service = new ProductImportService(emptyPrisma());
+    service = new ProductImportService(emptyPrisma(), { isStockTrackingEnabled: async () => true } as any);
   });
 
   it('treats same name + same code as one product', async () => {
@@ -77,9 +77,10 @@ describe('ProductImportService — duplicate detection', () => {
         },
       ])
       .mockResolvedValue([]);
-    const svc = new ProductImportService({
-      product: { findMany },
-    } as unknown as PrismaService);
+    const svc = new ProductImportService(
+      { product: { findMany } } as unknown as PrismaService,
+      { isStockTrackingEnabled: async () => true } as any,
+    );
 
     const res = await svc.runImport(
       {
@@ -111,7 +112,7 @@ describe('ProductImportService — sparse rows', () => {
   let service: ProductImportService;
 
   beforeEach(() => {
-    service = new ProductImportService(emptyPrisma());
+    service = new ProductImportService(emptyPrisma(), { isStockTrackingEnabled: async () => true } as any);
   });
 
   it('imports a row carrying nothing but a name', async () => {
@@ -154,7 +155,7 @@ describe('ProductImportService — pricing warnings', () => {
     res.warnings.find((w) => w.message.startsWith('Pricing:'));
 
   beforeEach(() => {
-    service = new ProductImportService(emptyPrisma());
+    service = new ProductImportService(emptyPrisma(), { isStockTrackingEnabled: async () => true } as any);
   });
 
   // A row with every price supplied, so each test can blank exactly one field
@@ -298,9 +299,10 @@ describe('ProductImportService — pricing warnings', () => {
         },
       ])
       .mockResolvedValue([]);
-    const svc = new ProductImportService({
-      product: { findMany },
-    } as unknown as PrismaService);
+    const svc = new ProductImportService(
+      { product: { findMany } } as unknown as PrismaService,
+      { isStockTrackingEnabled: async () => true } as any,
+    );
 
     const res = await preview(svc, [row({ name: 'EXISTING' })]);
 
@@ -363,7 +365,7 @@ describe('ProductImportService — item code collision on update', () => {
 
   it("updates the product without stamping another product's code onto it", async () => {
     const { prisma, update } = prismaWith([ALPHA, BETA]);
-    const service = new ProductImportService(prisma);
+    const service = new ProductImportService(prisma, { isStockTrackingEnabled: async () => true } as any);
 
     // BETA matches by name; the file gives it A1, which ALPHA already holds.
     const res = await commit(service, [
@@ -381,7 +383,7 @@ describe('ProductImportService — item code collision on update', () => {
 
   it('still writes a code that nothing else holds', async () => {
     const { prisma, update } = prismaWith([BETA]);
-    const service = new ProductImportService(prisma);
+    const service = new ProductImportService(prisma, { isStockTrackingEnabled: async () => true } as any);
 
     const res = await commit(service, [
       row({ name: 'BETA INJ', productCode: 'B9' }),

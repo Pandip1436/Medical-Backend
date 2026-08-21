@@ -94,6 +94,9 @@
     "transform": {
       "^.+\\.(t|j)s$": "ts-jest"
     },
+    "moduleNameMapper": {
+      "^puppeteer$": "<rootDir>/../test/mocks/puppeteer.ts"
+    },
     "collectCoverageFrom": [
       "**/*.(t|j)s"
     ],

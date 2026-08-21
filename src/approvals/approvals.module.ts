@@ -6,6 +6,7 @@ import { CreditNotesModule } from '../credit-notes/credit-notes.module';
 import { PartyLinkModule } from '../party-link/party-link.module';
 import { GrnModule } from '../grn/grn.module';
 import { SuppliersModule } from '../suppliers/suppliers.module';
+import { SettingsModule } from '../settings/settings.module';
 
 @Module({
   // forwardRef: CreditNotesModule + GrnModule + SuppliersModule all import
@@ -18,6 +19,7 @@ import { SuppliersModule } from '../suppliers/suppliers.module';
     forwardRef(() => GrnModule),
     forwardRef(() => SuppliersModule),
     PartyLinkModule,
+    SettingsModule,
   ],
   providers: [ApprovalsService],
   controllers: [ApprovalsController],
