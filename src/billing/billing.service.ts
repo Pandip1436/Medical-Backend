@@ -936,7 +936,7 @@ export class BillingService {
       // It requests the full set via an explicit `take`; a generous ceiling
       // still guards against a runaway response.
       const takeCap =
-        typeof take === 'number' && take > 0 ? Math.min(take, 10000) : 200;
+        typeof take === 'number' && take > 0 ? Math.min(take, 100000) : 200;
       const rows = await this.prisma.invoice.findMany({
         where,
         include: listInclude,
@@ -975,51 +975,105 @@ export class BillingService {
   // invoices in the chosen period, independent of the paginated list below.
   async summary(
     branchId?: string,
-    filters?: { salespersonId?: string; from?: string; to?: string },
+    filters?: {
+      salespersonId?: string;
+      from?: string;
+      to?: string;
+      // Extra filters so the stat cards + tab counts follow the Sales List's
+      // active search / payment-mode / status-dropdown (server-side paging can
+      // no longer recompute them from a fully-loaded array in the browser).
+      q?: string;
+      paymentMode?: string;
+      status?: string;
+    },
   ) {
-    // Real, posted sales only — DRAFT (not posted) and CANCELLED (voided) must
-    // not count toward Total Sales / Collected. The per-status sub-queries
-    // below override `status` for their own buckets (PAID / UNPAID+PARTIAL /
-    // RETURNED), so the notIn here only governs the totals.
-    const base: any = {
-      type: 'INVOICE',
-      status: { notIn: ['DRAFT', 'CANCELLED'] },
-    };
-    if (branchId) base.branchId = branchId;
-    if (filters?.salespersonId) base.salespersonId = filters.salespersonId;
+    // Shared filter fragment (period + search + payment + salesperson + status).
+    // Applied to BOTH the stat totals and the per-status tab counts so every
+    // number on the page reflects the same active filters.
+    const scope: any = {};
+    if (branchId) scope.branchId = branchId;
+    if (filters?.salespersonId) scope.salespersonId = filters.salespersonId;
+    if (filters?.paymentMode) scope.paymentMode = filters.paymentMode;
+    if (filters?.q) {
+      scope.OR = [
+        { invoiceNumber: { contains: filters.q, mode: 'insensitive' } },
+        { customerName: { contains: filters.q, mode: 'insensitive' } },
+      ];
+    }
+    if (filters?.status) {
+      scope.status =
+        filters.status === 'PENDING'
+          ? { in: ['UNPAID', 'PARTIAL'] }
+          : filters.status;
+    }
     if (filters?.from || filters?.to) {
-      base.date = {};
-      if (filters.from) base.date.gte = new Date(filters.from);
+      scope.date = {};
+      if (filters.from) scope.date.gte = new Date(filters.from);
       if (filters.to) {
         // Make the `to` boundary inclusive of the entire day.
         const toEnd = new Date(filters.to);
         toEnd.setHours(23, 59, 59, 999);
-        base.date.lte = toEnd;
+        scope.date.lte = toEnd;
       }
     }
 
-    const [totalInvoices, totalAmountAgg, paidCount, paidAgg, outstandingAgg, returnsCount] =
-      await Promise.all([
-        this.prisma.invoice.count({ where: base }),
-        this.prisma.invoice.aggregate({ where: base, _sum: { grandTotal: true } }),
-        this.prisma.invoice.count({ where: { ...base, status: 'PAID' } }),
-        // Collected = actual cash received across ALL real invoices, including
-        // part-payments on PARTIAL invoices — not just fully-PAID totals.
-        this.prisma.invoice.aggregate({
-          where: base,
-          _sum: { amountPaid: true },
-        }),
-        this.prisma.invoice.findMany({
-          where: { ...base, status: { in: ['UNPAID', 'PARTIAL'] } },
-          select: { grandTotal: true, amountPaid: true },
-        }),
-        this.prisma.invoice.count({ where: { ...base, status: 'RETURNED' } }),
-      ]);
+    // Real, posted sales only for the money totals — DRAFT (not posted) and
+    // CANCELLED (voided) must not count toward Total Sales / Collected. The
+    // per-status sub-queries override `status` for their own buckets.
+    const base: any = {
+      ...scope,
+      type: 'INVOICE',
+      status:
+        scope.status !== undefined
+          ? scope.status
+          : { notIn: ['DRAFT', 'CANCELLED'] },
+    };
+
+    const [
+      totalInvoices,
+      totalAmountAgg,
+      paidCount,
+      paidAgg,
+      outstandingAgg,
+      returnsCount,
+      statusGroups,
+    ] = await Promise.all([
+      this.prisma.invoice.count({ where: base }),
+      this.prisma.invoice.aggregate({ where: base, _sum: { grandTotal: true } }),
+      this.prisma.invoice.count({ where: { ...base, status: 'PAID' } }),
+      // Collected = actual cash received across ALL real invoices, including
+      // part-payments on PARTIAL invoices — not just fully-PAID totals.
+      this.prisma.invoice.aggregate({
+        where: base,
+        _sum: { amountPaid: true },
+      }),
+      this.prisma.invoice.findMany({
+        where: { ...base, status: { in: ['UNPAID', 'PARTIAL'] } },
+        select: { grandTotal: true, amountPaid: true },
+      }),
+      this.prisma.invoice.count({ where: { ...base, status: 'RETURNED' } }),
+      // Per-status counts for the list tabs (All / Paid / Partial / Unpaid).
+      // These span EVERY status and type the list itself shows (no INVOICE /
+      // DRAFT exclusion), so the "All" tab total matches the paginated list's
+      // `total` for the same filters.
+      this.prisma.invoice.groupBy({
+        by: ['status'],
+        where: scope,
+        _count: { _all: true },
+      }),
+    ]);
 
     const outstandingAmount = outstandingAgg.reduce(
       (sum, inv) => sum + (Number(inv.grandTotal) - Number(inv.amountPaid)),
       0,
     );
+
+    const statusCounts: Record<string, number> = {};
+    let statusTotal = 0;
+    for (const g of statusGroups) {
+      statusCounts[g.status] = g._count._all;
+      statusTotal += g._count._all;
+    }
 
     return {
       totalInvoices,
@@ -1029,6 +1083,9 @@ export class BillingService {
       outstandingAmount,
       outstandingCount: outstandingAgg.length,
       returnsCount,
+      // For the list tabs. `statusTotal` = the "All" tab count (every status).
+      statusCounts,
+      statusTotal,
     };
   }
 

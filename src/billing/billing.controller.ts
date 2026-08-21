@@ -97,23 +97,32 @@ export class BillingController {
   // NOTE: keep this above `@Get(':id')` so 'summary' doesn't get captured as an id.
   @Get('summary')
   @Roles('ADMIN', 'PHARMACIST', 'ACCOUNTANT', 'SALESPERSON')
-  @ApiOperation({ summary: 'Invoice counts + totals (for stat cards)' })
+  @ApiOperation({ summary: 'Invoice counts + totals + per-status tab counts (for stat cards)' })
   @ApiQuery({ name: 'branchId', required: false })
   @ApiQuery({ name: 'salespersonId', required: false })
   @ApiQuery({ name: 'from', required: false, description: 'ISO date (inclusive)' })
   @ApiQuery({ name: 'to', required: false, description: 'ISO date (inclusive)' })
+  @ApiQuery({ name: 'q', required: false })
+  @ApiQuery({ name: 'paymentMode', required: false })
+  @ApiQuery({ name: 'status', required: false })
   summary(
     @Request() req: any,
     @Query('branchId') branchId?: string,
     @Query('salespersonId') salespersonId?: string,
     @Query('from') from?: string,
     @Query('to') to?: string,
+    @Query('q') q?: string,
+    @Query('paymentMode') paymentMode?: string,
+    @Query('status') status?: string,
   ) {
     const effectiveBranchId = resolveBranchScope(req.user);
     return this.billingService.summary(effectiveBranchId, {
       salespersonId: salespersonId || undefined,
       from: from || undefined,
       to: to || undefined,
+      q: q || undefined,
+      paymentMode: paymentMode || undefined,
+      status: status || undefined,
     });
   }
 

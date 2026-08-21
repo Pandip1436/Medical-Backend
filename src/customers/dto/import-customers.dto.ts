@@ -148,9 +148,10 @@ export class ImportCreditNoteDto {
   // Legacy credit-note number from the source system. Idempotency mirror of
   // invoice_number / receipt_number — auto-generate only when blank.
   @IsOptional() @IsString() creditNoteNo?: string;
-  // REQUIRED: which invoice this credit note is against. We resolve it to an
-  // Invoice row by (invoiceNumber + customerId) at write time.
-  @IsString() invoiceNumber!: string;
+  // Optional: which invoice this credit note is against. When present we
+  // resolve it to an Invoice row by (invoiceNumber + customerId) at write time;
+  // when blank the credit note imports as standalone (not linked to an invoice).
+  @IsOptional() @IsString() invoiceNumber?: string;
   @IsOptional() @IsString() date?: string;
   @IsOptional() @IsString() reason?: string;
   @IsOptional() @IsString() notes?: string;

@@ -851,9 +851,13 @@ model CreditNote {
   date            DateTime         @default(now())
   branchId        String?
   branch          Branch?          @relation(fields: [branchId], references: [id])
-  invoiceId       String
-  invoice         Invoice          @relation(fields: [invoiceId], references: [id])
-  invoiceNumber   String
+  // Optional: most credit notes are raised against a specific invoice, but a
+  // standalone credit note (a general credit/adjustment, or historical data
+  // imported without a linkable invoice) is allowed — invoiceId/invoiceNumber
+  // are null in that case.
+  invoiceId       String?
+  invoice         Invoice?         @relation(fields: [invoiceId], references: [id])
+  invoiceNumber   String?
   customerId      String?
   customer        Customer?        @relation(fields: [customerId], references: [id])
   customerName    String

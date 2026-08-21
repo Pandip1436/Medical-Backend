@@ -1152,14 +1152,25 @@ export class CustomerImportService {
               ? 'WHOLESALE'
               : 'RETAIL';
 
-          const status: InvoiceStatus =
+          const derivedStatus: InvoiceStatus =
+            (inv.amountPaid ?? 0) >= (inv.grandTotal ?? 0) && (inv.grandTotal ?? 0) > 0
+              ? InvoiceStatus.PAID
+              : (inv.amountPaid ?? 0) > 0
+                ? InvoiceStatus.PARTIAL
+                : InvoiceStatus.UNPAID;
+          const sourceStatus =
             inv.status && Object.values(InvoiceStatus).includes(inv.status)
               ? inv.status
-              : (inv.amountPaid ?? 0) >= (inv.grandTotal ?? 0)
-                ? InvoiceStatus.PAID
-                : (inv.amountPaid ?? 0) > 0
-                  ? InvoiceStatus.PARTIAL
-                  : InvoiceStatus.UNPAID;
+              : undefined;
+          // A DRAFT invoice is an unposted work-in-progress with no money against
+          // it. If the source labels a paid invoice DRAFT, that's a completed sale
+          // mislabelled on export — derive its real status so it doesn't import as
+          // a draft that never counts toward sales / the ledger.
+          const status: InvoiceStatus =
+            sourceStatus &&
+            !(sourceStatus === InvoiceStatus.DRAFT && (inv.amountPaid ?? 0) > 0)
+              ? sourceStatus
+              : derivedStatus;
 
           const customer = await tx.customer.findUnique({
             where: { id: customerId },
@@ -1837,38 +1848,35 @@ export class CustomerImportService {
     creditNoteNoRedirects: Map<string, string>,
   ): Promise<void> {
     const invoiceNumber = cn.invoiceNumber?.trim();
-    if (!invoiceNumber) {
-      this.pushError(result, {
-        sheet: 'Credit Notes',
-        row: cn.sourceRow ?? 0,
-        customerCode: parent.customerCode,
-        field: 'invoice_number',
-        message:
-          'invoice_number is required on a credit note — every return is against a specific invoice.',
+    // A credit note is normally raised against a specific invoice, but the
+    // source data may not carry one (a general credit/adjustment, or a legacy
+    // export without the link). Import it as a STANDALONE credit note in that
+    // case — the note and all its details are preserved, just not attached to
+    // an invoice — rather than dropping the row.
+    let parentInvoice: { id: string; invoiceNumber: string } | null = null;
+    if (invoiceNumber) {
+      // The referenced invoice may have been renumbered earlier in this same
+      // import run (see createInvoice's cross-branch renumbering) — resolve
+      // through the redirect map before falling back to the raw sheet value.
+      const resolvedInvoiceNumber =
+        invoiceNumberRedirects.get(invoiceNumber) ?? invoiceNumber;
+      parentInvoice = await this.prisma.invoice.findFirst({
+        where: { customerId, invoiceNumber: resolvedInvoiceNumber },
+        select: { id: true, invoiceNumber: true },
       });
-      result.summary.creditNotes.failed++;
-      return;
-    }
-
-    // The referenced invoice may have been renumbered earlier in this same
-    // import run (see createInvoice's cross-branch renumbering) — resolve
-    // through the redirect map before falling back to the raw sheet value.
-    const resolvedInvoiceNumber =
-      invoiceNumberRedirects.get(invoiceNumber) ?? invoiceNumber;
-    const parentInvoice = await this.prisma.invoice.findFirst({
-      where: { customerId, invoiceNumber: resolvedInvoiceNumber },
-      select: { id: true, invoiceNumber: true },
-    });
-    if (!parentInvoice) {
-      this.pushError(result, {
-        sheet: 'Credit Notes',
-        row: cn.sourceRow ?? 0,
-        customerCode: parent.customerCode,
-        field: 'invoice_number',
-        message: `Invoice "${invoiceNumber}" not found for this customer. Import the parent invoice first, or correct the invoice_number.`,
-      });
-      result.summary.creditNotes.failed++;
-      return;
+      if (!parentInvoice) {
+        // The invoice number is present but doesn't match any imported invoice.
+        // Keep the credit note rather than failing the row — record it as
+        // standalone and warn, so its details still import.
+        this.pushWarning(result, {
+          kind: 'missing-link',
+          sheet: 'Credit Notes',
+          row: cn.sourceRow ?? 0,
+          customerCode: parent.customerCode,
+          field: 'invoice_number',
+          message: `Invoice "${invoiceNumber}" not found for this customer — importing the credit note as standalone (not linked to an invoice).`,
+        });
+      }
     }
 
     // 200, not 5: when a user-provided number collides with a DIFFERENT
@@ -1936,8 +1944,14 @@ export class CustomerImportService {
             data: {
               creditNoteNo,
               date: parseDate(cn.date) ?? new Date(),
-              invoice: { connect: { id: parentInvoice.id } },
-              invoiceNumber: parentInvoice.invoiceNumber,
+              // Link to the parent invoice only when we found one; otherwise the
+              // credit note is standalone (invoiceId / invoiceNumber stay null).
+              ...(parentInvoice
+                ? {
+                    invoice: { connect: { id: parentInvoice.id } },
+                    invoiceNumber: parentInvoice.invoiceNumber,
+                  }
+                : {}),
               customer: { connect: { id: customerId } },
               customerName: customer?.name ?? parent.name,
               reason: cn.reason ?? 'Imported credit note',

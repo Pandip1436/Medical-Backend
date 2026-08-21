@@ -469,7 +469,9 @@ export class CreditNotesService {
               customerId: cn.customerId,
               type: 'INVOICE',
               status: { in: ['UNPAID', 'PARTIAL'] },
-              id: { not: cn.invoiceId },
+              // Exclude the source invoice (already handled above). A standalone
+              // credit note has none, so there's nothing to exclude.
+              ...(cn.invoiceId ? { id: { not: cn.invoiceId } } : {}),
             },
             orderBy: { date: 'asc' },
             select: {
@@ -497,7 +499,7 @@ export class CreditNotesService {
         // @unique on Refund.creditNoteId is safe here — a CN is either CREDIT
         // or REFUND, never both, so only one Refund row is ever created.
         if (creditExcess > 0.01) {
-          const invoiceMode = cn.invoice.paymentMode;
+          const invoiceMode = cn.invoice?.paymentMode ?? 'CASH';
           const refundMode =
             opts.refundMode ??
             (['CASH', 'CARD', 'UPI'].includes(invoiceMode) ? invoiceMode : 'CASH');
@@ -530,7 +532,7 @@ export class CreditNotesService {
       // refunds reach the Cash Book. The @unique on creditNoteId makes a retried
       // approve fail loudly rather than double-pay.
       if (finalSettlementMode === 'REFUND') {
-        const invoiceMode = cn.invoice.paymentMode;
+        const invoiceMode = cn.invoice?.paymentMode ?? 'CASH';
         const refundMode =
           opts.refundMode ??
           (['CASH', 'CARD', 'UPI'].includes(invoiceMode) ? invoiceMode : 'CASH');
@@ -568,26 +570,29 @@ export class CreditNotesService {
 
       // Check if the invoice is now fully returned. Count only APPROVED CNs
       // (including the one we just approved) so a not-yet-reviewed return
-      // doesn't prematurely close the invoice.
-      const totalReturnedSoFar = await tx.creditNote.aggregate({
-        where: { invoiceId: cn.invoiceId, status: 'APPROVED' },
-        _sum: { totalAmount: true },
-      });
-      const returned = Number(totalReturnedSoFar._sum.totalAmount ?? 0);
-      if (returned >= Number(cn.invoice.grandTotal)) {
-        await tx.invoice.update({
-          where: { id: cn.invoiceId },
-          data: { status: 'RETURNED' },
+      // doesn't prematurely close the invoice. Skipped for a standalone credit
+      // note — there's no invoice to mark returned.
+      if (cn.invoiceId && cn.invoice) {
+        const totalReturnedSoFar = await tx.creditNote.aggregate({
+          where: { invoiceId: cn.invoiceId, status: 'APPROVED' },
+          _sum: { totalAmount: true },
         });
-        // Invoice fully returned — there's nothing left to owe, so clear its
-        // Payment Due reminder.
-        await syncPaymentDueForInvoice(tx, {
-          id: cn.invoiceId,
-          status: 'RETURNED',
-          grandTotal: cn.invoice.grandTotal,
-          amountPaid: cn.invoice.amountPaid,
-          customerId: cn.customerId,
-        }, reviewerUserId);
+        const returned = Number(totalReturnedSoFar._sum.totalAmount ?? 0);
+        if (returned >= Number(cn.invoice.grandTotal)) {
+          await tx.invoice.update({
+            where: { id: cn.invoiceId },
+            data: { status: 'RETURNED' },
+          });
+          // Invoice fully returned — there's nothing left to owe, so clear its
+          // Payment Due reminder.
+          await syncPaymentDueForInvoice(tx, {
+            id: cn.invoiceId,
+            status: 'RETURNED',
+            grandTotal: cn.invoice.grandTotal,
+            amountPaid: cn.invoice.amountPaid,
+            customerId: cn.customerId,
+          }, reviewerUserId);
+        }
       }
 
       return updated;
